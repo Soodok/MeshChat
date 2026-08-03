@@ -23,10 +23,28 @@ class MeshChatViewModel(
     val peers: StateFlow<List<MeshPeer>> = repository.observePeers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val sessions: StateFlow<Set<String>> = repository.observeSessions()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    val invites: StateFlow<Map<String, Long>> = repository.observeInvites()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
     val localShortId: String = repository.localShortId()
 
     fun startDiscovery() {
         viewModelScope.launch { repository.startDiscovery() }
+    }
+
+    fun sendInvite(peerId: String) {
+        viewModelScope.launch { repository.sendInvite(peerId) }
+    }
+
+    fun acceptInvite(peerId: String) {
+        viewModelScope.launch { repository.acceptInvite(peerId) }
+    }
+
+    fun rejectInvite(peerId: String) {
+        viewModelScope.launch { repository.rejectInvite(peerId) }
     }
 
     fun sendMessage(text: String) {

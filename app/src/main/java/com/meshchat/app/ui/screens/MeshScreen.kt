@@ -51,6 +51,7 @@ import com.meshchat.app.ui.theme.TextSecondary
 fun MeshScreen(
     modifier: Modifier = Modifier,
     peers: List<MeshPeer>,
+    sessions: Set<String>,
     onStartDiscovery: () -> Unit,
     onPeerSelected: (String) -> Unit,
 ) {
@@ -71,7 +72,7 @@ fun MeshScreen(
             }
         }
         items(peers, key = { it.name }) { peer ->
-            PeerRow(peer, onClick = { onPeerSelected(peer.name) })
+            PeerRow(peer, connected = peer.name in sessions, onClick = { onPeerSelected(peer.name) })
         }
         item {
             Button(
@@ -121,7 +122,7 @@ private fun MeshTopology(peersCount: Int) {
 }
 
 @Composable
-private fun PeerRow(peer: MeshPeer, onClick: () -> Unit) {
+private fun PeerRow(peer: MeshPeer, connected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -137,9 +138,12 @@ private fun PeerRow(peer: MeshPeer, onClick: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SignalBars(peer.strength)
             Text(
-                text = if (peer.hops == 1) "直接 · 1 跳" else "${peer.hops} 跳",
+                text = when {
+                    connected -> "已连接 · 点击进入会话"
+                    else -> "点击发起对话"
+                },
                 style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
+                color = if (connected) MeshGreen else TextSecondary,
                 modifier = Modifier.padding(start = 12.dp),
             )
         }

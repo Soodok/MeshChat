@@ -47,6 +47,14 @@ class MeshService(
     /** 本机短 ID（对端寻址标识）。 */
     val shortId: String get() = identity.shortId
 
+    /** 已建立对话关系的对端节点集合。 */
+    private val _sessions = MutableStateFlow<Set<String>>(emptySet())
+    val sessions: StateFlow<Set<String>> = _sessions.asStateFlow()
+
+    /** 收到的待确认对话请求：peerId -> 请求时间戳。 */
+    private val _invites = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val invites: StateFlow<Map<String, Long>> = _invites.asStateFlow()
+
     fun start() {
         transport.start()
         receiveJob = scope.launch {
@@ -88,15 +96,80 @@ class MeshService(
         route(envelope)
     }
 
+    /** 向对端发起对话请求（建立对话关系的前置握手）。 */
+    fun sendInvite(peerId: String) {
+        if (peerId in _sessions.value) return
+        route(
+            MeshEnvelope(
+                id = UUID.randomUUID().toString(),
+                kind = "INVITE",
+                srcId = identity.shortId,
+                dstId = peerId,
+                convId = "conv-$peerId",
+                ttl = DEFAULT_TTL,
+                ts = System.currentTimeMillis(),
+                body = TextBody("对话请求"),
+            ),
+        )
+    }
+
+    /** 接受对话请求：建立会话关系并回发确认。 */
+    fun acceptInvite(peerId: String) {
+        _sessions.update { it + peerId }
+        _invites.update { it - peerId }
+        transport.broadcast(
+            MeshFrame(
+                FrameType.DATA,
+                MeshJson.encodeEnvelope(
+                    MeshEnvelope(
+                        id = UUID.randomUUID().toString(),
+                        kind = "INVITE_ACK",
+                        srcId = identity.shortId,
+                        dstId = peerId,
+                        convId = "conv-$peerId",
+                        ttl = DEFAULT_TTL,
+                        ts = System.currentTimeMillis(),
+                        body = TextBody("已接受"),
+                    ),
+                ).toByteArray(),
+            ),
+        )
+    }
+
+    /** 拒绝对话请求。 */
+    fun rejectInvite(peerId: String) {
+        _invites.update { it - peerId }
+    }
+
     fun handleFrame(frame: MeshFrame) {
         when (frame.type) {
             FrameType.DATA -> {
                 val envelope = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }
                     .getOrNull() ?: return
-                route(envelope)
+                handleEnvelope(envelope)
             }
             FrameType.RECEIPT -> handleReceipt(frame)
             else -> Unit // HELLO/ACK/PING 由传输层处理
+        }
+    }
+
+    private fun handleEnvelope(envelope: MeshEnvelope) {
+        when (envelope.kind) {
+            "INVITE" -> {
+                if (envelope.srcId !in _sessions.value) {
+                    _invites.update { it + (envelope.srcId to envelope.ts) }
+                }
+            }
+            "INVITE_ACK" -> {
+                _sessions.update { it + envelope.srcId }
+                _invites.update { it - envelope.srcId }
+            }
+            else -> {
+                // 仅已建立对话关系的节点（或本机自环）间的消息参与路由投递
+                if (envelope.srcId in _sessions.value || envelope.srcId == identity.shortId) {
+                    route(envelope)
+                }
+            }
         }
     }
 

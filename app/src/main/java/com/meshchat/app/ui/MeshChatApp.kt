@@ -14,13 +14,20 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
     val peers by viewModel.peers.collectAsStateWithLifecycle()
+    val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val invites by viewModel.invites.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
         MeshChatHome(
             messages = messages,
             conversations = conversations,
             peers = peers,
+            sessions = sessions,
+            invites = invites,
             localShortId = viewModel.localShortId,
             onStartDiscovery = viewModel::startDiscovery,
+            onSendInvite = viewModel::sendInvite,
+            onAcceptInvite = viewModel::acceptInvite,
+            onRejectInvite = viewModel::rejectInvite,
             onSendMessage = viewModel::sendMessage,
         )
     }

@@ -51,7 +51,7 @@ fun ConversationScreen(
     onSendMessage: (String) -> Unit,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
-    Column(modifier = Modifier.fillMaxSize().background(Ink)) {
+    Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
         ConversationHeader(title, onBack)
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
@@ -78,7 +78,6 @@ fun ConversationScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .imePadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

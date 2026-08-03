@@ -60,6 +60,7 @@ class BleTransport(
     // 客户端连接（待转发时按 peerId 建立连接）
     private val gattClients = HashMap<String, BluetoothGatt>()
     private val peerIds = HashMap<String, String>() // deviceAddress -> peerId
+    private val pendingFrames = HashMap<String, MutableList<MeshFrame>>() // deviceAddress -> 待服务发现后补写的帧
 
     override fun start() {
         runCatching { registerServer() }
@@ -137,19 +138,36 @@ class BleTransport(
         if (gattClients.containsKey(device.address)) return
         val gatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    gatt.requestMtu(512) // 协商大 MTU，容纳消息信封
+                    gatt.discoverServices()
+                }
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it) }
+                }
             }
         })
         gattClients[device.address] = gatt
     }
 
     private fun writeToConnectedClients(frame: MeshFrame) {
-        val bytes = frame.encode()
-        gattClients.values.forEach { gatt ->
-            gatt.getService(serviceUuid)?.getCharacteristic(charUuid)?.let { characteristic ->
-                characteristic.value = bytes
-                gatt.writeCharacteristic(characteristic)
+        gattClients.forEach { (address, gatt) ->
+            val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
+            if (characteristic != null) {
+                writeTo(gatt, frame)
+            } else {
+                // 服务尚未发现：暂存，待 onServicesDiscovered 后补写
+                pendingFrames.getOrPut(address) { mutableListOf() }.add(frame)
             }
         }
+    }
+
+    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame) {
+        val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return
+        characteristic.value = frame.encode()
+        runCatching { gatt.writeCharacteristic(characteristic) }
     }
 }

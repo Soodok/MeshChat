@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -22,9 +23,12 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,14 +52,39 @@ fun MeshChatHome(
     messages: List<ChatMessage>,
     conversations: List<ChatPreview>,
     peers: List<MeshPeer>,
+    sessions: Set<String>,
+    invites: Map<String, Long>,
     localShortId: String,
     onStartDiscovery: () -> Unit,
+    onSendInvite: (String) -> Unit,
+    onAcceptInvite: (String) -> Unit,
+    onRejectInvite: (String) -> Unit,
     onSendMessage: (String) -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var conversationTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
     val destination = MainDestination.valueOf(destinationName)
+
+    // 收到的对话请求弹窗
+    var pendingInvite by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(invites) {
+        pendingInvite = invites.keys.firstOrNull()
+    }
+    if (pendingInvite != null) {
+        AlertDialog(
+            onDismissRequest = { onRejectInvite(pendingInvite!!); pendingInvite = null },
+            title = { Text("对话请求") },
+            text = { Text("节点 ${pendingInvite} 请求与你建立对话，是否接受？") },
+            confirmButton = {
+                TextButton(onClick = { onAcceptInvite(pendingInvite!!); pendingInvite = null }) { Text("接受") }
+            },
+            dismissButton = {
+                TextButton(onClick = { onRejectInvite(pendingInvite!!); pendingInvite = null }) { Text("拒绝") }
+            },
+            containerColor = InkRaised,
+        )
+    }
 
     BackHandler(enabled = conversationTarget != null || profileDetail != null) {
         if (conversationTarget != null) conversationTarget = null else profileDetail = null
@@ -141,8 +170,11 @@ fun MeshChatHome(
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),
                     peers = peers,
+                    sessions = sessions,
                     onStartDiscovery = onStartDiscovery,
-                    onPeerSelected = { conversationTarget = it },
+                    onPeerSelected = { peerId ->
+                        if (peerId in sessions) conversationTarget = peerId else onSendInvite(peerId)
+                    },
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),
