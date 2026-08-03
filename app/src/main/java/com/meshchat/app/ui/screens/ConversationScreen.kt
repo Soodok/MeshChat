@@ -64,8 +64,9 @@ fun ConversationScreen(
     onOpenFile: (ChatMessage) -> Unit = {},
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
-    // 消息列表滚动：进入会话滚到底；新消息到达且用户已在底部附近时跟随滚动（上滑看历史不被打断）
+    // 消息列表滚动：进入会话强制滚底；新消息到达且用户已在底部附近时跟随滚动（上滑看历史不被打断）
     val listState = rememberLazyListState()
+    var scrollInitialized by remember { mutableStateOf(false) }
     val isNearBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
@@ -73,11 +74,15 @@ fun ConversationScreen(
             lastVisible >= info.totalItemsCount - 2
         }
     }
-    LaunchedEffect(Unit) {
-        if (messages.isNotEmpty()) listState.scrollToItem(messages.size - 1)
-    }
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && isNearBottom) listState.animateScrollToItem(messages.size - 1)
+        if (messages.isEmpty()) return@LaunchedEffect
+        if (!scrollInitialized) {
+            // 首次有消息（可能异步到达）：无论位置强制滚底
+            scrollInitialized = true
+            listState.scrollToItem(messages.size - 1)
+        } else if (isNearBottom) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
     }
     val today = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA).format(java.util.Date())

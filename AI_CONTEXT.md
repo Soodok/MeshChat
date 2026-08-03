@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.15.0（versionCode 28，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.15.1（versionCode 29，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -90,13 +90,14 @@ app/src/main/java/com/meshchat/app/
   - **自动滚动**：ConversationScreen 用 `rememberLazyListState`——进入会话 `scrollToItem` 滚底；新消息到达且 `isNearBottom`（最后 2 项可见）时 `animateScrollToItem` 跟随滚动；用户上滑看历史不被打断。
   - **对话列表昵称**：`observeConversations` 从 `sessions.combine(peers)` 映射，name = 对端 displayName（回退短 ID）。
   - **节点持久化 + 三色状态**：`MeshPeerInfo.presence`（新枚举 `PeerPresence`）+ `MeshStore.loadPeers`；`start()` 从 peers 表 `restoreKnownPeers()` 恢复已知节点（SEARCHING 黄）；心跳状态机——lastSeen==0 寻找中（黄）、<3s 在线（绿）、<30s 断线重连中（黄）、≥30s 离线（黑）；**节点不再因离线移除**（保留显示置黑）；MeshScreen PeerRow 三色文案「已连接/寻找中…/断线重连中…/离线」。
+  - **v0.15.1 三处修复**（用户真机反馈）：①节点持久化不生效——根因落库条件苛刻（仅 PING 带昵称才写表、扫描帧不落库）→ markSeen **总是落库**（昵称空保留旧值）+ peerJob **扫描帧也落库**，节点持久化不再依赖 PING 交互；restoreKnownPeers 加日志（`restore N known peers`）。②自动滚动不完全——根因首次进入时消息异步加载、`LaunchedEffect(Unit)` 在空列表未滚、之后 `isNearBottom` 判定失败 → 改 `scrollInitialized` 标记：首次有消息**强制滚底**（无论位置），之后仅底部附近跟随。③发送状态仍卡——根因发送方进程被杀丢 `pendingReceipts`、对方后台收不到定时重发 → **PING 触发即时重发**（对方心跳在线立即补发未确认消息，后台恢复秒级收敛）+ **start 恢复未确认消息**（`MeshStore.loadUndeliveredTexts` 查 SENDING 状态 TEXT 重建重发队列）+ 扫描落库。诊断日志 TAG=`MeshSvc`。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-presence-background-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-presence-background.md`。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-rfcomm-transport-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-rfcomm-transport.md`。
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套（TDD 2 测试 + 三色状态/持久化/自动滚动/列表昵称，待提交）。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**51/51 测试通过，0 失败**（49 + 新增 2：持久化节点启动为 SEARCHING、presence 状态机 ONLINE→RECONNECTING→OFFLINE 且不删除）。既有回归全部保留通过。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.15.0-debug.apk`（19,159,658 B）。
+- `gradlew testDebugUnitTest`：**53/53 测试通过，0 失败**（51 + 新增 2：PING 触发即时重发、重启恢复未确认消息重发）。既有回归全部保留通过。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.15.1-debug.apk`（19,159,658 B）。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 

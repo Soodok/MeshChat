@@ -49,5 +49,8 @@ class InMemoryMeshStore : MeshStore {
 
     override fun loadPeers(): List<PeerEntity> = peers.values.toList()
 
+    override fun loadUndeliveredTexts(): List<StoredMessage> =
+        messages.filter { it.kind == "TEXT" && it.status == MessageStatus.SENDING }
+
     fun observePeers(): Flow<List<PeerEntity>> = flowOf(peers.values.toList())
 }

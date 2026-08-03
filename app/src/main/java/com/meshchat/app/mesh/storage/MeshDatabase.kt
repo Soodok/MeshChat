@@ -65,6 +65,10 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
         db.peerDao().observeAll().first()
     }
 
+    override fun loadUndeliveredTexts(): List<StoredMessage> = runBlocking {
+        db.messageDao().undeliveredTexts().map { it.toDomain() }
+    }
+
     fun observePeers(): Flow<List<PeerEntity>> = db.peerDao().observeAll()
 
     private fun StoredMessage.toEntity() = MessageEntity(

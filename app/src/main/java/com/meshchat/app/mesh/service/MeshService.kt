@@ -156,6 +156,7 @@ class MeshService(
         started = true
         _sessions.value = sessionStore.load()   // 重启恢复已建立的会话关系
         restoreKnownPeers()                     // 重启恢复已知节点（寻找中状态，心跳/扫描补在线）
+        restorePendingReceipts()                // 重启恢复未确认消息（进程被杀后重发不丢失）
         transport.start()
         rfcomm?.start()
         receiveJob = scope.launch {
@@ -170,10 +171,13 @@ class MeshService(
                 val now = System.currentTimeMillis()
                 val existing = peerEntries[info.shortId]
                 // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖
+                val displayName = existing?.info?.displayName ?: ""
                 peerEntries[info.shortId] = PeerEntry(
-                    if (existing != null) info.copy(displayName = existing.info.displayName) else info,
+                    if (existing != null) info.copy(displayName = displayName) else info,
                     lastSeen = now, lost = false,
                 )
+                // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
+                store.upsertPeer(info.shortId, displayName.ifBlank { info.displayName }, now, info.hops)
             }
         }
         tickJob = scope.launch {
@@ -317,6 +321,7 @@ class MeshService(
      */
     private fun restoreKnownPeers() {
         val known = store.loadPeers()
+        Log.d(TAG, "restore ${known.size} known peers from store")
         for (p in known) {
             peerEntries.putIfAbsent(
                 p.shortId,
@@ -330,6 +335,28 @@ class MeshService(
             )
         }
         _peers.value = peerEntries.values.map { it.info }
+    }
+
+    /**
+     * 重启恢复未确认消息：进程被杀后 pendingReceipts 丢失，从库中 SENDING 状态的 TEXT 重建重发队列。
+     */
+    private fun restorePendingReceipts() {
+        val undelivered = store.loadUndeliveredTexts()
+        if (undelivered.isEmpty()) return
+        Log.w(TAG, "restore ${undelivered.size} undelivered texts for retransmission")
+        for (m in undelivered) {
+            pendingReceipts.putIfAbsent(
+                m.id,
+                PendingText(
+                    MeshEnvelope(
+                        id = m.id, kind = "TEXT", srcId = m.srcId, dstId = m.dstId, convId = m.convId,
+                        ttl = DEFAULT_TTL, ts = m.ts, body = TextBody(m.text ?: ""),
+                    ),
+                    // 立即可重发（视为已超时），对方在线（PING）即收敛
+                    lastSentAt = System.currentTimeMillis() - RECEIPT_TIMEOUT_MS,
+                ),
+            )
+        }
     }
 
     /**
@@ -358,14 +385,15 @@ class MeshService(
     }
 
     /**
-     * 待确认 TEXT 重发（tick 每 200ms 调用）：
+     * 待确认 TEXT 重发（tick 每 200ms 调用；pingTriggered = 对方心跳在线时立即重发）：
      * 5s 未收到送达回执 → 重发同 id 消息（接收方 dedup 命中会补回执）；重试达上限标记 FAILED，避免状态卡 SENDING。
      */
-    internal fun resendPendingReceipts(now: Long) {
+    internal fun resendPendingReceipts(now: Long, pingTriggered: Boolean = false) {
+        val minGap = if (pingTriggered) 0L else RECEIPT_TIMEOUT_MS
         val it = pendingReceipts.entries.iterator()
         while (it.hasNext()) {
             val (id, p) = it.next()
-            if (now - p.lastSentAt < RECEIPT_TIMEOUT_MS) continue
+            if (now - p.lastSentAt < minGap) continue
             if (p.retries >= MAX_RECEIPT_RETRIES) {
                 Log.w(TAG, "text $id no receipt after ${MAX_RECEIPT_RETRIES} retries, mark FAILED")
                 store.updateMessageStatus(id, MessageStatus.FAILED)
@@ -374,7 +402,7 @@ class MeshService(
             }
             p.retries++
             p.lastSentAt = now
-            Log.w(TAG, "resend text $id retry=${p.retries}")
+            Log.w(TAG, "resend text $id retry=${p.retries}${if (pingTriggered) " (ping-triggered)" else ""}")
             transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(p.envelope).toByteArray()))
         }
     }
@@ -405,7 +433,9 @@ class MeshService(
                 lastSeen = now, lost = false,
             )
         }
-        if (displayName.isNotBlank()) store.upsertPeer(peerId, displayName, now, 1)
+        // 总是落库（昵称可能为空/扫描帧）：保证重启后节点持久化恢复，不再依赖 PING 交换
+        val name = if (displayName.isNotBlank()) displayName else existing?.info?.displayName ?: ""
+        store.upsertPeer(peerId, name, now, existing?.info?.hops ?: 1)
         // 同步刷新 peers 流：UI/通知实时可见，无需等下一轮 tick
         _peers.value = peerEntries.values.map { it.info.copy(lost = false, presence = PeerPresence.ONLINE) }
     }
@@ -481,6 +511,8 @@ class MeshService(
                 // 心跳广播帧：仅处理发往本机/广播；回 PONG 双向确认在线，同时交换昵称
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
+                // 对方在线 → 立即重发未确认消息（后台恢复场景秒级收敛，不等 5s 定时）
+                resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
                 val pong = MeshEnvelope(
                     id = UUID.randomUUID().toString(), kind = "PONG",
                     srcId = identity.shortId, dstId = envelope.srcId, convId = "conv-${envelope.srcId}",

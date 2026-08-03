@@ -36,4 +36,6 @@ interface MeshStore {
     fun removeOutbox(id: String)
     fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int)
     fun loadPeers(): List<PeerEntity>
+    /** 进程重启后恢复未确认（SENDING）的 TEXT，重建重发队列。 */
+    fun loadUndeliveredTexts(): List<StoredMessage>
 }

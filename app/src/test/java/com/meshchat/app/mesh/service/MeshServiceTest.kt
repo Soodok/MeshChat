@@ -11,6 +11,7 @@ import com.meshchat.app.mesh.protocol.TextBody
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.storage.InMemoryMeshStore
 import com.meshchat.app.mesh.storage.MessageStatus
+import com.meshchat.app.mesh.storage.StoredMessage
 import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transport.InMemoryTransport
 import com.meshchat.app.mesh.transport.MeshTransport
@@ -449,6 +450,45 @@ class MeshServiceTest {
         service.heartbeatTick(t2 + 31_000)         // 30s+ 无心跳 → 离线（保留不删除）
         assertEquals("长时间离线应标记离线", PeerPresence.OFFLINE, service.peers.value.first().presence)
         assertTrue("离线节点应保留不删除", service.peers.value.any { it.shortId == "OTHER" })
+    }
+
+    @Test
+    fun `ping triggers immediate resend of pending text`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        assertEquals(1, transport.broadcastCount)
+
+        // 对方心跳在线 → 立即重发未确认消息（不等 5s 定时）+ 回 PONG，后台恢复场景秒级收敛
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertEquals("PING 应触发重发(TEXT) + 回 PONG", 3, transport.broadcastCount)
+        assertEquals("消息应被重发一次", 2, dataKinds(transport.frames).count { it == "TEXT" })
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertEquals(5, transport.broadcastCount)
+    }
+
+    @Test
+    fun `undelivered texts are re-registered on start`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        // 模拟进程被杀前未确认的消息（SENDING 落库）
+        store.insertMessage(
+            StoredMessage(
+                id = "m1", convId = "conv-OTHER", kind = "TEXT", srcId = "ME", dstId = "OTHER",
+                text = "hi", status = MessageStatus.SENDING, ts = 1,
+            ),
+        )
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        // 对方在线 → 重启后未确认消息应立即重发
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertTrue("重启后未确认消息应重发", transport.broadcastCount >= 1)
+        service.stop()
     }
 
     private fun textFrame(id: String, srcId: String, dstId: String, text: String) = MeshFrame(
