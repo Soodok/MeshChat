@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -128,7 +127,6 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
     var canvasH by remember { mutableFloatStateOf(0f) }
     val nodes = remember { mutableStateListOf<TopoNode>() }
     var draggingNode by remember { mutableStateOf<TopoNode?>(null) }
-    var selectedId by remember { mutableStateOf<String?>(null) }
     // 帧计数器：触发 Canvas 重绘（节点内部 var 改动不触发重组，靠此驱动）
     var frame by remember { mutableIntStateOf(0) }
 
@@ -196,12 +194,11 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        // 用 awaitEachGesture 替代 detectDragGestures：
-                        // ① awaitFirstDown 在按下瞬间命中检测（detectDragGestures 的 onDragStart 在 touch slop 之后才触发，位置已偏离）
-                        // ② drag(down.id) 锁定指针持续跟踪直到抬起，不会断触
-                        // ③ 绝对位置 node.x = pointer.x + offX，完全跟手，无增量累积误差
+                        // 用 awaitPointerEvent 直接轮询指针事件，绕过 drag() 的 touch slop 和事件路由：
+                        // 按下瞬间命中 → 记录偏移 → 每帧用绝对位置 node = pointer + off 完全跟手 → 抬起赋初速度
                         awaitEachGesture {
-                            val down = awaitFirstDown()
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
                             val node = nodes.minByOrNull {
                                 val dx = it.x - down.position.x
                                 val dy = it.y - down.position.y
@@ -214,24 +211,23 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                             if (node != null) {
                                 node.vx = 0f
                                 node.vy = 0f
-                                // 记录按下时手指与节点的偏移，拖拽中保持该偏移（绝对位置追踪）
                                 val offX = node.x - down.position.x
                                 val offY = node.y - down.position.y
                                 draggingNode = node
-                                drag(down.id) { change ->
+                                // 直接轮询：每一帧读取指针绝对位置，无 touch slop、无增量累积
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) { change.consume(); break }
                                     change.consume()
                                     node.x = change.position.x + offX
                                     node.y = change.position.y + offY
-                                    frame++  // 立即重绘
+                                    frame++
                                 }
-                                // 手指抬起：赋初速度回归物理 + 选中该节点
+                                // 抬起：赋初速度回归物理
                                 node.vx = (Random.nextFloat() - 0.5f) * 1.5f
                                 node.vy = (Random.nextFloat() - 0.5f) * 1.5f
-                                selectedId = node.id
                                 draggingNode = null
-                            } else {
-                                // 未命中节点：点击空白取消选中
-                                selectedId = null
                             }
                         }
                     },
@@ -239,8 +235,8 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 // 读 frame 建立重绘依赖（节点内部 var 改动靠此驱动重绘）
                 @Suppress("UNUSED_VARIABLE") val redrawTrigger = frame
                 drawDotGrid()
-                drawTopologyEdges(nodes, selectedId)
-                drawTopologyNodes(nodes, selectedId)
+                drawTopologyEdges(nodes)
+                drawTopologyNodes(nodes)
             }
         }
         Row(
@@ -409,29 +405,27 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDotGrid() {
 
 /** 绘制拓扑边（本机 ↔ peer，按节点状态着色）*/
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
-    nodes: List<TopoNode>, selectedId: String?,
+    nodes: List<TopoNode>,
 ) {
     val me = nodes.firstOrNull { it.id == "ME" } ?: return
     nodes.forEach { n ->
         if (n.id == "ME") return@forEach
-        val isSelEdge = selectedId != null && (n.id == selectedId || "ME" == selectedId)
-        val isDim = selectedId != null && !isSelEdge
         val start = Offset(me.x, me.y)
         val end = Offset(n.x, n.y)
         when (n.kind) {
             TopoKind.STALE -> drawLine(
-                color = TextSecondary.copy(alpha = if (isDim) 0.05f else 0.3f),
+                color = TextSecondary.copy(alpha = 0.3f),
                 start = start, end = end, strokeWidth = 4f,
                 pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f, 15f), 0f),
             )
             TopoKind.DIRECT -> drawLine(
-                color = MeshGreen.copy(alpha = if (isDim) 0.2f else if (isSelEdge) 1f else 0.8f),
-                start = start, end = end, strokeWidth = if (isSelEdge) 7.5f else 5.5f,
+                color = MeshGreen.copy(alpha = 0.8f),
+                start = start, end = end, strokeWidth = 5.5f,
                 cap = StrokeCap.Round,
             )
             TopoKind.REACHABLE -> drawLine(
-                color = Cyan.copy(alpha = if (isDim) 0.05f else if (isSelEdge) 0.7f else 0.25f),
-                start = start, end = end, strokeWidth = if (isSelEdge) 6f else 4f,
+                color = Cyan.copy(alpha = 0.25f),
+                start = start, end = end, strokeWidth = 4f,
                 cap = StrokeCap.Round,
             )
             TopoKind.ME -> { /* 不会到达 */ }
@@ -441,11 +435,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
 
 /** 绘制拓扑节点（放大 2.5 倍）*/
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
-    nodes: List<TopoNode>, selectedId: String?,
+    nodes: List<TopoNode>,
 ) {
     nodes.forEach { n ->
-        val isSel = n.id == selectedId
-        val isDim = selectedId != null && !isSel
         val cx = n.x
         val cy = n.y
         val (stroke, fill, label) = when (n.kind) {
@@ -454,27 +446,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
             TopoKind.REACHABLE -> Triple(Cyan, InkSoft, Cyan)
             TopoKind.STALE -> Triple(TextSecondary, InkSoft, TextSecondary)
         }
-        // 选中：白色外圈光晕
-        if (isSel) {
-            drawCircle(Color.White.copy(alpha = 0.5f), n.r + 18f, Offset(cx, cy))
-        }
         // 节点填充
         drawCircle(
-            color = if (isDim) fill.copy(alpha = 0.5f) else fill,
+            color = fill,
             radius = n.r,
             center = Offset(cx, cy),
         )
         // 描边
         drawCircle(
-            color = if (isDim) stroke.copy(alpha = 0.4f) else stroke,
+            color = stroke,
             radius = n.r,
             center = Offset(cx, cy),
-            style = Stroke(width = if (isSel) 9f else 7f),
+            style = Stroke(width = 7f),
         )
         // 节点内短 ID（monospace）
         drawIntoCanvas { c ->
             val paint = android.graphics.Paint().apply {
-                color = (if (isDim) label.copy(alpha = 0.4f) else label).toArgb()
+                color = label.toArgb()
                 textSize = 27f
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
@@ -497,13 +485,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
         // 昵称标签（节点上方）
         drawIntoCanvas { c ->
             val paint = android.graphics.Paint().apply {
-                color = (if (isSel) Color.White else Color(0xFFF5F7FA)).copy(
-                    alpha = if (isDim) 0.35f else 0.9f
-                ).toArgb()
+                color = Color(0xFFF5F7FA).copy(alpha = 0.9f).toArgb()
                 textSize = 33f
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
-                if (isSel) typeface = android.graphics.Typeface.DEFAULT_BOLD
             }
             c.nativeCanvas.drawText(n.name, cx, cy - n.r - 24f, paint)
         }
