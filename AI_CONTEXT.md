@@ -71,11 +71,12 @@ app/src/main/java/com/meshchat/app/
 - 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
 - **v0.11.0 修复消息方向显示**（用户真机反馈"B 收到消息像自己跟自己对话"）：`MeshRepository.toUiModel()` 原硬编码 `sentByMe = true`，所有消息（含收到的）都渲染在右侧自己气泡 → 改为 `sentByMe = srcId == service.shortId`（本机发出的靠右，对端发来的靠左）。真机通讯已正常。
 - **v0.12.0 文件传输全链路**（用户反馈"还不能传文件"）：协议层 `FileBody.fileId` + 新 `FileAckBody`（缺失 bitmap）；`mesh/transfer/FileTransferManager` 传输引擎——窗口 32 块/块 50B/15s 窗口超时/5 次重试上限/60s 接收无进展清理/串行单文件；`AndroidFileSaver` 落盘 Downloads（API 29+ MediaStore 免权限，26-28 WRITE_EXTERNAL_STORAGE）；MeshService `sendFile` + FILE/FILE_ACK 一跳分发（dstId 校验，不进 outbox）；接收端收齐校验大小 → 落盘 → 回填 fileMeta downloadsUri → DELIVERED；UI 文件气泡（图标/文件名/大小/进度条/完成状态）+ 系统文件选择器（OpenDocument）+ 点击打开（ACTION_VIEW）。规格：`docs/superpowers/specs/2026-08-03-meshchat-file-transfer-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-file-transfer.md`。
-- **v0.12.0 文件传输 BLE MTU 修复**（真机 A12 发不过去 → 根因实测）：200B 块整帧 **661-684B**，超过 MTU 512 可用载荷 509B，广播必失败 → 对端一个块收不到 → 窗口超时 5 次 FAILED（进度 0）。修复：块 200→**50B**（整帧 ~453B < 470B 预算测试约束）；MeshService 截断 fileName(≤16 字符)/mime(≤30 字符)（长元数据会推超载荷）；引擎加诊断日志（TAG=`MeshFile`：sendFile 入口/窗口广播/ACK/超时/finish/崩溃）。真机验收待做。
+- **v0.12.0 文件传输 BLE MTU 修复**（真机 A12 发不过去 → 根因实测）：200B 块整帧 **661-684B**，超过 MTU 512 可用载荷 509B，广播必失败 → 对端一个块收不到 → 窗口超时 5 次 FAILED（进度 0）。修复：块 200→**50B**（整帧 ~453B < 470B 预算测试约束）；MeshService 截断 fileName(≤16 字符)/mime(≤30 字符)（长元数据会推超载荷）；引擎加诊断日志（TAG=`MeshFile`：sendFile 入口/窗口广播/ACK/超时/finish/崩溃）。
+- **v0.12.0 文件传输 ACK 帧超 MTU 修复**（真机几十 KB MD 卡住 → 根因实测）：接收端 ACK 的 missing 是**全文件缺失索引列表**，随文件膨胀（1000 块缺失实测 **4024B**）→ ACK 帧超 MTU → 发送端永远收不到确认 → 窗口超时循环（发送端进度 0、接收端收少量块后卡住）。修复：ACK missing **截断 40 项**（发送端只关心当前窗口 32 块内缺失，更早窗口已收齐，窗口内缺失必在列表前部）+ **端到端 4 窗口联动测试**（A 广播→B 收块回截断 ACK→A 推进，100 块文件字节一致落盘）。**注意：MAX_ACK_MISSING=40 与窗口 32 强耦合，改 WINDOW 必须同步。**
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**32/32 测试通过，0 失败**（原 22 + 文件传输 10：协议 fileId/FileAckBody 编解码、窗口重发/超时重发/重试上限/串行约束/乱序重组落盘、MeshService FILE 落库/dstId 过滤、帧预算约束 470B）。
+- `gradlew testDebugUnitTest`：**34/34 测试通过，0 失败**（原 22 + 文件传输 12：协议 fileId/FileAckBody 编解码、窗口重发/超时重发/重试上限/串行约束/乱序重组落盘、MeshService FILE 落库/dstId 过滤、帧预算约束 470B、**ACK 帧预算约束 470B**、**端到端 4 窗口完整传输**）。
 - `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.12.0-debug.apk`。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
