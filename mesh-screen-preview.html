@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeshChat · Mesh 界面预览（bitchat 雷达拓扑）</title>
+<style>
+  :root {
+    --Ink: #081420;
+    --InkRaised: #101F2E;
+    --InkSoft: #172A3D;
+    --Cyan: #20C9E8;
+    --MeshGreen: #38D66B;
+    --MeshAmber: #FFB62E;
+    --MeshRed: #FF5A5A;
+    --TextPrimary: #F5F7FA;
+    --TextSecondary: #9BA9BB;
+    --Divider: #23394D;
+    --BarInactive: #32475C;
+    --RadarGreen: #38D66B;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body {
+    background: #050B12;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: var(--TextPrimary);
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 32px 16px 60px;
+  }
+  .page-title { font-size: 13px; color: var(--TextSecondary); letter-spacing: 1px; margin-bottom: 8px; font-family: 'Consolas', monospace; }
+  .page-title span { color: var(--Cyan); }
+  .page-sub { font-size: 11px; color: var(--TextSecondary); margin-bottom: 24px; font-family: 'Consolas', monospace; opacity: 0.7; text-align: center; max-width: 600px; line-height: 1.6; }
+  .page-sub b { color: var(--MeshGreen); }
+
+  .phone {
+    width: 390px;
+    background: var(--Ink);
+    border-radius: 36px;
+    overflow: hidden;
+    border: 1px solid #1a2a3a;
+    box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 8px #0a1420, 0 0 0 9px #1c2d40;
+    position: relative;
+  }
+  .statusbar { height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; font-size: 13px; font-weight: 600; background: var(--Ink); }
+  .statusbar .right { display: flex; align-items: center; gap: 6px; }
+  .statusbar svg { width: 14px; height: 14px; }
+  .appbar { padding: 8px 20px 14px; display: flex; align-items: center; justify-content: space-between; }
+  .appbar .title { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
+  .appbar .sub { font-size: 11px; color: var(--TextSecondary); margin-top: 2px; font-family: 'Consolas', monospace; }
+  .appbar .icon-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--InkSoft); display: flex; align-items: center; justify-content: center; color: var(--TextSecondary); }
+
+  .scroll { padding-bottom: 18px; max-height: 820px; overflow-y: auto; }
+  .scroll::-webkit-scrollbar { width: 0; }
+
+  /* ===== 拓扑 Canvas 区（去中心化力导向，简洁）===== */
+  .topology { padding: 6px 12px 10px; text-align: center; }
+  .topo-canvas-wrap {
+    position: relative;
+    width: 100%;
+    height: 340px;
+    background: #0a1420;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #1a2f44;
+  }
+  #topoCanvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  #topoCanvas.dragging { cursor: grabbing; }
+
+  /* 统计行 + 图例 */
+  .topo-stats {
+    display: flex; gap: 14px; justify-content: center;
+    margin-top: 10px;
+    font-size: 11px; font-family: 'Consolas', monospace;
+    flex-wrap: wrap;
+  }
+  .topo-stats .stat { display: flex; align-items: center; gap: 5px; }
+  .topo-stats .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .edge-legend {
+    display: flex; gap: 14px; justify-content: center;
+    margin-top: 8px;
+    font-size: 10px; color: var(--TextSecondary);
+    font-family: 'Consolas', monospace;
+    flex-wrap: wrap;
+    padding: 0 8px;
+  }
+  .edge-legend .item { display: flex; align-items: center; gap: 6px; }
+  .edge-legend .line { width: 20px; height: 0; border-top-width: 2px; border-top-style: solid; }
+
+  .hint {
+    margin-top: 8px;
+    font-size: 10px;
+    color: var(--Cyan);
+    font-family: 'Consolas', monospace;
+    opacity: 0.7;
+    letter-spacing: 0.5px;
+  }
+
+  /* 段落标题 */
+  .section-title { padding: 14px 24px 10px; font-size: 17px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  .section-title .count { font-size: 12px; color: var(--TextSecondary); font-family: 'Consolas', monospace; font-weight: 400; }
+
+  /* 节点行 */
+  .peer-row {
+    display: flex; align-items: center; padding: 12px 24px;
+    cursor: pointer; transition: background .15s;
+    border-left: 3px solid transparent;
+  }
+  .peer-row:hover { background: rgba(32, 201, 232, .05); }
+  .peer-row.active { background: rgba(32, 201, 232, .08); border-left-color: var(--Cyan); }
+  .peer-row .avatar { width: 42px; height: 42px; border-radius: 50%; background: var(--InkSoft); display: flex; align-items: center; justify-content: center; color: var(--TextSecondary); flex-shrink: 0; position: relative; }
+  .peer-row .avatar .ring { position: absolute; inset: -2px; border-radius: 50%; border: 2px solid transparent; }
+  .peer-row .avatar .ring.green { border-color: var(--MeshGreen); }
+  .peer-row .avatar .ring.cyan { border-color: var(--Cyan); }
+  .peer-row .avatar .ring.amber { border-color: var(--MeshAmber); border-style: dashed; }
+  .peer-row .avatar .ring.gray { border-color: var(--TextSecondary); opacity: 0.4; }
+  .peer-row .avatar svg { width: 22px; height: 22px; }
+  .peer-row .mid { flex: 1; margin-left: 14px; min-width: 0; }
+  .peer-row .name { font-size: 17px; font-weight: 600; }
+  .peer-row .id { font-size: 12px; color: var(--TextSecondary); font-family: 'Consolas', monospace; margin-top: 2px; }
+  .peer-row .right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .peer-row .signal-line { display: flex; align-items: center; gap: 8px; }
+  .peer-row .rssi { font-size: 12px; font-family: 'Consolas', monospace; color: var(--TextSecondary); }
+  .peer-row .rssi.amber { color: var(--MeshAmber); }
+  .peer-row .status { font-size: 12px; }
+  .peer-row .status.green { color: var(--MeshGreen); }
+  .peer-row .status.amber { color: var(--MeshAmber); }
+  .peer-row .status.gray { color: var(--TextSecondary); }
+  .divider { height: 1px; background: var(--Divider); margin-left: 80px; }
+  .signal-bars { display: flex; align-items: flex-end; gap: 2px; }
+  .signal-bars .bar { width: 4px; border-radius: 2px; background: var(--BarInactive); }
+  .signal-bars .bar.on { background: var(--Cyan); }
+  .signal-bars .bar:nth-child(1) { height: 7px; }
+  .signal-bars .bar:nth-child(2) { height: 11px; }
+  .signal-bars .bar:nth-child(3) { height: 15px; }
+
+  .discover-btn {
+    margin: 24px; width: calc(100% - 48px); padding: 14px;
+    border: none; border-radius: 10px; background: var(--Cyan); color: #081420;
+    font-size: 15px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    cursor: pointer; letter-spacing: .5px;
+  }
+  .discover-btn:active { transform: translateY(1px); }
+  .discover-btn svg { width: 20px; height: 20px; }
+
+  .navbar { display: flex; border-top: 1px solid var(--Divider); background: var(--Ink); }
+  .nav-item { flex: 1; padding: 12px 0 18px; display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--TextSecondary); font-size: 11px; cursor: pointer; }
+  .nav-item.active { color: var(--Cyan); }
+  .nav-item svg { width: 22px; height: 22px; }
+
+  .legend {
+    margin-top: 28px; padding: 18px 22px;
+    background: #0a1420; border: 1px solid var(--Divider); border-radius: 12px;
+    width: 390px; font-size: 12px; color: var(--TextSecondary); line-height: 1.8;
+    font-family: 'Consolas', monospace;
+  }
+  .legend b { color: var(--Cyan); }
+  .legend .ref { color: var(--MeshGreen); }
+  .legend .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .legend .seg { display:inline-block; width:20px; height:0; border-top-width:2px; border-top-style:solid; vertical-align:middle; margin-right:6px; }
+</style>
+</head>
+<body>
+
+<div class="page-title">MeshChat · <span>MESH SCREEN</span> · 去中心化 mesh 拓扑</div>
+<div class="page-sub">
+  参考 <b>bitchat live topology map</b> 网状风格 · 力导向自然布局 · 节点平等 · 可拖拽
+</div>
+
+<div class="phone">
+  <div class="statusbar">
+    <span>09:41</span>
+    <div class="right">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L16.5 7.5L13 11L16.5 14.5L12 20V14.5L9.5 12L12 9.5V2M12 4.5V9.5L14 7.5L12 4.5M12 14.5V19.5L14 16.5L12 14.5Z"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 22h2v-4H2v4zm5 0h2V14H7v8zm5 0h2V10h-2v12zm5 0h2V6h-2v16z"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h-3V4h-2v2H8c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+    </div>
+  </div>
+
+  <div class="appbar">
+    <div>
+      <div class="title">Mesh</div>
+      <div class="sub">radar · ttl=8 · 1s heartbeat</div>
+    </div>
+    <div class="icon-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6M4.22 4.22l4.24 4.24m7.08 7.08l4.24 4.24M1 12h6m10 0h6M4.22 19.78l4.24-4.24m7.08-7.08l4.24-4.24"/></svg>
+    </div>
+  </div>
+
+  <div class="scroll">
+
+    <!-- ===== 拓扑 Canvas（去中心化力导向）===== -->
+    <div class="topology">
+      <div class="topo-canvas-wrap">
+        <canvas id="topoCanvas"></canvas>
+      </div>
+
+      <div class="hint">拖拽节点 · 点击高亮</div>
+
+      <!-- 统计行 -->
+      <div class="topo-stats">
+        <div class="stat"><span class="dot" style="background:#38D66B"></span><span>直连 2</span></div>
+        <div class="stat"><span class="dot" style="background:#20C9E8"></span><span>多跳可达 5</span></div>
+        <div class="stat"><span class="dot" style="background:#9BA9BB"></span><span>失联 1</span></div>
+      </div>
+
+      <!-- 边状态图例 -->
+      <div class="edge-legend">
+        <div class="item"><span class="line" style="border-color:#38D66B"></span><span>直连</span></div>
+        <div class="item"><span class="line" style="border-color:#20C9E8;opacity:0.5"></span><span>中继 mesh</span></div>
+        <div class="item"><span class="line" style="border-color:#9BA9BB;border-top-style:dotted;opacity:0.4"></span><span>失联</span></div>
+      </div>
+    </div>
+
+    <!-- 段落标题 -->
+    <div class="section-title">
+      <span>附近节点</span>
+      <span class="count">2 direct · 8 in mesh</span>
+    </div>
+
+    <!-- 节点列表（与 Canvas 节点联动）-->
+    <div class="peer-row" data-id="A7B3">
+      <div class="avatar"><span class="ring green"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+      <div class="mid"><div class="name">Soodok</div><div class="id">ID A7B3</div></div>
+      <div class="right">
+        <div class="signal-line"><div class="signal-bars"><span class="bar on"></span><span class="bar on"></span><span class="bar on"></span></div><div class="rssi">-58 dBm · S</div></div>
+        <div class="status green">已连接 · 点击进入会话</div>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    <div class="peer-row" data-id="C2F9">
+      <div class="avatar"><span class="ring cyan"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+      <div class="mid"><div class="name">节点C2F9</div><div class="id">ID C2F9</div></div>
+      <div class="right">
+        <div class="signal-line"><div class="signal-bars"><span class="bar on"></span><span class="bar on"></span><span class="bar"></span></div><div class="rssi">-72 dBm · A</div></div>
+        <div class="status gray">点击发起对话</div>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    <div class="peer-row" data-id="9X2M">
+      <div class="avatar"><span class="ring amber"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+      <div class="mid"><div class="name">Kira</div><div class="id">ID 9X2M</div></div>
+      <div class="right">
+        <div class="signal-line"><div class="signal-bars"><span class="bar on"></span><span class="bar on"></span><span class="bar on"></span></div><div class="rssi">-65 dBm · S</div></div>
+        <div class="status amber">等待对方接受</div>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    <div class="peer-row" data-id="B8D4">
+      <div class="avatar"><span class="ring amber"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+      <div class="mid"><div class="name">Ghost</div><div class="id">ID B8D4</div></div>
+      <div class="right">
+        <div class="signal-line"><div class="signal-bars"><span class="bar on"></span><span class="bar"></span><span class="bar"></span></div><div class="rssi amber">-88 dBm · B</div></div>
+        <div class="status amber">断线重连中…</div>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    <div class="peer-row" data-id="F0K2">
+      <div class="avatar"><span class="ring gray"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+      <div class="mid"><div class="name">Echo</div><div class="id">ID F0K2</div></div>
+      <div class="right">
+        <div class="signal-line"><div class="signal-bars"><span class="bar on"></span><span class="bar"></span><span class="bar"></span></div><div class="rssi">-95 dBm · C</div></div>
+        <div class="status gray">离线</div>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    <div class="peer-row" data-id="E5R1">
+      <div class="avatar"><span class="ring amber"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+      <div class="mid"><div class="name">节点E5R1</div><div class="id">ID E5R1</div></div>
+      <div class="right">
+        <div class="signal-line"><div class="signal-bars"><span class="bar"></span><span class="bar"></span><span class="bar"></span></div><div class="rssi">0 dBm · D</div></div>
+        <div class="status amber">寻找中…</div>
+      </div>
+    </div>
+    <div class="divider"></div>
+
+    <button class="discover-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M7 7l-3 3 3 3"/><path d="M4 10h9a5 5 0 0 1 5 5v3"/><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/></svg>
+      <span>重新发现</span>
+    </button>
+
+  </div>
+
+  <div class="navbar">
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>聊天</span>
+    </div>
+    <div class="nav-item active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+      <span>Mesh</span>
+    </div>
+    <div class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>
+      <span>我的</span>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <div><b>去中心化 mesh 拓扑</b>：本机只是网络中的一个普通节点，peer 之间密集互联</div>
+  <div><b>三色制</b>：</div>
+  <div>　<span class="dot" style="background:#38D66B"></span>直连（1 跳邻居，绿色）</div>
+  <div>　<span class="dot" style="background:#20C9E8"></span>多跳可达（2-3 跳，通过邻居中继，蓝色）</div>
+  <div>　<span class="dot" style="background:#9BA9BB"></span>失联（仅拓扑残留，灰色）</div>
+  <div>　本机 = Cyan 实心 + 下三角（蓝色系，实心区分于多跳描边）</div>
+  <div><b>边类型</b>：<span class="seg" style="border-color:#38D66B"></span>直连(绿)　<span class="seg" style="border-color:#20C9E8;opacity:0.5"></span>中继 mesh(蓝淡)　<span class="seg" style="border-color:#9BA9BB;border-top-style:dotted;opacity:0.4"></span>失联残存(灰点线)</div>
+  <div><b>网络结构</b>：本机仅直连 2 个邻居，其余 peer 之间形成密集 mesh 骨干（13 条中继边）</div>
+  <div><b>交互</b>：拖拽节点 · 点击高亮 · 列表联动</div>
+</div>
+
+<script>
+(function() {
+  const canvas = document.getElementById('topoCanvas');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, cx = 0, cy = 0, dpr = window.devicePixelRatio || 1;
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    W = rect.width; H = rect.height;
+    cx = W / 2; cy = H / 2;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ===== 节点状态色（三色制：直连绿 / 多跳蓝 / 失联灰）=====
+  // me=本机(蓝实心) / direct=直连(绿) / reachable=多跳可达(蓝) / stale=失联(灰)
+  const COLORS = {
+    me:        { stroke: '#20C9E8', fill: '#20C9E8', label: '#081420' }, // 本机：Cyan 实心
+    direct:    { stroke: '#38D66B', fill: '#0d2418', label: '#38D66B' }, // 直连：绿
+    reachable: { stroke: '#20C9E8', fill: '#0a1f2a', label: '#20C9E8' }, // 多跳可达：蓝
+    stale:     { stroke: '#9BA9BB', fill: '#1a2530', label: '#9BA9BB' }, // 失联：灰
+  };
+
+  // ===== 节点：本机只是网络中的一个普通节点 =====
+  // 本机只直连 2 个邻居（A7B3/C2F9），其余节点通过中继可达，网络比本机"看得到"的大
+  const nodes = [
+    // 本机
+    { id: 'ME',   name: '你',     short: 'ME', status: 'me',        hops: 0, x: 0, y: 0, vx: 0, vy: 0, r: 7 },
+    // 本机直连邻居（1 跳，绿）
+    { id: 'A7B3', name: 'Soodok', short: 'A7', status: 'direct',    hops: 1, x: 0, y: 0, vx: 0, vy: 0, r: 7 },
+    { id: 'C2F9', name: 'C2F9',   short: 'C2', status: 'direct',    hops: 1, x: 0, y: 0, vx: 0, vy: 0, r: 7 },
+    // 多跳可达（2-3 跳，蓝，通过邻居中继）
+    { id: '9X2M', name: 'Kira',   short: '9X', status: 'reachable', hops: 2, x: 0, y: 0, vx: 0, vy: 0, r: 6 },
+    { id: 'B8D4', name: 'Ghost',  short: 'B8', status: 'reachable', hops: 2, x: 0, y: 0, vx: 0, vy: 0, r: 6 },
+    { id: 'F0K2', name: 'Echo',   short: 'F0', status: 'reachable', hops: 2, x: 0, y: 0, vx: 0, vy: 0, r: 6 },
+    // 3 跳可达（网络深处，蓝）
+    { id: 'E5R1', name: 'E5R1',   short: 'E5', status: 'reachable', hops: 3, x: 0, y: 0, vx: 0, vy: 0, r: 5 },
+    { id: 'D3A8', name: 'D3A8',   short: 'D3', status: 'reachable', hops: 3, x: 0, y: 0, vx: 0, vy: 0, r: 5 },
+    // 失联（灰，仅拓扑残留）
+    { id: 'G6H2', name: 'G6H2',   short: 'G6', status: 'stale',     hops: 3, x: 0, y: 0, vx: 0, vy: 0, r: 5 },
+  ];
+
+  // 初始随机分布（更紧凑，集中在中部）
+  function initPositions() {
+    nodes.forEach((n, i) => {
+      const angle = (i / nodes.length) * Math.PI * 2 + Math.random() * 0.5;
+      const dist = 25 + Math.random() * 35;
+      n.x = cx + Math.cos(angle) * dist;
+      n.y = cy + Math.sin(angle) * dist;
+      n.vx = (Math.random() - 0.5) * 0.1;
+      n.vy = (Math.random() - 0.5) * 0.1;
+    });
+  }
+  initPositions();
+
+  // ===== 边：密集 mesh 拓扑（peer 之间互相互联，本机只是边缘一员）=====
+  // direct=本机直连(绿) / relay=中继链路(蓝淡,peer 间骨干 mesh) / stale-edge=失联残存(灰淡)
+  const edges = [
+    // 本机仅 2 条直连边 → 本机自然处于网络边缘
+    { from: 'ME',   to: 'A7B3', type: 'direct' },
+    { from: 'ME',   to: 'C2F9', type: 'direct' },
+    // peer 之间密集互联（mesh 骨干，本机看不到的路由）
+    { from: 'A7B3', to: '9X2M', type: 'relay' },
+    { from: 'A7B3', to: 'B8D4', type: 'relay' },
+    { from: 'A7B3', to: 'F0K2', type: 'relay' },
+    { from: 'C2F9', to: '9X2M', type: 'relay' },
+    { from: 'C2F9', to: 'B8D4', type: 'relay' },
+    { from: 'C2F9', to: 'F0K2', type: 'relay' },
+    { from: '9X2M', to: 'E5R1', type: 'relay' },
+    { from: '9X2M', to: 'D3A8', type: 'relay' },
+    { from: 'B8D4', to: 'E5R1', type: 'relay' },
+    { from: 'B8D4', to: 'D3A8', type: 'relay' },
+    { from: 'F0K2', to: 'E5R1', type: 'relay' },
+    { from: 'E5R1', to: 'D3A8', type: 'relay' },
+    // 失联节点残存边（灰）
+    { from: 'F0K2', to: 'G6H2', type: 'stale' },
+  ];
+
+  // ===== 物理参数（紧凑布局，避免撞边）=====
+  const PHYS = {
+    repulsion: 700,
+    springK: 0.014,
+    springLen: 48,
+    damping: 0.9,
+    jitter: 0.015,
+  };
+
+  let selectedId = null;
+  let hoveredId = null;
+  let draggingNode = null;
+  let dragOffset = { x: 0, y: 0 };
+
+  function getNode(id) { return nodes.find(n => n.id === id); }
+  function hitTest(mx, my) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const dx = mx - n.x, dy = my - n.y;
+      if (Math.sqrt(dx*dx + dy*dy) <= n.r + 4) return n;
+    }
+    return null;
+  }
+  function getMousePos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    const p = getMousePos(e); const n = hitTest(p.x, p.y);
+    if (n) { draggingNode = n; dragOffset.x = p.x - n.x; dragOffset.y = p.y - n.y; n.vx = 0; n.vy = 0; canvas.classList.add('dragging'); }
+  });
+  canvas.addEventListener('mousemove', e => {
+    const p = getMousePos(e);
+    if (draggingNode) { draggingNode.x = p.x - dragOffset.x; draggingNode.y = p.y - dragOffset.y; }
+    else { const n = hitTest(p.x, p.y); hoveredId = n ? n.id : null; canvas.style.cursor = n ? 'grab' : 'default'; }
+  });
+  canvas.addEventListener('mouseup', () => {
+    if (draggingNode) { draggingNode.vx = (Math.random()-0.5)*0.4; draggingNode.vy = (Math.random()-0.5)*0.4; draggingNode = null; canvas.classList.remove('dragging'); }
+  });
+  canvas.addEventListener('click', e => {
+    if (draggingNode) return;
+    const p = getMousePos(e); const n = hitTest(p.x, p.y);
+    if (n && !n.isMe && n.id !== 'ME') { selectedId = (selectedId === n.id) ? null : n.id; syncListHighlight(); }
+    else if (!n) { selectedId = null; syncListHighlight(); }
+  });
+  canvas.addEventListener('touchstart', e => {
+    if (!e.touches[0]) return; e.preventDefault();
+    const t = e.touches[0]; const rect = canvas.getBoundingClientRect();
+    const p = { x: t.clientX - rect.left, y: t.clientY - rect.top };
+    const n = hitTest(p.x, p.y);
+    if (n) { draggingNode = n; dragOffset.x = p.x - n.x; dragOffset.y = p.y - n.y; n.vx = 0; n.vy = 0; }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', e => {
+    if (!draggingNode || !e.touches[0]) return; e.preventDefault();
+    const t = e.touches[0]; const rect = canvas.getBoundingClientRect();
+    draggingNode.x = t.clientX - rect.left - dragOffset.x;
+    draggingNode.y = t.clientY - rect.top - dragOffset.y;
+  }, { passive: false });
+  canvas.addEventListener('touchend', () => {
+    if (draggingNode) { draggingNode.vx = (Math.random()-0.5)*0.4; draggingNode.vy = (Math.random()-0.5)*0.4; draggingNode = null; }
+  });
+
+  const listRows = document.querySelectorAll('.peer-row');
+  function syncListHighlight() { listRows.forEach(r => r.classList.toggle('active', r.dataset.id === selectedId)); }
+  listRows.forEach(row => row.addEventListener('click', () => {
+    const id = row.dataset.id; selectedId = (selectedId === id) ? null : id; syncListHighlight();
+  }));
+
+  // ===== 物理模拟（去中心：无中心引力，节点平等）=====
+  function physicsStep() {
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        let dist = Math.sqrt(dx*dx + dy*dy); if (dist < 1) dist = 1;
+        const f = PHYS.repulsion / (dist * dist);
+        const fx = (dx/dist) * f, fy = (dy/dist) * f;
+        if (a !== draggingNode) { a.vx -= fx; a.vy -= fy; }
+        if (b !== draggingNode) { b.vx += fx; b.vy += fy; }
+      }
+    }
+    edges.forEach(e => {
+      const a = getNode(e.from), b = getNode(e.to);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const diff = dist - PHYS.springLen;
+      const fx = (dx/dist) * diff * PHYS.springK, fy = (dy/dist) * diff * PHYS.springK;
+      // mesh 边弹簧更弱（松散连接）
+      const k = e.type === 'mesh' ? 0.4 : 1;
+      if (a !== draggingNode) { a.vx += fx * k; a.vy += fy * k; }
+      if (b !== draggingNode) { b.vx -= fx * k; b.vy -= fy * k; }
+    });
+    nodes.forEach(n => {
+      if (n === draggingNode) return;
+      n.vx *= PHYS.damping; n.vy *= PHYS.damping;
+      n.vx += (Math.random()-0.5) * PHYS.jitter;
+      n.vy += (Math.random()-0.5) * PHYS.jitter;
+      const sp = Math.sqrt(n.vx*n.vx + n.vy*n.vy); const maxSp = 2;
+      if (sp > maxSp) { n.vx = (n.vx/sp)*maxSp; n.vy = (n.vy/sp)*maxSp; }
+      n.x += n.vx; n.y += n.vy;
+      const m = 30;
+      if (n.x < m) { n.x = m; n.vx *= -0.4; }
+      if (n.x > W-m) { n.x = W-m; n.vx *= -0.4; }
+      if (n.y < m) { n.y = m; n.vy *= -0.4; }
+      if (n.y > H-m) { n.y = H-m; n.vy *= -0.4; }
+    });
+  }
+
+  // ===== 渲染（极简，无发光无扫描）=====
+  function drawBackground() {
+    // 极淡的点阵网格（几何感，非雷达）
+    ctx.fillStyle = 'rgba(32, 201, 232, 0.06)';
+    for (let x = 20; x < W; x += 24) {
+      for (let y = 20; y < H; y += 24) {
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  }
+
+  function drawEdges() {
+    edges.forEach(e => {
+      const a = getNode(e.from), b = getNode(e.to);
+      const isSelEdge = selectedId && (e.from === selectedId || e.to === selectedId);
+      const isDim = selectedId && !isSelEdge;
+
+      if (e.type === 'direct') {
+        // 本机直连：绿色实线
+        ctx.strokeStyle = '#38D66B';
+        ctx.globalAlpha = isDim ? 0.2 : (isSelEdge ? 1 : 0.8);
+        ctx.lineWidth = isSelEdge ? 2 : 1.5;
+        ctx.setLineDash([]);
+      } else if (e.type === 'stale') {
+        // 失联残存：灰色点线
+        ctx.strokeStyle = '#9BA9BB';
+        ctx.globalAlpha = isDim ? 0.05 : 0.3;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([1, 3]);
+      } else {
+        // 中继链路（peer 间骨干 mesh）：蓝色淡实线
+        ctx.strokeStyle = '#20C9E8';
+        ctx.globalAlpha = isDim ? 0.05 : (isSelEdge ? 0.7 : 0.25);
+        ctx.lineWidth = isSelEdge ? 1.5 : 1;
+        ctx.setLineDash([]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+    });
+  }
+
+  function drawNodes() {
+    nodes.forEach(n => {
+      const c = COLORS[n.status];
+      const isSel = selectedId === n.id;
+      const isHov = hoveredId === n.id;
+      const isDim = selectedId && !isSel;
+      const isMe = n.id === 'ME';
+
+      ctx.globalAlpha = isDim ? 0.4 : 1;
+
+      // 填充
+      ctx.fillStyle = c.fill;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 描边
+      ctx.strokeStyle = c.stroke;
+      ctx.lineWidth = isSel ? 2.4 : 1.6;
+      if (n.status === 'stale') ctx.globalAlpha *= 0.5;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 节点内文字
+      ctx.fillStyle = c.label;
+      ctx.font = 'bold 7px Consolas, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(n.short, n.x, n.y);
+
+      // 选中/悬停外圈
+      if (isSel || isHov) {
+        ctx.strokeStyle = isSel ? '#FFFFFF' : c.stroke;
+        ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r + 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // 本机标识：下方小三角（区分本机，但不放大）
+      if (isMe) {
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#20C9E8';
+        ctx.beginPath();
+        ctx.moveTo(n.x, n.y + n.r + 2);
+        ctx.lineTo(n.x - 2, n.y + n.r + 5);
+        ctx.lineTo(n.x + 2, n.y + n.r + 5);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.globalAlpha = 1;
+
+      // 昵称标签
+      ctx.globalAlpha = isDim ? 0.35 : 0.9;
+      ctx.fillStyle = isSel ? '#FFFFFF' : '#F5F7FA';
+      ctx.font = (isSel ? 'bold ' : '') + '8px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(n.name, n.x, n.y - n.r - 6);
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    drawBackground();
+    drawEdges();
+    drawNodes();
+  }
+
+  function loop() { physicsStep(); render(); requestAnimationFrame(loop); }
+  loop();
+
+  let resizeTimer;
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 200); });
+})();
+</script>
+
+</body>
+</html>
