@@ -5,6 +5,7 @@ import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
 import com.meshchat.app.mesh.transport.MeshPeerInfo
+import com.meshchat.app.mesh.transport.PeerPresence
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
@@ -36,12 +37,19 @@ class MeshRepositoryImpl(
 ) : MeshRepository {
 
     override fun observeConversations(): Flow<List<ChatPreview>> =
-        service.sessions.combine(service.peers) { ids, peers ->
+        combine(service.sessions, store.observeConversationIds(), service.peers) { sessionIds, historyConvIds, peers ->
+            // 会话集合 + 消息历史反推的对话兜底：即使会话关系持久化丢失/重装，最近对话列表也不空（持久化效果）
+            val ids = (sessionIds + historyConvIds.map { it.substringAfterLast("-") })
+                .distinct()
+                .filter { it.isNotBlank() && it != "ME" }
             ids.map { id ->
-                val name = peers.firstOrNull { it.shortId == id }?.displayName?.ifBlank { id } ?: id
+                val peer = peers.firstOrNull { it.shortId == id }
+                val name = peer?.displayName?.ifBlank { id } ?: id
+                val presence = peer?.presence ?: PeerPresence.SEARCHING
                 ChatPreview(
                     id = id, name = name, snippet = "已建立对话", time = "",
-                    reachability = Reachability.REACHABLE,
+                    reachability = if (presence == PeerPresence.ONLINE) Reachability.REACHABLE else Reachability.QUEUED,
+                    presence = presence,
                 )
             }
         }

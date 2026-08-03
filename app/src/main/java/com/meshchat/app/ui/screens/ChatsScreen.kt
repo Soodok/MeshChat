@@ -83,7 +83,7 @@ private fun ChatRow(chat: ChatPreview, onClick: () -> Unit) {
             modifier = Modifier.padding(vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            PresenceAvatar(chat.reachability)
+            PresenceAvatar(chat.presence)
             Spacer(Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(chat.name, style = MaterialTheme.typography.titleLarge)

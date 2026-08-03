@@ -16,6 +16,7 @@ data class ChatPreview(
     val time: String,
     val reachability: Reachability,
     val unread: Boolean = false,
+    val presence: PeerPresence = PeerPresence.ONLINE,  // 三色状态（与节点列表一致）：在线绿/寻找中·重连黄/离线黑
 )
 
 data class ChatMessage(

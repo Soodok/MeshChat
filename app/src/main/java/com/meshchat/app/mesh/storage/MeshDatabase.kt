@@ -73,6 +73,8 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
         db.messageDao().knownConvIds().map { it.substringAfterLast("-") }.filter { it != "ME" }
     }
 
+    override fun observeConversationIds(): Flow<List<String>> = db.messageDao().knownConvIdsFlow()
+
     fun observePeers(): Flow<List<PeerEntity>> = db.peerDao().observeAll()
 
     private fun StoredMessage.toEntity() = MessageEntity(

@@ -19,7 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import com.meshchat.app.data.Reachability
+import com.meshchat.app.mesh.transport.PeerPresence
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.InkSoft
 import com.meshchat.app.ui.theme.MeshAmber
@@ -27,7 +27,7 @@ import com.meshchat.app.ui.theme.MeshGreen
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
-fun PresenceAvatar(reachability: Reachability, modifier: Modifier = Modifier) {
+fun PresenceAvatar(presence: PeerPresence, modifier: Modifier = Modifier) {
     Box(modifier = modifier.size(56.dp), contentAlignment = Alignment.BottomEnd) {
         Box(
             modifier = Modifier
@@ -43,15 +43,15 @@ fun PresenceAvatar(reachability: Reachability, modifier: Modifier = Modifier) {
                 modifier = Modifier.size(28.dp),
             )
         }
-        if (reachability == Reachability.REACHABLE) {
-            Box(Modifier.size(14.dp).clip(CircleShape).background(MeshGreen))
-        } else {
-            Box(
+        when (presence) {
+            PeerPresence.ONLINE -> Box(Modifier.size(14.dp).clip(CircleShape).background(MeshGreen))
+            PeerPresence.SEARCHING, PeerPresence.RECONNECTING -> Box(
                 Modifier.size(18.dp).clip(CircleShape).background(InkSoft),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Outlined.AccessTime, null, tint = MeshAmber, modifier = Modifier.size(14.dp))
             }
+            PeerPresence.OFFLINE -> Box(Modifier.size(14.dp).clip(CircleShape).background(TextSecondary))
         }
     }
 }

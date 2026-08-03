@@ -25,6 +25,9 @@ interface MessageDao {
 
     @Query("SELECT DISTINCT convId FROM messages")
     suspend fun knownConvIds(): List<String>
+
+    @Query("SELECT DISTINCT convId FROM messages")
+    fun knownConvIdsFlow(): Flow<List<String>>
 }
 
 @Dao

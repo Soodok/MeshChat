@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.15.2（versionCode 30，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.16.0（versionCode 31，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -95,25 +95,29 @@ app/src/main/java/com/meshchat/app/
   - **节点持久化兜底**：peers 表为空时**从消息历史反推对端**（`MeshStore.loadKnownPeerIds`，`SELECT DISTINCT convId`）→ 老版本升级上来主界面不空；Room 访问全 runCatching（异常不杀接收循环）。
   - **会话页网络状况实时显示**：ConversationScreen 顶部新增对方状态指示——绿点"对方在线 · 消息即时送达"/黄点"正在寻找对方…"/黄点"对方断线重连中…"/灰点"对方离线 · 消息将排队待对方上线"（来自 peers.presence，1s 心跳驱动）。用户可实时判断消息去向，与程序协商机制互相印证。
   - **滚动加固**：首次滚底后延迟 80ms 再滚一次（布局未完成导致"滚一段距离滚不动"）。
+- **v0.16.0 三处修正**（用户反馈：状态可更灵敏、自动滚动"进的一瞬间到底又弹回顶"（性能好布局太快被后续重组覆盖）、最近对话也要三色+持久化效果）：
+  - **状态更灵敏**：`LOST_HEARTBEAT_MS` 3s→**2s**（容忍 1 帧丢失）、`OFFLINE_THRESHOLD_MS` 30s→**15s**——失联/离线反映快一倍，双端状态更快对称收敛。
+  - **滚动彻底修复**：滚底改为「轮询确认」——每 40ms 滚一次并校验 `lastVisible >= totalItemsCount-1`，被重组拉回顶立即重滚，连续 2 次停底才算稳定（最多 1.6s）——根治"性能太好、一进就在顶部/弹回顶"。
+  - **最近对话三色 + 持久化兜底**：`ChatPreview` 新增 `presence`（与节点列表同款绿/黄/灰）；`observeConversations` 改为 `sessions ∪ 消息历史反推的对话`（`MeshStore.observeConversationIds`，Room Flow 流式响应）——即使会话关系持久化丢失/重装，最近对话列表也不空；`PresenceAvatar` 改收 `PeerPresence` 三色渲染；REACHABLE/QUEUED 分区随状态实时切换（在线绿进「最近对话」，寻找中/重连/离线黄灰进「等待路由」）。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-presence-background-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-presence-background.md`。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-rfcomm-transport-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-rfcomm-transport.md`。
-- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套（TDD 2 测试 + 三色状态/持久化/自动滚动/列表昵称，待提交）。
+- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → **v0.16.0 灵敏度/滚动轮询/最近对话三色持久化（待提交）**。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**55/55 测试通过，0 失败**（含 v0.15.2 新增：退避重发永不 FAILED/回执后停发、接收方 60s 重复回执、消息历史反推对端兜底；原 FAILED 测试改为永不失败语义）。既有回归全部保留通过。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.15.2-debug.apk`（19,159,658 B）。
+- `gradlew testDebugUnitTest`：**57/57 测试通过，0 失败**（含 v0.16.0 新增 2 个 MeshRepositoryTest：会话历史反推兜底、对话 presence 反映对端在线状态与昵称；v0.15.2 新增退避重发/重复回执等；原 FAILED 测试改为永不失败语义）。既有回归全部保留通过。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.16.0-debug.apk`。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.14.0（`9e22674` 起的 21 个提交），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0+）。
+- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.15.2（`84fbcd7`），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0+）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 - **RFCOMM 已停用（用户决策）**：配对弹窗在华为/GSI 不弹出 + 配对模型对多设备中心拓扑不友好；代码保留未启用。后续提速方向改为 **WiFi Direct**（免配对、中心外设模型天然、吞吐百 MB/s 级，复用 MeshTransport 抽象即可）。
 
 ### 下一步首要任务
-1. **真机验收 v0.15.0**：安装 `MeshChat-v0.15.0-debug.apk` → ①进会话自动滚底、对方发消息自动跟随 → ②对话列表显示对方昵称（非短 ID）→ ③重启 App 后节点列表保留（黄色寻找中→有心跳转绿；断连转黄；30s 无响应转黑且保留）→ ④回归息屏通知/卡 SENDING。日志 `adb logcat -s MeshSvc`。
-2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.15.0），并同步备用源 `soodok.online/meshchat_bare.git`。
+1. **真机验收 v0.16.0（当前版本）**：**两台设备都必须升级**安装 `MeshChat-v0.16.0-debug.apk` → ①进会话瞬间停在底部不弹回顶（重点验证）→ ②主界面「最近对话」重启后不空 + 头像三色随对端在线/失联/离线切换（黄灰条目在「等待路由」分组）→ ③对端关蓝牙/断连后 2s 内变黄、15s 内变黑（灵敏度）→ ④回归发送状态不卡（永不 FAILED + 1s 心跳秒级收敛）。日志 `adb logcat -s MeshSvc`。
+2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.13.1~v0.16.0），并同步备用源 `soodok.online/meshchat_bare.git`。
 3. 三机全链路回归：握手→会话→双向消息→文件传输→心跳状态对称→失联重连→多跳转发（TTL 8）。
 4. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、**WiFi Direct 载体（复用 MeshTransport 抽象）**、群聊上层逻辑（协议载荷已就绪）。
 

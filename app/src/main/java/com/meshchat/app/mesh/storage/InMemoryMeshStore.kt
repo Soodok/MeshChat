@@ -55,5 +55,8 @@ class InMemoryMeshStore : MeshStore {
     override fun loadKnownPeerIds(): List<String> =
         messages.map { it.convId.substringAfterLast("-") }.distinct().filter { it != "ME" }
 
+    override fun observeConversationIds(): Flow<List<String>> =
+        flowOf(messages.map { it.convId }.distinct())
+
     fun observePeers(): Flow<List<PeerEntity>> = flowOf(peers.values.toList())
 }
