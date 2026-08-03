@@ -55,6 +55,24 @@ class BleTransport(
         const val DISCOVER_TIMEOUT_MS = 5_000L
         /** 客户端特征配置描述符（CCCD）标准 UUID，用于订阅 notify。 */
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
+        /** 扫描响应携带的送达确认键 Service Data UUID：对端扫描即读到，无需 GATT 连接。 */
+        val ACK_UUID: UUID = UUID.fromString("0000A5E3-0000-1000-8000-00805F9B34FB")
+    }
+
+    /** 送达确认键提供器（MeshService 注入：本机已收到消息的压缩键，最新优先，最多 6 个）。 */
+    private var ackProvider: () -> List<ByteArray> = { emptyList() }
+
+    override fun setAckProvider(provider: () -> List<ByteArray>) {
+        ackProvider = provider
+    }
+
+    /** 收到新消息后刷新广播：确认键变化，让对端尽快从扫描读到（广播更新有频率限制，短延迟后重启）。 */
+    override fun refreshAdvertising() {
+        val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
+        mainHandler.post {
+            runCatching { advertiser.stopAdvertising(advertiseCallback) }
+            mainHandler.postDelayed({ startAdvertising() }, 100L)
+        }
     }
 
     // GATT Server：暴露服务，接收邻近节点写入的帧
@@ -209,7 +227,17 @@ class BleTransport(
             .addServiceUuid(ParcelUuid(serviceUuid))
             .addServiceData(ParcelUuid(serviceUuid), advertiseShortId.toByteArray())
             .build()
-        advertiser.startAdvertising(settings, data, advertiseCallback)
+        // 扫描响应携带送达确认键（独立 Service Data，与短 ID 广播互不干扰、老版本兼容）：
+        // 对端无需任何 GATT 连接，扫描本机广播即可读到"已收到哪些消息"并确认送达（硬实时第三通道）
+        val ackBytes = ackProvider().take(6)
+            .reduceOrNull { acc, k -> acc + k }   // 6 × 4B = 24B ≤ 扫描响应 31B 预算
+        val scanResponse = if (ackBytes != null && ackBytes.isNotEmpty()) {
+            AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .addServiceData(ParcelUuid(ACK_UUID), ackBytes)
+                .build()
+        } else null
+        advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
     }
 
     private fun startScanning() {
@@ -229,9 +257,20 @@ class BleTransport(
             val shortId = record.serviceData[ParcelUuid(serviceUuid)]
                 ?.toString(Charsets.UTF_8)
                 ?.takeIf { it.isNotBlank() } ?: return
+            // 解析扫描响应携带的送达确认键（4B/个）：对端已收到的消息，本机据此确认送达
+            val ackData = record.serviceData[ParcelUuid(ACK_UUID)]
+            val ackKeys: List<ByteArray> = if (ackData != null && ackData.isNotEmpty()) {
+                buildList {
+                    var i = 0
+                    while (i + 4 <= ackData.size) {
+                        add(ackData.copyOfRange(i, i + 4))
+                        i += 4
+                    }
+                }
+            } else emptyList()
             peerIds[device.address] = shortId
             _foundPeers.tryEmit(
-                MeshPeerInfo(shortId = shortId, deviceAddress = device.address, rssi = result.rssi),
+                MeshPeerInfo(shortId = shortId, deviceAddress = device.address, rssi = result.rssi, ackKeys = ackKeys),
             )
             connectTo(device)
         }

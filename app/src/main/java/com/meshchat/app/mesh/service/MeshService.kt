@@ -132,8 +132,8 @@ class MeshService(
     /** 上次 PING 广播时刻（tick 200ms 节流到 1s）。 */
     private var lastPingAt = 0L
 
-    /** 待送达确认的 TEXT：id -> (信封, 上次发送时刻, 重试次数)。回执（RECEIPT）是广播帧可能丢失，需超时重发。 */
-    private class PendingText(val envelope: MeshEnvelope, var lastSentAt: Long, var retries: Int = 0)
+    /** 待送达确认的 TEXT：id -> (信封, 上次发送时刻, 重试次数, 广播确认键)。回执（RECEIPT）是广播帧可能丢失，需超时重发。 */
+    private class PendingText(val envelope: MeshEnvelope, var lastSentAt: Long, var retries: Int = 0, val ackKey: ByteArray)
     private val pendingReceipts = LinkedHashMap<String, PendingText>()
 
     /** 近期收到的消息：msgId -> (信封, 收到时刻)。60s 窗口内周期性重复回执，确保发送方必能收敛。 */
@@ -175,6 +175,9 @@ class MeshService(
         }
         peerJob = scope.launch {
             transport.foundPeers.catch { }.collect { info ->
+                // 广播确认（第三通道）：对端随扫描响应广播"已收到的消息确认键"——
+                // 无需任何 GATT 连接，双方在无线电范围内且都在扫描即可交换确认（彻底绕开连接状态问题）
+                info.ackKeys.forEach { key -> confirmByAckKey(key) }
                 val now = System.currentTimeMillis()
                 val existing = peerEntries[info.shortId]
                 // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖
@@ -230,7 +233,7 @@ class MeshService(
             ),
         )
         // 登记待确认：回执（RECEIPT）是广播帧可能丢失，由 resendPendingReceipts 超时重发收敛
-        pendingReceipts[envelope.id] = PendingText(envelope, System.currentTimeMillis())
+        pendingReceipts[envelope.id] = PendingText(envelope, System.currentTimeMillis(), ackKey = ackKeyFor(envelope.id))
         route(envelope)
     }
 
@@ -370,6 +373,7 @@ class MeshService(
                     ),
                     // 立即可重发（视为已超时），对方在线（PING）即收敛
                     lastSentAt = System.currentTimeMillis() - RECEIPT_TIMEOUT_MS,
+                    ackKey = ackKeyFor(m.id),
                 ),
             )
         }
@@ -453,6 +457,33 @@ class MeshService(
             .map { it.first.id }
             .take(50)
             .toList()
+
+    /** 消息 id → 4 字节确定性确认键（String.hashCode 跨进程一致；广播载荷有限，用压缩键表示"已收到哪些消息"）。 */
+    internal fun ackKeyFor(msgId: String): ByteArray {
+        val h = msgId.hashCode()
+        return byteArrayOf((h ushr 24).toByte(), (h ushr 16).toByte(), (h ushr 8).toByte(), h.toByte())
+    }
+
+    /** 本机近期收到的消息确认键（最多 6 个，最新优先，去重；供广播扫描响应携带，对端扫描即可确认送达）。 */
+    fun broadcastAckKeys(): List<ByteArray> =
+        recentReceived.values.asSequence()
+            .map { ackKeyFor(it.first.id) }
+            .distinctBy { it.contentHashCode() }
+            .take(6)
+            .toList()
+
+    /** 广播确认：对端扫描响应携带的确认键命中待确认消息 → 立即标记送达（第三通道，与 GATT 连接状态无关）。 */
+    private fun confirmByAckKey(key: ByteArray) {
+        val it = pendingReceipts.entries.iterator()
+        while (it.hasNext()) {
+            val (id, p) = it.next()
+            if (p.ackKey.contentEquals(key)) {
+                it.remove()
+                store.updateMessageStatus(id, MessageStatus.DELIVERED)
+                Log.d(TAG, "delivery confirmed by broadcast ack msg=$id")
+            }
+        }
+    }
 
     /** 标记节点可见：更新 lastSeen；带昵称时更新显示名并落库。 */
     private fun markSeen(peerId: String, displayName: String) {
@@ -613,8 +644,10 @@ class MeshService(
                     // 收到消息即学对方昵称（TEXT 随信封携带 displayName）并落库：
                     // 对话列表/等待路由立刻显示名字，不依赖 PING 心跳时序
                     markSeen(envelope.srcId, (envelope.body as? TextBody)?.displayName ?: "")
-                    // 记录近期收到的消息：窗口内周期性重复回执 + 心跳 PONG 携带确认，发送方必能收敛
+                    // 记录近期收到的消息：窗口内周期性重复回执 + 心跳 PONG 携带确认 + 广播扫描响应确认，发送方必能收敛
                     recentReceived[envelope.id] = envelope to System.currentTimeMillis()
+                    // 确认键变化 → 刷新广播，让对端尽快从扫描读到（无需 GATT 连接）
+                    transport.refreshAdvertising()
                 }
                 // 收到消息回调（通知用）：仅对端发来的 TEXT 触发
                 if (envelope.kind == "TEXT" && envelope.srcId != identity.shortId) {

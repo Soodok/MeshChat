@@ -9,7 +9,7 @@ class InMemoryTransport : MeshTransport {
     private val _incoming = MutableSharedFlow<MeshFrame>(replay = 32, extraBufferCapacity = 64)
     override val incoming: SharedFlow<MeshFrame> = _incoming
 
-    private val _foundPeers = MutableSharedFlow<MeshPeerInfo>()
+    private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 16)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
     override fun start() = Unit
@@ -19,5 +19,10 @@ class InMemoryTransport : MeshTransport {
     }
     override fun sendTo(peerId: String, frame: MeshFrame) {
         _incoming.tryEmit(frame)
+    }
+
+    /** 测试辅助：模拟扫描发现节点（可携带广播确认键）。 */
+    fun emitPeer(info: MeshPeerInfo) {
+        _foundPeers.tryEmit(info)
     }
 }

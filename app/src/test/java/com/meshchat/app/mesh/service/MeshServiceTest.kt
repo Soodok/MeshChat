@@ -14,6 +14,7 @@ import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.StoredMessage
 import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transport.InMemoryTransport
+import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.MeshTransport
 import com.meshchat.app.mesh.transport.PeerPresence
 import java.io.File
@@ -50,6 +51,8 @@ class MeshServiceTest {
             inner.broadcast(frame)
         }
         override fun sendTo(peerId: String, frame: MeshFrame) = inner.sendTo(peerId, frame)
+        /** 测试辅助：模拟扫描发现节点（可携带广播确认键）。 */
+        fun emitPeer(info: MeshPeerInfo) = inner.emitPeer(info)
     }
 
     private fun ackFrame(srcId: String, dstId: String) = MeshFrame(
@@ -556,6 +559,43 @@ class MeshServiceTest {
         val peer = service.peers.value.firstOrNull { it.shortId == "OTHER" }
         assertEquals("收到消息即学到对方昵称", "老王", peer?.displayName)
         assertEquals("昵称应落库供重启恢复", "老王", store.loadPeers().firstOrNull { it.shortId == "OTHER" }?.displayName)
+    }
+
+    @Test
+    fun `broadcast ack keys confirm delivery without gatt connection`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        val msgId = store.queryMessages("conv-OTHER").first().id
+        assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
+
+        // 对端广播（扫描响应）携带确认键——无需任何 GATT 连接/心跳，扫描到广播即确认送达
+        transport.emitPeer(
+            MeshPeerInfo(shortId = "OTHER", deviceAddress = "AA:BB:CC:DD:EE:FF", rssi = -50, ackKeys = listOf(service.ackKeyFor(msgId))),
+        )
+        // foundPeers collector 在 Dispatchers.Default 异步处理，轮询等待确认落地
+        val deadline = System.currentTimeMillis() + 2_000
+        while (store.queryMessages("conv-OTHER").first().status == MessageStatus.SENDING && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        assertEquals("广播确认键应立即标记已送达", MessageStatus.DELIVERED, store.queryMessages("conv-OTHER").first().status)
+        service.resendPendingReceipts(System.currentTimeMillis() + 10_000)
+        assertEquals("确认后不再重发", 1, transport.broadcastCount)
+        service.stop()
+    }
+
+    @Test
+    fun `broadcast ack keys expose received messages`() {
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(textFrame("m1", "OTHER", "ME", "hi"))
+        assertTrue("本机已收消息应出现在广播确认键中", service.broadcastAckKeys().any { it.contentEquals(service.ackKeyFor("m1")) })
     }
 
     @Test

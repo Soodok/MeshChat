@@ -59,7 +59,7 @@ class MeshChatApplication : Application() {
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
     val service by lazy {
         val notifications = NotificationHelper(this)
-        MeshService(
+        val svc = MeshService(
             transport, store, identity, DedupCache(),
             fileSaver = AndroidFileSaver(this),
             tmpDir = { File(filesDir, "transfers") },
@@ -70,6 +70,9 @@ class MeshChatApplication : Application() {
             },
             onFileSaved = { fileName -> notifications.showFileSaved(fileName) },
         )
+        // 广播确认键注入：BleTransport 扫描响应携带本机已收消息键，对端扫描即确认送达（无需 GATT 连接）
+        transport.setAckProvider { svc.broadcastAckKeys() }
+        svc
     }
 
     /** 通知点击携带的会话请求（convId），MainActivity 写入、ViewModel 订阅打开会话。 */
