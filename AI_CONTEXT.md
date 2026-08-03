@@ -48,11 +48,11 @@ app/src/main/java/com/meshchat/app/
 - 服务层自环闭环（MeshServiceTest）：发送→投递→DELIVERED 状态、转发帧 TTL 递减 7 均验证通过。
 
 ### 当前阻塞
-- **BLE 真机联调**：`BleTransport` 代码就绪但未经硬件验证（无设备环境），需真机双机联调。
-- **GitHub 推送**：近期 `git push` 偶发 `Connection was reset`（网络链路问题），本地提交安全（工作区干净，ahead 0 时无需处理；若 ahead>0 需重试 push）。
+- **BLE 真机联调**：`BleTransport` 代码就绪，运行时权限申请已补齐（MainActivity 请求 BLUETOOTH_SCAN/CONNECT/ACCESS_FINE_LOCATION，授权后启动 MeshService）；仍需真机双机联调验证广播/扫描/连接/帧接力（当前无设备连接）。
+- **GitHub 推送**：链路偶发 `Connection was reset`（间歇性），本地提交安全；重试即成功，最近一次已全部同步。
 
 ### 下一步首要任务
-1. BLE 真机联调：双机安装 APK，验证广播/扫描/连接/帧接力；联调前需在运行时申请 BLUETOOTH_SCAN/BLUETOOTH_CONNECT/ACCESS_FINE_LOCATION 权限（Manifest 已声明，MainActivity 未请求运行时权限）。
+1. BLE 真机联调：双机安装 APK，验证广播/扫描/连接/帧接力。运行时权限已由 MainActivity 申请，授权后自动启动 MeshService（BLE 广播/扫描/GATT）。
 2. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输的上层应用逻辑（协议载荷已就绪）。
 3. 前端会话映射：`MeshRepositoryImpl.sendText` 现以 `convId.substringAfterLast("-")` 推导目标，多会话需改为按会话表寻址。
 
