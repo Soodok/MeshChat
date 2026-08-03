@@ -19,6 +19,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             messages = messages,
             conversations = conversations,
             peers = peers,
+            localShortId = viewModel.localShortId,
             onStartDiscovery = viewModel::startDiscovery,
             onSendMessage = viewModel::sendMessage,
         )

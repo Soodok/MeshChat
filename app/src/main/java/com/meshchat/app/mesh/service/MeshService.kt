@@ -44,6 +44,9 @@ class MeshService(
     private val _peers = MutableStateFlow<List<MeshPeerInfo>>(emptyList())
     val peers: StateFlow<List<MeshPeerInfo>> = _peers.asStateFlow()
 
+    /** 本机短 ID（对端寻址标识）。 */
+    val shortId: String get() = identity.shortId
+
     fun start() {
         transport.start()
         receiveJob = scope.launch {

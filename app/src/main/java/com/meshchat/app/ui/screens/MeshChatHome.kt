@@ -48,26 +48,28 @@ fun MeshChatHome(
     messages: List<ChatMessage>,
     conversations: List<ChatPreview>,
     peers: List<MeshPeer>,
+    localShortId: String,
     onStartDiscovery: () -> Unit,
     onSendMessage: (String) -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
-    var conversationOpen by rememberSaveable { mutableStateOf(false) }
+    var conversationTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
     val destination = MainDestination.valueOf(destinationName)
 
-    BackHandler(enabled = conversationOpen || profileDetail != null) {
-        if (conversationOpen) conversationOpen = false else profileDetail = null
+    BackHandler(enabled = conversationTarget != null || profileDetail != null) {
+        if (conversationTarget != null) conversationTarget = null else profileDetail = null
     }
 
-    if (conversationOpen) {
-        ConversationScreen(messages = messages, title = "我", onBack = { conversationOpen = false }, onSendMessage = onSendMessage)
+    if (conversationTarget != null) {
+        val title = if (conversationTarget == "ME") "我" else conversationTarget!!
+        ConversationScreen(messages = messages, title = title, onBack = { conversationTarget = null }, onSendMessage = onSendMessage)
         return
     }
 
     if (profileDetail != null) {
         when (profileDetail) {
-            "keys" -> IdentityKeyScreen(onBack = { profileDetail = null })
+            "keys" -> IdentityKeyScreen(shortId = localShortId, onBack = { profileDetail = null })
             "settings" -> GeneralSettingsScreen(onBack = { profileDetail = null })
         }
         return
@@ -93,7 +95,7 @@ fun MeshChatHome(
                         Modifier.size(10.dp).background(MeshGreen, androidx.compose.foundation.shape.CircleShape),
                     )
                     Text(
-                        text = "已连接 · 6 个节点",
+                        text = "发现节点 ${peers.size}",
                         color = MeshGreen,
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(start = 9.dp),
@@ -134,12 +136,13 @@ fun MeshChatHome(
                 MainDestination.CHATS -> ChatsScreen(
                     modifier = Modifier.padding(contentPadding),
                     conversations = conversations,
-                    onChatSelected = { conversationOpen = true },
+                    onChatSelected = { conversationTarget = "ME" },
                 )
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),
                     peers = peers,
                     onStartDiscovery = onStartDiscovery,
+                    onPeerSelected = { conversationTarget = it },
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),

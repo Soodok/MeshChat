@@ -23,6 +23,8 @@ class MeshChatViewModel(
     val peers: StateFlow<List<MeshPeer>> = repository.observePeers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val localShortId: String = repository.localShortId()
+
     fun startDiscovery() {
         viewModelScope.launch { repository.startDiscovery() }
     }

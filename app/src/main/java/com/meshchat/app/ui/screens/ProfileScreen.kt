@@ -44,12 +44,12 @@ fun ProfileScreen(
             Spacer(Modifier.width(16.dp))
             Column {
                 Text("我", style = MaterialTheme.typography.titleLarge)
-                Text("本机身份 · 已验证", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+                Text("本机身份", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
             }
         }
         HorizontalDivider(color = MeshDivider)
-        ProfileRow(Icons.Outlined.Key, "身份密钥", "查看本地演示身份信息", onClick = onOpenKeys)
-        ProfileRow(Icons.Outlined.Settings, "通用设置", "示例开关与显示偏好", onClick = onOpenSettings)
+        ProfileRow(Icons.Outlined.Key, "身份密钥", "查看本机短 ID", onClick = onOpenKeys)
+        ProfileRow(Icons.Outlined.Settings, "通用设置", "设置项", onClick = onOpenSettings)
         HorizontalDivider(color = MeshDivider)
         Text("MeshChat · 离线近场安全通信", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(24.dp))
     }

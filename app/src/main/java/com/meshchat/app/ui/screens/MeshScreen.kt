@@ -1,6 +1,7 @@
 package com.meshchat.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,10 +52,11 @@ fun MeshScreen(
     modifier: Modifier = Modifier,
     peers: List<MeshPeer>,
     onStartDiscovery: () -> Unit,
+    onPeerSelected: (String) -> Unit,
 ) {
     var discovering by remember { mutableStateOf(false) }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
-        item { MeshTopology() }
+        item { MeshTopology(peersCount = peers.size) }
         item {
             Text("附近节点（${peers.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
         }
@@ -68,7 +70,9 @@ fun MeshScreen(
                 )
             }
         }
-        items(peers, key = { it.name }) { peer -> PeerRow(peer) }
+        items(peers, key = { it.name }) { peer ->
+            PeerRow(peer, onClick = { onPeerSelected(peer.name) })
+        }
         item {
             Button(
                 onClick = {
@@ -86,7 +90,7 @@ fun MeshScreen(
 }
 
 @Composable
-private fun MeshTopology() {
+private fun MeshTopology(peersCount: Int) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(modifier = Modifier.fillMaxWidth().height(270.dp), contentAlignment = Alignment.Center) {
             androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
@@ -111,15 +115,18 @@ private fun MeshTopology() {
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Hub, null, tint = Cyan, modifier = Modifier.size(19.dp))
-            Text("2 跳路由可用", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
+            Text("已发现节点 $peersCount", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
         }
     }
 }
 
 @Composable
-private fun PeerRow(peer: MeshPeer) {
+private fun PeerRow(peer: MeshPeer, onClick: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(42.dp).clip(androidx.compose.foundation.shape.CircleShape).background(InkSoft), contentAlignment = Alignment.Center) {

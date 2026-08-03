@@ -52,14 +52,14 @@ import com.meshchat.app.ui.theme.TextPrimary
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
-fun IdentityKeyScreen(onBack: () -> Unit) {
+fun IdentityKeyScreen(shortId: String, onBack: () -> Unit) {
     var copied by rememberSaveable { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
-        DetailHeader(title = "身份密钥", icon = Icons.Outlined.Key, onBack = onBack)
+        DetailHeader(title = "身份", icon = Icons.Outlined.Key, onBack = onBack)
         Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp)) {
-            Text("本地演示身份", style = MaterialTheme.typography.titleMedium)
+            Text("本机身份", style = MaterialTheme.typography.titleMedium)
             Text(
-                "以下内容仅用于前端展示，不会生成、备份或上传真实密钥。",
+                "短 ID 即本机在 Mesh 网络中的寻址标识，对端通过它向本机投递消息。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
                 modifier = Modifier.padding(top = 8.dp),
@@ -72,14 +72,14 @@ fun IdentityKeyScreen(onBack: () -> Unit) {
                     Icon(Icons.Outlined.Lock, null, tint = Cyan)
                 }
                 Column(modifier = Modifier.padding(start = 14.dp)) {
-                    Text("身份已验证", style = MaterialTheme.typography.titleMedium)
-                    Text("演示状态", style = MaterialTheme.typography.bodySmall, color = MeshGreen)
+                    Text("本机短 ID", style = MaterialTheme.typography.titleMedium)
+                    Text("广播通告与寻址标识", style = MaterialTheme.typography.bodySmall, color = MeshGreen)
                 }
             }
-            Text("公钥指纹", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 34.dp, bottom = 10.dp))
+            Text("短 ID", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 34.dp, bottom = 10.dp))
             Text(
-                "A5:F2:8C:01:77:4B:9E:30",
-                style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium),
+                shortId,
+                style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium),
                 color = TextPrimary,
             )
             Button(
@@ -88,11 +88,11 @@ fun IdentityKeyScreen(onBack: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Ink),
             ) {
                 Icon(Icons.Outlined.ContentCopy, null)
-                Text("模拟复制指纹", modifier = Modifier.padding(start = 8.dp))
+                Text("复制短 ID", modifier = Modifier.padding(start = 8.dp))
             }
             AnimatedContent(targetState = copied, label = "copy confirmation") { didCopy ->
                 Text(
-                    text = if (didCopy) "已触发前端复制反馈" else "",
+                    text = if (didCopy) "已复制" else "",
                     color = MeshGreen,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 14.dp),
@@ -104,21 +104,14 @@ fun IdentityKeyScreen(onBack: () -> Unit) {
 
 @Composable
 fun GeneralSettingsScreen(onBack: () -> Unit) {
-    var sampleOne by rememberSaveable { mutableStateOf(true) }
-    var sampleTwo by rememberSaveable { mutableStateOf(false) }
-    var sampleThree by rememberSaveable { mutableStateOf(true) }
-
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         DetailHeader(title = "通用设置", icon = Icons.Outlined.Settings, onBack = onBack)
         Text(
-            "以下为前端演示开关，状态仅保存在当前页面。",
+            "暂无可用设置项",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
         )
-        SettingsSwitchRow("示例 1", sampleOne) { sampleOne = it }
-        SettingsSwitchRow("示例 2", sampleTwo) { sampleTwo = it }
-        SettingsSwitchRow("示例 3", sampleThree) { sampleThree = it }
     }
 }
 

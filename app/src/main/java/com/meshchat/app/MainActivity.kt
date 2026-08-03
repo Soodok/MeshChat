@@ -1,8 +1,10 @@
 package com.meshchat.app
 
 import android.Manifest
+import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -21,7 +23,7 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            if (hasAllPermissions()) (application as MeshChatApplication).startMesh()
+            if (hasAllPermissions()) ensureBluetoothAndStart()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,10 +35,20 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (hasAllPermissions()) {
-            (application as MeshChatApplication).startMesh()
+            ensureBluetoothAndStart()
         } else {
             permissionLauncher.launch(requiredPermissions)
         }
+    }
+
+    private fun ensureBluetoothAndStart() {
+        val manager = getSystemService(BluetoothManager::class.java)
+        val adapter = manager.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            Toast.makeText(this, "蓝牙未开启，请先开启蓝牙后重试", Toast.LENGTH_LONG).show()
+            return
+        }
+        (application as MeshChatApplication).startMesh()
     }
 
     private fun hasAllPermissions(): Boolean =

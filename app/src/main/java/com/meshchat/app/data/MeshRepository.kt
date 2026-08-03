@@ -17,6 +17,7 @@ interface MeshRepository {
     fun observePeers(): Flow<List<MeshPeer>>
     fun sendText(convId: String, text: String)
     fun startDiscovery()
+    fun localShortId(): String
 }
 
 class MeshRepositoryImpl(
@@ -33,6 +34,8 @@ class MeshRepositoryImpl(
     override fun startDiscovery() {
         service.start()
     }
+
+    override fun localShortId(): String = service.shortId
 
     override fun observeMessages(convId: String): Flow<List<ChatMessage>> =
         store.observeMessages(convId).map { list -> list.map { it.toUiModel() } }

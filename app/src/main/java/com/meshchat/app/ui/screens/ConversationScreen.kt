@@ -114,10 +114,6 @@ private fun ConversationHeader(title: String, onBack: () -> Unit) {
         Spacer(Modifier.width(12.dp))
         Column {
             Text(title, style = MaterialTheme.typography.titleLarge)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(MeshGreen, androidx.compose.foundation.shape.CircleShape))
-                Text("已连接 · 2 跳", color = MeshGreen, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 6.dp))
-            }
         }
     }
 }
