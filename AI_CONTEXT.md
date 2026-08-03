@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.3.0（versionCode 4，构建时间 2026-08-03 14:35）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.4.0（versionCode 5，构建时间 2026-08-03 14:54）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -45,6 +45,9 @@ app/src/main/java/com/meshchat/app/
 - 演示数据已全部移除（`UiModels.kt` 的 nearbyChats/queuedChats/meshPeers/linMessages）；**v0.3.0 进一步清除演示残留**：顶部「已连接·6 个节点」→「发现节点 N」（真实 peers 数）；会话页/拓扑页「已连接·2 跳」「2 跳路由可用」假状态删除；身份页改显真实短 ID（原演示指纹/「身份已验证」移除）；设置页示例开关移除；「本机身份·已验证」→「本机身份」。
 - **v0.3.0 点对点通讯入口打通**：Mesh 页点击节点 → 进入以该节点短 ID 为标题的会话，发消息 `dstId=节点短ID`，经 GATT 连接写入对端（原 `conv-ME` 自环仅保留在聊天列表「我」）。
 - **v0.3.0 蓝牙状态检查**：MainActivity 启动时校验蓝牙开启（`adapter.isEnabled`），未开启 Toast 提示「蓝牙未开启，请先开启蓝牙后重试」。
+- **v0.4.0 对话握手协议**：点击节点先发 `INVITE` 对话请求 → 对端 AlertDialog「接受/拒绝」→ 接受回发 `INVITE_ACK` 建立会话关系（`MeshService.sessions`）；**仅已建立会话关系的节点间消息才被路由投递**（TEXT 投递前校验 srcId ∈ sessions 或自环）；节点列表显示「已连接·点击进入会话/点击发起对话」。
+- **v0.4.0 GATT 写入可靠性**：连接后 `requestMtu(512)`（容纳消息信封，原默认 23B 中文 JSON 必失败）；服务发现（`onServicesDiscovered`）前写入暂存 `pendingFrames` 待发现后补写（原 `getService` 为 null 时消息静默丢弃）。
+- **v0.4.0 键盘适配**：ConversationScreen 根 Column 统一 `imePadding()`，输入行去重（原仅输入行有 imePadding，edge-to-edge 下布局异常）。
 - 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）。
 
@@ -54,13 +57,13 @@ app/src/main/java/com/meshchat/app/
 - 服务层自环闭环（MeshServiceTest）：发送→投递→DELIVERED 状态、转发帧 TTL 递减 7 均验证通过。
 
 ### 当前阻塞
-- **BLE 真机双机联调**：代码链路就绪（广播短 ID 识别、GATT 连接、帧接力、节点点击会话、蓝牙状态检查、权限含 ADVERTISE）；待真机双机验证实际连接与消息投递（当前无设备连接）。
+- **BLE 真机双机联调**：代码链路就绪（广播短 ID、GATT 连接+MTU 协商+服务发现等待+帧接力、对话握手、会话级投递校验）；待真机双机验证「握手→会话→消息投递」全链路（当前无设备连接）。
 - **GitHub 推送**：链路偶发 `Connection was reset`（间歇性），本地提交安全；重试即成功。
 
 ### 下一步首要任务
-1. BLE 真机双机联调（v0.3.0）：Mesh 页发现并点击节点进入会话，验证消息经 GATT 连接接力投递与回执（源→目标逐跳）。联调反馈渠道：logcat 抓 `MeshService`/`BleTransport`。
+1. BLE 真机双机联调（v0.4.0）：流程 = 双方打开 App 发现节点 → A 点击节点发起对话 → B 弹窗接受 → 会话建立 → 互发消息验证 GATT 投递与回执。联调反馈渠道：logcat 抓 `MeshService`/`BleTransport`。已知待验证点：MTU 协商实际值、`writeCharacteristic` 对超长载荷（>协商 MTU）仍会失败（分片未实现）。
 2. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输上层逻辑（协议载荷已就绪）。
-3. 后端数据源接入前端：`MeshRepository.observeConversations()` 返回空流，待接入 Room 会话表驱动聊天列表（当前仅「我」自环会话可进）。
+3. 后端数据源接入前端：`MeshRepository.observeConversations()` 返回空流，待接入 Room 会话表驱动聊天列表（当前仅「我」自环会话与握手建立的节点会话可进）。
 
 ### 本次涉及的关键文件
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）
