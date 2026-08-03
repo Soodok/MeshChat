@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.13.0（versionCode 24，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.13.1（versionCode 25，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -79,26 +79,27 @@ app/src/main/java/com/meshchat/app/
   - **FileTransferManager sendFrame 注入**：构造新参 `sendFrame: (dstId, frame) -> Unit`（默认 broadcast 兜底），broadcastChunk/sendAck 全部改走 sendFrame。
   - **MeshService 双传输集成**：构造 `rfcomm: RfcommChannel? = null`（向后兼容）；start() 时 rfcomm.start() + incoming 合流 collector（都走 handleFrame）；stop() 时 rfcomm.stop()；`sendFrame` 路由——RFCOMM 已连接走 sendTo、否则 BLE broadcast；INVITE_ACK **首次**建立会话后自动 `connectRfcomm(peerId)`（从 _peers 取 deviceAddress，失败静默回退 BLE，不阻塞会话）。
   - **注意（计划偏离）**：计划原定 MeshService 依赖具体类 RfcommTransport，但测试无法构造（需 Context）→ 改为抽最小接口 `RfcommChannel`（定义于 MeshService.kt），RfcommTransport 与测试替身共同实现。行为与规格一致。
+  - **v0.13.1 决策：RFCOMM 停用（代码保留）**——真机无配对弹窗（`createBond()` 依赖系统 UI，华为/GSI 不可靠）+ 用户判定配对模型对「多设备中心连接」拓扑不友好（N 设备=N 次配对确认）+ 现 BLE 1-2KB/s 对 <10MB 文件可接受 → **MeshChatApplication 不再装配 rfcomm**（MeshService rfcomm 参数默认 null，运行时不启动 RFCOMM、不触发配对），RfcommFraming/RfcommTransport/RfcommChannel/sendFrame 注入代码全部保留留档（未来 WiFi Direct 载体可参考复用，WiFi Direct 免配对且吞吐百 MB/s 级）。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-rfcomm-transport-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-rfcomm-transport.md`。
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）。
 
 ### 已验证内容
 - `gradlew testDebugUnitTest`：**39/39 测试通过，0 失败**（原 34 + 新增 5：RfcommFraming 往返/中途关闭/空流 3 测、FileTransferManager sendFrame 注入（断言走 sendFrame 而非 broadcast）、MeshService RFCOMM 路由（连接态走 sendTo 非 BLE broadcast））。RFCOMM 相关的既有回归（窗口重发/帧预算/端到端 4 窗/ACK 预算）全部保留通过。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.13.0-debug.apk`（19,126,838 B）。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.13.1-debug.apk`（19,126,838 B，RFCOMM 停用装配）。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.13.0 全部内容（`9e22674` 起的 15 个提交，含 v0.13.0 RFCOMM 5 个），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0/v0.12.0/v0.13.0）。
+- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.13.0 全部内容（`9e22674` 起的 15 个提交，含 v0.13.0 RFCOMM 5 个），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0/v0.12.0/v0.13.x）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
-- **RFCOMM 真机风险点（未实测）**：配对弹窗依赖系统 UI（BLUETOOTH_CONNECT 已授权）；华为/GSI ROM 的 RFCOMM 兼容性未知；连接建立时机在会话后（先 BLE 握手再连 RFCOMM），首传时若 RFCOMM 未就绪自动回退 BLE——需真机确认能稳定触发高速通道。
+- **RFCOMM 已停用（用户决策）**：配对弹窗在华为/GSI 不弹出 + 配对模型对多设备中心拓扑不友好；代码保留未启用。后续提速方向改为 **WiFi Direct**（免配对、中心外设模型天然、吞吐百 MB/s 级，复用 MeshTransport 抽象即可）。
 
 ### 下一步首要任务
-1. **真机验收 RFCOMM 高速通道（v0.13.0）**：安装 `MeshChat-v0.13.0-debug.apk` → A↔B 建立会话（自动触发配对弹窗，确认一次）→ 传 20KB~1MB 文件验证速度提升（日志 `adb logcat -s MeshRfcomm MeshSvc MeshFile`，看 `connected peer=...` 与文件帧走 RFCOMM）→ 断连场景回退 BLE 验证。若 RFCOMM 连接不成功，先抓 `MeshRfcomm` 日志定位（bond/connect/listen 阶段）。
-2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.13.0 全部 5 个），并同步备用源 `soodok.online/meshchat_bare.git`。
-3. 三机全链路回归：握手→会话→双向消息→文件传输（RFCOMM 优先）→失联重连→多跳转发（TTL 8）。
-4. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊上层逻辑（协议载荷已就绪）。
+1. **真机验收文件传输（v0.13.1，回归）**：安装 `MeshChat-v0.13.1-debug.apk` → A↔B 建立会话（BLE 握手，无配对流程）→ 传 20KB~1MB 文件验证进度推进无长停顿 → B 的 Downloads 出现完整文件。日志 `adb logcat -s MeshSvc MeshFile`。**确认 v0.13.1 与 v0.12.0 行为一致（RFCOMM 不启用无副作用）。**
+2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.13.x），并同步备用源 `soodok.online/meshchat_bare.git`。
+3. 三机全链路回归：握手→会话→双向消息→文件传输→失联重连→多跳转发（TTL 8）。
+4. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、**WiFi Direct 载体（复用 MeshTransport 抽象，规格 §8 已列为未来方向）**、群聊上层逻辑（协议载荷已就绪）。
 
 ### 本次涉及的关键文件
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）
