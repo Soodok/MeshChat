@@ -34,6 +34,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 通知点击 → 打开对应会话（conversationRequest 由 ViewModel 订阅）
+        val convId = intent.getStringExtra(com.meshchat.app.mesh.service.NotificationHelper.EXTRA_CONV_ID)
+        if (convId != null) {
+            (application as MeshChatApplication).requestConversation(convId)
+        }
         enableEdgeToEdge()
         setContent {
             MeshChatTheme {
