@@ -14,12 +14,21 @@ data class TextBody(val text: String, val replyTo: String? = null) : EnvelopeBod
 @Serializable
 @SerialName("FILE")
 data class FileBody(
+    val fileId: String,        // 关联同一文件所有分块（= 首块信封 id）
     val fileName: String,
     val mime: String,
     val size: Long,
     val totalChunks: Int,
     val chunkIndex: Int,
-    val chunkData: String,
+    val chunkData: String,     // base64，每块原始 200B → ~268B
+) : EnvelopeBody
+
+@Serializable
+@SerialName("FILE_ACK")
+data class FileAckBody(
+    val fileId: String,
+    val totalChunks: Int,
+    val missing: List<Int>,   // 缺失块索引；空 = 全部收齐
 ) : EnvelopeBody
 
 @Serializable
