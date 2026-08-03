@@ -12,6 +12,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Base64
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -208,6 +209,66 @@ class FileTransferManagerTest {
         val size = MeshJson.encodeEnvelope(env).toByteArray().size
         println("DIAG frame bytes=$size budget=470")
         assertTrue("帧 ${size}B 超 BLE 单帧预算 470B", size <= 470)
+    }
+
+    @Test
+    fun `file ack frame stays under BLE budget for large file`() = runTest {
+        // 大文件（1000 块）接收端回 ACK 时 missing 是全文件缺失列表 → 帧会随文件膨胀超 MTU，发送端收不到确认
+        val transport = CountingTransport()
+        val manager = FileTransferManager(
+            transport = transport, shortId = "B", saver = FakeSaver(kotlin.io.path.createTempDirectory("ack").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
+        )
+        val fileId = "big-1"
+        val total = 1000
+        fun chunk(index: Int) = FileBody(
+            fileId = fileId, fileName = "big.md", mime = "text/markdown",
+            size = 50000L, totalChunks = total, chunkIndex = index,
+            chunkData = Base64.getEncoder().encodeToString(ByteArray(FileTransferManager.CHUNK_BYTES) { 1 }),
+        )
+        // 收 32 块（触发 ackCounter % WINDOW == 0 → 回 ACK）
+        for (i in 0 until 32) manager.onFileChunk(envelope(fileId, chunk(i)))
+        val ackFrame = transport.frames.lastOrNull { frame ->
+            val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull()
+            env?.body is FileAckBody
+        }
+        assertTrue("应回 ACK 帧", ackFrame != null)
+        val ackBytes = ackFrame!!.payload.size
+        println("DIAG ack bytes=$ackBytes budget=470")
+        assertTrue("ACK 帧 ${ackBytes}B 超 BLE 单帧预算 470B", ackBytes <= 470)
+    }
+
+    @Test
+    fun `end to end 100-chunk file over 3 windows with truncated acks`() = runTest {
+        // 真实联动：A 广播 → B 收块回 ACK（截断 40 项）→ A 推进窗口，验证大文件完整传输
+        val transport = InMemoryTransport()
+        val dirB = kotlin.io.path.createTempDirectory("e2e").toFile()
+        val a = FileTransferManager(
+            transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("e2eA").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 5,
+        )
+        val b = FileTransferManager(
+            transport = transport, shortId = "B", saver = FakeSaver(dirB),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 5,
+        )
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 100) { (it % 97).toByte() }  // 100 块 → 4 窗口
+        val relay = backgroundScope.launch {
+            transport.incoming.collect { frame ->
+                val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@collect
+                when (env.body) {
+                    is FileBody -> if (env.dstId == "B") b.onFileChunk(env)
+                    is FileAckBody -> if (env.dstId == "A") a.onFileAck(env)
+                    else -> Unit
+                }
+            }
+        }
+        a.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "big.bin", "application/octet-stream", bytes.size.toLong())
+        awaitDone(a)
+        relay.cancel()
+        assertEquals(TransferStatus.DONE, a.progress.value?.status)
+        val saved = File(dirB, "big.bin")
+        assertTrue("B 应落盘完整文件", saved.exists())
+        assertEquals("文件字节一致", bytes.toList(), saved.readBytes().toList())
     }
 
     private fun envelope(fileId: String, body: FileBody) = MeshEnvelope(

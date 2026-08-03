@@ -45,6 +45,12 @@ class FileTransferManager(
         const val WINDOW_TIMEOUT_MS = 15_000L
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
+        /**
+         * ACK 缺失列表截断上限：全文件缺失列表随文件膨胀（1000 块缺失 ~4KB 帧）会超 MTU，
+         * 发送端只关心当前窗口（32 块）内缺失——更早窗口已收齐（ACK 推进前提），
+         * 当前窗口缺失必然位于缺失列表前部，前 40 项足够覆盖窗口内缺失且整帧 < 470B。
+         */
+        const val MAX_ACK_MISSING = 40
     }
 
     private val _progress = MutableStateFlow<FileProgress?>(null)
@@ -297,7 +303,7 @@ class FileTransferManager(
             ttl = 8,
             ts = System.currentTimeMillis(),
             body = FileAckBody(fileId = s.fileId, totalChunks = s.totalChunks,
-                missing = if (final) emptyList() else s.missing),
+                missing = if (final) emptyList() else s.missing.take(MAX_ACK_MISSING)),
         )
         transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray()))
     }
