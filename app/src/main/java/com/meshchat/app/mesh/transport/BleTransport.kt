@@ -138,9 +138,16 @@ class BleTransport(
         if (gattClients.containsKey(device.address)) return
         val gatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    gatt.requestMtu(512) // 协商大 MTU，容纳消息信封
-                    gatt.discoverServices()
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> {
+                        gatt.requestMtu(512) // 协商大 MTU，容纳消息信封
+                        gatt.discoverServices()
+                    }
+                    BluetoothProfile.STATE_DISCONNECTED -> {
+                        // 移除连接记录：持续扫描重新发现时会自动重连
+                        gatt.close()
+                        gattClients.remove(device.address)
+                    }
                 }
             }
 

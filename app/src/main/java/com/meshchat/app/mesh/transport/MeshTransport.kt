@@ -9,6 +9,7 @@ data class MeshPeerInfo(
     val deviceAddress: String,
     val rssi: Int,
     val hops: Int = 1,
+    val lost: Boolean = false,
 )
 
 interface MeshTransport {

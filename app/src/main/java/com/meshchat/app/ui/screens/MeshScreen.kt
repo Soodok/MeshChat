@@ -37,14 +37,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.MeshPeer
+import com.meshchat.app.mesh.quality.BluetoothQuality
 import com.meshchat.app.ui.components.SignalBars
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider as MeshDivider
 import com.meshchat.app.ui.theme.InkSoft
+import com.meshchat.app.ui.theme.MeshAmber
 import com.meshchat.app.ui.theme.MeshGreen
+import com.meshchat.app.ui.theme.MeshRed
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
@@ -52,6 +56,7 @@ fun MeshScreen(
     modifier: Modifier = Modifier,
     peers: List<MeshPeer>,
     sessions: Set<String>,
+    pendingInvites: Set<String>,
     onStartDiscovery: () -> Unit,
     onPeerSelected: (String) -> Unit,
 ) {
@@ -72,7 +77,12 @@ fun MeshScreen(
             }
         }
         items(peers, key = { it.name }) { peer ->
-            PeerRow(peer, connected = peer.name in sessions, onClick = { onPeerSelected(peer.name) })
+            PeerRow(
+                peer = peer,
+                connected = peer.name in sessions,
+                pending = peer.name in pendingInvites,
+                onClick = { onPeerSelected(peer.name) },
+            )
         }
         item {
             Button(
@@ -122,7 +132,7 @@ private fun MeshTopology(peersCount: Int) {
 }
 
 @Composable
-private fun PeerRow(peer: MeshPeer, connected: Boolean, onClick: () -> Unit) {
+private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -135,16 +145,30 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, onClick: () -> Unit) {
         }
         Spacer(Modifier.width(14.dp))
         Text(peer.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SignalBars(peer.strength)
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SignalBars(peer.strength)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "${peer.rssi} dBm · 等级${BluetoothQuality.grade(peer.rssi).label}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = if (peer.lost) MeshRed else TextSecondary,
+                )
+            }
             Text(
                 text = when {
+                    peer.lost -> "失去连接 · 正在重连…"
                     connected -> "已连接 · 点击进入会话"
+                    pending -> "等待对方接受"
                     else -> "点击发起对话"
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = if (connected) MeshGreen else TextSecondary,
-                modifier = Modifier.padding(start = 12.dp),
+                color = when {
+                    peer.lost -> MeshRed
+                    connected -> MeshGreen
+                    pending -> MeshAmber
+                    else -> TextSecondary
+                },
             )
         }
     }

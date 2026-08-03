@@ -21,15 +21,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val DEFAULT_TTL = 8
 private const val OUTBOX_TTL_MS = 60_000L
+private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
+private const val LOST_THRESHOLD_MS = 1_500L      // 超过该时长无扫描更新 → 标记失联
+private const val LOST_REMOVE_MS = 5_000L         // 失联超过该时长 → 从列表移除
 
 class MeshService(
     private val transport: MeshTransport,
@@ -40,9 +45,15 @@ class MeshService(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var receiveJob: Job? = null
     private var peerJob: Job? = null
+    private var tickJob: Job? = null
 
     private val _peers = MutableStateFlow<List<MeshPeerInfo>>(emptyList())
     val peers: StateFlow<List<MeshPeerInfo>> = _peers.asStateFlow()
+
+    /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
+    private val peerEntries = LinkedHashMap<String, PeerEntry>()
+
+    private data class PeerEntry(val info: MeshPeerInfo, var lastSeen: Long, var lost: Boolean)
 
     /** 本机短 ID（对端寻址标识）。 */
     val shortId: String get() = identity.shortId
@@ -50,6 +61,10 @@ class MeshService(
     /** 已建立对话关系的对端节点集合。 */
     private val _sessions = MutableStateFlow<Set<String>>(emptySet())
     val sessions: StateFlow<Set<String>> = _sessions.asStateFlow()
+
+    /** 已发送邀请、等待对方接受的对端节点集合（发起方反馈状态）。 */
+    private val _pendingInvites = MutableStateFlow<Set<String>>(emptySet())
+    val pendingInvites: StateFlow<Set<String>> = _pendingInvites.asStateFlow()
 
     /** 收到的待确认对话请求：peerId -> 请求时间戳。 */
     private val _invites = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -62,9 +77,25 @@ class MeshService(
         }
         peerJob = scope.launch {
             transport.foundPeers.catch { }.collect { info ->
-                _peers.update { current ->
-                    (current.filterNot { it.shortId == info.shortId } + info)
+                val now = System.currentTimeMillis()
+                peerEntries[info.shortId] = PeerEntry(info, lastSeen = now, lost = false)
+            }
+        }
+        tickJob = scope.launch {
+            while (isActive) {
+                delay(REFRESH_INTERVAL_MS)
+                val now = System.currentTimeMillis()
+                val iterator = peerEntries.entries.iterator()
+                while (iterator.hasNext()) {
+                    val entry = iterator.next().value
+                    val age = now - entry.lastSeen
+                    when {
+                        age > LOST_REMOVE_MS -> iterator.remove()          // 5 秒无应答 → 节点消失
+                        age > LOST_THRESHOLD_MS -> entry.lost = true       // 超过 1.5s 无更新 → 明显标注失联
+                        else -> entry.lost = false
+                    }
                 }
+                _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
             }
         }
     }
@@ -72,6 +103,7 @@ class MeshService(
     fun stop() {
         receiveJob?.cancel()
         peerJob?.cancel()
+        tickJob?.cancel()
         transport.stop()
         scope.cancel()
     }
@@ -99,6 +131,7 @@ class MeshService(
     /** 向对端发起对话请求（建立对话关系的前置握手）。 */
     fun sendInvite(peerId: String) {
         if (peerId in _sessions.value) return
+        _pendingInvites.update { it + peerId }
         route(
             MeshEnvelope(
                 id = UUID.randomUUID().toString(),
@@ -163,6 +196,7 @@ class MeshService(
             "INVITE_ACK" -> {
                 _sessions.update { it + envelope.srcId }
                 _invites.update { it - envelope.srcId }
+                _pendingInvites.update { it - envelope.srcId }
             }
             else -> {
                 // 仅已建立对话关系的节点（或本机自环）间的消息参与路由投递

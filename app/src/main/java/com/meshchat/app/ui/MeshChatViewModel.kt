@@ -13,6 +13,8 @@ import kotlinx.coroutines.launch
 
 class MeshChatViewModel(
     private val repository: MeshRepository,
+    val localBluetoothName: String,
+    val localBluetoothAddress: String,
 ) : ViewModel() {
     val messages: StateFlow<List<ChatMessage>> = repository.observeMessages("conv-ME")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -24,6 +26,9 @@ class MeshChatViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val sessions: StateFlow<Set<String>> = repository.observeSessions()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    val pendingInvites: StateFlow<Set<String>> = repository.observePendingInvites()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     val invites: StateFlow<Map<String, Long>> = repository.observeInvites()

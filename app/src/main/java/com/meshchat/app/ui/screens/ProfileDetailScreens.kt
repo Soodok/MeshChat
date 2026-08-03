@@ -52,7 +52,12 @@ import com.meshchat.app.ui.theme.TextPrimary
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
-fun IdentityKeyScreen(shortId: String, onBack: () -> Unit) {
+fun IdentityKeyScreen(
+    shortId: String,
+    bluetoothName: String,
+    bluetoothAddress: String,
+    onBack: () -> Unit,
+) {
     var copied by rememberSaveable { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         DetailHeader(title = "身份", icon = Icons.Outlined.Key, onBack = onBack)
@@ -98,6 +103,19 @@ fun IdentityKeyScreen(shortId: String, onBack: () -> Unit) {
                     modifier = Modifier.padding(top = 14.dp),
                 )
             }
+            HorizontalDivider(color = Divider, modifier = Modifier.padding(top = 24.dp))
+            Text("本机蓝牙信息", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp))
+            Text(
+                "蓝牙名称：$bluetoothName",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+            Text(
+                "MAC 地址：$bluetoothAddress",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
         }
     }
 }

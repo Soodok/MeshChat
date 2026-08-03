@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -40,6 +41,7 @@ import com.meshchat.app.ui.theme.BubbleMine
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Ink
 import com.meshchat.app.ui.theme.InkSoft
+import com.meshchat.app.ui.theme.MeshAmber
 import com.meshchat.app.ui.theme.MeshGreen
 import com.meshchat.app.ui.theme.TextSecondary
 
@@ -47,10 +49,14 @@ import com.meshchat.app.ui.theme.TextSecondary
 fun ConversationScreen(
     messages: List<ChatMessage>,
     title: String,
+    connected: Boolean,
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
+    val today = remember {
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA).format(java.util.Date())
+    }
     Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
         ConversationHeader(title, onBack)
         Row(
@@ -58,11 +64,16 @@ fun ConversationScreen(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Outlined.Lock, null, tint = Cyan, modifier = Modifier.size(16.dp))
-            Text("消息已端到端加密", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 7.dp))
+            Icon(Icons.Outlined.Lock, null, tint = if (connected) MeshGreen else MeshAmber, modifier = Modifier.size(16.dp))
+            Text(
+                if (connected) "会话已建立" else "等待对方接受对话请求…",
+                color = if (connected) MeshGreen else MeshAmber,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 7.dp),
+            )
         }
         Text(
-            "2026-08-03",
+            today,
             color = TextSecondary,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,

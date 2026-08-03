@@ -1,5 +1,6 @@
 package com.meshchat.app.data
 
+import com.meshchat.app.mesh.quality.BluetoothQuality
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
@@ -16,6 +17,7 @@ interface MeshRepository {
     fun observeMessages(convId: String): Flow<List<ChatMessage>>
     fun observePeers(): Flow<List<MeshPeer>>
     fun observeSessions(): Flow<Set<String>>
+    fun observePendingInvites(): Flow<Set<String>>
     fun observeInvites(): Flow<Map<String, Long>>
     fun sendText(convId: String, text: String)
     fun sendInvite(peerId: String)
@@ -31,7 +33,16 @@ class MeshRepositoryImpl(
 ) : MeshRepository {
 
     override fun observeConversations(): Flow<List<ChatPreview>> =
-        flowOf(emptyList()) // 会话数据源：待按后端会话表接入
+        service.sessions.map { ids ->
+            ids.map { id ->
+                ChatPreview(
+                    id = id, name = id, snippet = "已建立对话", time = "",
+                    reachability = Reachability.REACHABLE,
+                )
+            }
+        }
+
+    override fun observePendingInvites(): Flow<Set<String>> = service.pendingInvites
 
     override fun observePeers(): Flow<List<MeshPeer>> =
         service.peers.map { list -> list.map { it.toUiModel() } }
@@ -62,13 +73,11 @@ class MeshRepositoryImpl(
     override fun rejectInvite(peerId: String) = service.rejectInvite(peerId)
 
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
-        val strength = when {
-            rssi >= -60 -> 3
-            rssi >= -75 -> 2
-            rssi >= -90 -> 1
-            else -> 0
-        }
-        return MeshPeer(name = shortId, hops = hops, strength = strength, reachable = true)
+        val strength = BluetoothQuality.bars(rssi)
+        return MeshPeer(
+            name = shortId, hops = hops, strength = strength,
+            rssi = rssi, lost = lost, reachable = !lost,
+        )
     }
 
     private fun com.meshchat.app.mesh.storage.StoredMessage.toUiModel(): ChatMessage {

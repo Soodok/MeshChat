@@ -29,6 +29,8 @@ data class MeshPeer(
     val name: String,
     val hops: Int,
     val strength: Int,
+    val rssi: Int = 0,
+    val lost: Boolean = false,
     val reachable: Boolean = true,
 )
 

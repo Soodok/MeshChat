@@ -53,8 +53,11 @@ fun MeshChatHome(
     conversations: List<ChatPreview>,
     peers: List<MeshPeer>,
     sessions: Set<String>,
+    pendingInvites: Set<String>,
     invites: Map<String, Long>,
     localShortId: String,
+    localBluetoothName: String,
+    localBluetoothAddress: String,
     onStartDiscovery: () -> Unit,
     onSendInvite: (String) -> Unit,
     onAcceptInvite: (String) -> Unit,
@@ -91,14 +94,27 @@ fun MeshChatHome(
     }
 
     if (conversationTarget != null) {
-        val title = if (conversationTarget == "ME") "我" else conversationTarget!!
-        ConversationScreen(messages = messages, title = title, onBack = { conversationTarget = null }, onSendMessage = onSendMessage)
+        val target = conversationTarget!!
+        val title = if (target == "ME") "我" else target
+        val connected = target == "ME" || target in sessions
+        ConversationScreen(
+            messages = messages,
+            title = title,
+            connected = connected,
+            onBack = { conversationTarget = null },
+            onSendMessage = onSendMessage,
+        )
         return
     }
 
     if (profileDetail != null) {
         when (profileDetail) {
-            "keys" -> IdentityKeyScreen(shortId = localShortId, onBack = { profileDetail = null })
+            "keys" -> IdentityKeyScreen(
+                shortId = localShortId,
+                bluetoothName = localBluetoothName,
+                bluetoothAddress = localBluetoothAddress,
+                onBack = { profileDetail = null },
+            )
             "settings" -> GeneralSettingsScreen(onBack = { profileDetail = null })
         }
         return
@@ -171,9 +187,12 @@ fun MeshChatHome(
                     modifier = Modifier.padding(contentPadding),
                     peers = peers,
                     sessions = sessions,
+                    pendingInvites = pendingInvites,
                     onStartDiscovery = onStartDiscovery,
                     onPeerSelected = { peerId ->
-                        if (peerId in sessions) conversationTarget = peerId else onSendInvite(peerId)
+                        // 未建立会话则先发邀请；无论状态都进入会话页（发起方即时反馈）
+                        if (peerId !in sessions) onSendInvite(peerId)
+                        conversationTarget = peerId
                     },
                 )
                 MainDestination.PROFILE -> ProfileScreen(
