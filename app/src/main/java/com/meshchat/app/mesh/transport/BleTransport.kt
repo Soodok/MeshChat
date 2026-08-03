@@ -18,7 +18,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
+import android.util.Log
 import com.meshchat.app.mesh.protocol.MeshFrame
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -32,6 +35,7 @@ class BleTransport(
     private val advertiseShortId: String = "0000",
 ) : MeshTransport {
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     private val _incoming = MutableSharedFlow<MeshFrame>(extraBufferCapacity = 64)
@@ -39,6 +43,11 @@ class BleTransport(
 
     private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
+
+    private companion object {
+        const val TAG = "MeshBle"
+        const val MAX_DISCOVER_RETRIES = 3
+    }
 
     // GATT Server：暴露服务，接收邻近节点写入的帧
     private var gattServer: BluetoothGattServer? = null
@@ -63,9 +72,16 @@ class BleTransport(
     private val pendingFrames = HashMap<String, MutableList<MeshFrame>>() // deviceAddress -> 待服务发现后补写的帧
 
     override fun start() {
+        Log.d(TAG, "start: shortId=$advertiseShortId")
         runCatching { registerServer() }
+            .onSuccess { Log.d(TAG, "gatt server registered") }
+            .onFailure { Log.e(TAG, "registerServer failed: $it") }
         runCatching { startAdvertising() }
+            .onSuccess { Log.d(TAG, "advertising started") }
+            .onFailure { Log.e(TAG, "startAdvertising failed: $it") }
         runCatching { startScanning() }
+            .onSuccess { Log.d(TAG, "scanning started") }
+            .onFailure { Log.e(TAG, "startScanning failed: $it") }
     }
 
     override fun stop() {
@@ -136,28 +152,49 @@ class BleTransport(
 
     private fun connectTo(device: BluetoothDevice) {
         if (gattClients.containsKey(device.address)) return
-        val gatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
-            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                when (newState) {
-                    BluetoothProfile.STATE_CONNECTED -> {
-                        gatt.requestMtu(512) // 协商大 MTU，容纳消息信封
-                        gatt.discoverServices()
-                    }
-                    BluetoothProfile.STATE_DISCONNECTED -> {
-                        // 移除连接记录：持续扫描重新发现时会自动重连
-                        gatt.close()
-                        gattClients.remove(device.address)
-                    }
-                }
-            }
+        // connectGatt 文档要求在带 Looper 的线程调用，统一调度到主线程
+        mainHandler.post {
+            if (gattClients.containsKey(device.address)) return@post
+            val gatt = runCatching {
+                device.connectGatt(context, false, object : BluetoothGattCallback() {
+                    private var discoverRetries = 0
 
-            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it) }
-                }
-            }
-        })
-        gattClients[device.address] = gatt
+                    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                        Log.d(TAG, "connect[${device.address}] newState=$newState status=$status")
+                        when (newState) {
+                            BluetoothProfile.STATE_CONNECTED -> {
+                                runCatching { gatt.requestMtu(512) }
+                                    .onFailure { Log.w(TAG, "requestMtu failed: $it") }
+                                gatt.discoverServices()
+                            }
+                            BluetoothProfile.STATE_DISCONNECTED -> {
+                                // 移除连接记录：持续扫描重新发现时会自动重连
+                                gatt.close()
+                                gattClients.remove(device.address)
+                                pendingFrames.remove(device.address)
+                            }
+                        }
+                    }
+
+                    override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                        Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
+                    }
+
+                    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                        if (status == BluetoothGatt.GATT_SUCCESS) {
+                            Log.d(TAG, "services discovered[${device.address}]")
+                            pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it) }
+                        } else if (discoverRetries++ < MAX_DISCOVER_RETRIES) {
+                            Log.w(TAG, "services discover failed(status=$status), retry #$discoverRetries")
+                            gatt.discoverServices()
+                        } else {
+                            Log.w(TAG, "services discover failed(status=$status), giving up")
+                        }
+                    }
+                })
+            }.onFailure { Log.e(TAG, "connectGatt[${device.address}] failed: $it") }.getOrNull() ?: return@post
+            gattClients[device.address] = gatt
+        }
     }
 
     private fun writeToConnectedClients(frame: MeshFrame) {
@@ -167,6 +204,7 @@ class BleTransport(
                 writeTo(gatt, frame)
             } else {
                 // 服务尚未发现：暂存，待 onServicesDiscovered 后补写
+                Log.w(TAG, "service not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
                 pendingFrames.getOrPut(address) { mutableListOf() }.add(frame)
             }
         }
@@ -175,6 +213,7 @@ class BleTransport(
     private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame) {
         val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return
         characteristic.value = frame.encode()
-        runCatching { gatt.writeCharacteristic(characteristic) }
+        val ok = runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
+        if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
     }
 }

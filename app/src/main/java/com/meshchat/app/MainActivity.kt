@@ -3,6 +3,7 @@ package com.meshchat.app
 import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -14,12 +15,16 @@ import com.meshchat.app.ui.MeshChatApp
 import com.meshchat.app.ui.theme.MeshChatTheme
 
 class MainActivity : ComponentActivity() {
-    private val requiredPermissions = arrayOf(
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.BLUETOOTH_ADVERTISE,
-        Manifest.permission.ACCESS_FINE_LOCATION,
-    )
+    /** 按系统版本请求正确的 BLE 权限：API 31+ 用新蓝牙权限；API <=30 用位置权限（旧权限由 Manifest 声明即授予）。 */
+    private val requiredPermissions: Array<String> = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+        } else {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }.toTypedArray()
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->

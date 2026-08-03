@@ -19,11 +19,11 @@ class MeshChatApplication : Application() {
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
     val service by lazy { MeshService(transport, store, identity, DedupCache()) }
 
-    /** 本机蓝牙名称（用于界面展示本设备蓝牙信息）。 */
-    val localBluetoothName: String? get() = bluetoothManager.adapter?.name
+    /** 本机蓝牙名称（用于界面展示本设备蓝牙信息）；无权限/异常时返回 null 而非崩溃。 */
+    val localBluetoothName: String? get() = runCatching { bluetoothManager.adapter?.name }.getOrNull()
 
-    /** 本机蓝牙 MAC 地址（界面展示用）。 */
-    val localBluetoothAddress: String? get() = bluetoothManager.adapter?.address
+    /** 本机蓝牙 MAC 地址（界面展示用）；无权限/异常时返回 null 而非崩溃。 */
+    val localBluetoothAddress: String? get() = runCatching { bluetoothManager.adapter?.address }.getOrNull()
 
     /** 在 BLE 运行时权限就绪后调用，启动广播/扫描/GATT 服务。 */
     fun startMesh() {
