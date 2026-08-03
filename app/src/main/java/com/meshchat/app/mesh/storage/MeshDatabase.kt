@@ -57,6 +57,10 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
         db.outboxDao().remove(id)
     }
 
+    override fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int) = runBlocking {
+        db.peerDao().upsert(PeerEntity(shortId = shortId, displayName = displayName, lastSeen = lastSeen, hops = hops))
+    }
+
     fun observePeers(): Flow<List<PeerEntity>> = db.peerDao().observeAll()
 
     private fun StoredMessage.toEntity() = MessageEntity(

@@ -40,4 +40,12 @@ class InMemoryMeshStore : MeshStore {
     override fun removeOutbox(id: String) {
         outbox.removeAll { it.id == id }
     }
+
+    private val peers = mutableMapOf<String, PeerEntity>()
+
+    override fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int) {
+        peers[shortId] = PeerEntity(shortId, displayName, lastSeen, hops)
+    }
+
+    fun observePeers(): Flow<List<PeerEntity>> = flowOf(peers.values.toList())
 }
