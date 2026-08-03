@@ -3,7 +3,9 @@ package com.meshchat.app.ui.screens
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -194,36 +196,44 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                // 命中检测：只拖节点，空白处不响应
-                                draggingNode = nodes.minByOrNull {
-                                    val dx = it.x - offset.x; val dy = it.y - offset.y
-                                    dx * dx + dy * dy
-                                }?.takeIf {
-                                    val dx = it.x - offset.x; val dy = it.y - offset.y
-                                    sqrt(dx * dx + dy * dy) <= it.r + 45f
+                        // 用 awaitEachGesture 替代 detectDragGestures：
+                        // ① awaitFirstDown 在按下瞬间命中检测（detectDragGestures 的 onDragStart 在 touch slop 之后才触发，位置已偏离）
+                        // ② drag(down.id) 锁定指针持续跟踪直到抬起，不会断触
+                        // ③ 绝对位置 node.x = pointer.x + offX，完全跟手，无增量累积误差
+                        awaitEachGesture {
+                            val down = awaitFirstDown()
+                            val node = nodes.minByOrNull {
+                                val dx = it.x - down.position.x
+                                val dy = it.y - down.position.y
+                                dx * dx + dy * dy
+                            }?.takeIf {
+                                val dx = it.x - down.position.x
+                                val dy = it.y - down.position.y
+                                sqrt(dx * dx + dy * dy) <= it.r + 60f
+                            }
+                            if (node != null) {
+                                node.vx = 0f
+                                node.vy = 0f
+                                // 记录按下时手指与节点的偏移，拖拽中保持该偏移（绝对位置追踪）
+                                val offX = node.x - down.position.x
+                                val offY = node.y - down.position.y
+                                draggingNode = node
+                                drag(down.id) { change ->
+                                    change.consume()
+                                    node.x = change.position.x + offX
+                                    node.y = change.position.y + offY
+                                    frame++  // 立即重绘
                                 }
-                                draggingNode?.let { it.vx = 0f; it.vy = 0f }
-                                if (draggingNode == null) selectedId = null
-                            },
-                            onDrag = { _, drag ->
-                                draggingNode?.let {
-                                    it.x += drag.x
-                                    it.y += drag.y
-                                    frame++  // 立即触发重绘，不等 16ms 定时器
-                                }
-                            },
-                            onDragEnd = {
-                                draggingNode?.let {
-                                    it.vx = (Random.nextFloat() - 0.5f) * 1f
-                                    it.vy = (Random.nextFloat() - 0.5f) * 1f
-                                    selectedId = it.id
-                                }
+                                // 手指抬起：赋初速度回归物理 + 选中该节点
+                                node.vx = (Random.nextFloat() - 0.5f) * 1.5f
+                                node.vy = (Random.nextFloat() - 0.5f) * 1.5f
+                                selectedId = node.id
                                 draggingNode = null
-                            },
-                            onDragCancel = { draggingNode = null },
-                        )
+                            } else {
+                                // 未命中节点：点击空白取消选中
+                                selectedId = null
+                            }
+                        }
                     },
             ) {
                 // 读 frame 建立重绘依赖（节点内部 var 改动靠此驱动重绘）
