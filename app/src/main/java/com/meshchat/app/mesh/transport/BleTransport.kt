@@ -114,6 +114,12 @@ class BleTransport(
         ) {
             Log.d(TAG, "write request from ${device.address} (${value?.size ?: 0}B)")
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+            // 关键修复：收到对端写帧即视为"可 notify 回传"——收到帧本身证明链路活着。
+            // 对端进程被杀后重连时，CCCD 订阅写入经常丢失（server 端 subscribedDevices 为空），
+            // 回执/PONG 的 notify 会被静默丢弃，导致重启方永远收不到送达确认（直到二次重启补订阅）。
+            // 此处无条件登记，保证回执沿"刚收到消息的链路"反向发回，不依赖 CCCD 是否写成功。
+            serverDevices[device.address] = device
+            subscribedDevices.add(device.address)
             if (value != null) runCatching { MeshFrame.decode(value) }.onSuccess { _incoming.tryEmit(it) }
         }
     }
@@ -320,7 +326,14 @@ class BleTransport(
                                     gatt.setCharacteristicNotification(char, true)
                                     char.getDescriptor(CCCD_UUID)?.let { cccd ->
                                         cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                                        gatt.writeDescriptor(cccd)
+                                        val written = gatt.writeDescriptor(cccd)
+                                        if (!written) {
+                                            // 订阅写入失败：短延迟重试一次（对端订阅记录未建立会丢回执 notify）
+                                            mainHandler.postDelayed(
+                                                { runCatching { gatt.writeDescriptor(cccd) } },
+                                                200L,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -340,10 +353,22 @@ class BleTransport(
 
     private fun writeToConnectedClients(frame: MeshFrame) {
         val now = System.currentTimeMillis()
-        gattClients.forEach { (address, gatt) ->
+        // 快照 key 再遍历：写失败会移除死连接，不能在 forEach 中改 map
+        gattClients.keys.toList().forEach { address ->
+            val gatt = gattClients[address] ?: return@forEach
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
             if (characteristic != null) {
-                writeTo(gatt, frame)
+                if (!writeTo(gatt, frame)) {
+                    // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
+                    val state = runCatching {
+                        bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT)
+                    }.getOrDefault(BluetoothProfile.STATE_DISCONNECTED)
+                    if (state != BluetoothProfile.STATE_CONNECTED) {
+                        Log.w(TAG, "write failed for $address, link dead, drop stale connection")
+                        gattClients.remove(address)
+                        runCatching { gatt.close() }
+                    }
+                }
             } else {
                 // 服务尚未发现：暂存，待 onServicesDiscovered 后补写；超时帧丢弃防永久滞留
                 val queued = pendingFrames.getOrPut(address) { mutableListOf() }
@@ -355,11 +380,12 @@ class BleTransport(
         }
     }
 
-    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame) {
-        val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return
+    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame): Boolean {
+        val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return false
         characteristic.value = frame.encode()
         val ok = runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
         if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
+        return ok
     }
 
     /** 通道2：通过 GATT Server 的 notify 向已订阅的 central 对端回传帧（无需本机主动连接）。 */
@@ -381,7 +407,12 @@ class BleTransport(
                         server.notifyCharacteristicChanged(device, characteristic, false)
                     }
                 }.onFailure { Log.e(TAG, "notify error for $address: $it") }.isSuccess
-                if (!ok) Log.w(TAG, "notify failed for $address")
+                if (!ok) {
+                    Log.w(TAG, "notify failed for $address")
+                    // 对端连接可能已死/未真正订阅：移除登记，避免持续对死连接空发 notify；
+                    // 对端下次写帧时（onCharacteristicWriteRequest）会自动重新登记
+                    subscribedDevices.remove(address)
+                }
             }
         }
     }
