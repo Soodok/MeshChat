@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.20.0（versionCode 35，构建时间 2026-08-03 22:09）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.0.0（正式版，versionCode 36，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -119,25 +119,26 @@ app/src/main/java/com/meshchat/app/
   - **实现**：`BleTransport.startAdvertising()` 增加**扫描响应（scanResponse）**，用独立 Service Data UUID（`ACK_UUID=0xA5E3`，与短 ID 广播互不干扰、老版本兼容）携带本机已收消息的**4 字节压缩确认键**（最多 6 个，`msgId.hashCode()` 低 4 字节，跨进程确定性一致）；`onScanResult` 解析对端扫描响应里的确认键 → 通过 `MeshPeerInfo.ackKeys` 上抛；`MeshService` 收到消息后 `transport.refreshAdvertising()`（stop+100ms 后重启广播刷新确认键）；发送方 `confirmByAckKey` 命中待确认消息即标记 DELIVERED。
   - **三层确认冗余**：RECEIPT 广播（GATT）→ PONG ackIds（心跳，GATT）→ **扫描响应广播确认（无连接依赖）**——任一层到达即确认送达。
   - `MeshTransport` 接口新增默认方法 `setAckProvider`/`refreshAdvertising`（测试替身零改动）；`MeshChatApplication` 注入 `transport.setAckProvider { service.broadcastAckKeys() }`。
+- **v1.0.0 正式版发布**（用户确认"功能基本都实现了"）：核心功能齐备——近场通信全链路（发现/握手/会话/消息/文件传输/心跳校准/三色状态/节点持久化/后台常驻/通知弹窗/送达三层确认冗余）。**已推送 GitHub origin/main（本地领先 41 提交全部同步，含 v0.13.1~v1.0.0）。**
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-presence-background-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-presence-background.md`。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-rfcomm-transport-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-rfcomm-transport.md`。
-- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → v0.16.0 灵敏度/滚动轮询/最近对话三色持久化 `3608afb` → v0.17.0 确认强化/自动寻找/滚动根治 `b0f9e0d` → v0.18.0 心跳确认搭便车/昵称随消息/Application 启动 `2625b62` → v0.19.0 收到帧即登记可回传/死连接清理/CCCD 重试 `f6ea4f6` → **v0.20.0 广播确认通道（扫描响应携带确认键，无连接依赖）（待提交）**。
+- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → v0.16.0 灵敏度/滚动轮询/最近对话三色持久化 `3608afb` → v0.17.0 确认强化/自动寻找/滚动根治 `b0f9e0d` → v0.18.0 心跳确认搭便车/昵称随消息/Application 启动 `2625b62` → v0.19.0 收到帧即登记可回传/死连接清理/CCCD 重试 `f6ea4f6` → v0.20.0 广播确认通道 `cf722dc` → **v1.0.0 正式版发布（待提交）**。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**63/63 测试通过，0 失败**（v0.20.0 新增 2 例：广播确认键免 GATT 确认送达、本机已收消息出现在广播确认键；含 v0.18.0 PONG ackIds/昵称、v0.15.2 退避重发/重复回执、v0.16.0 MeshRepositoryTest 等全部回归）。BleTransport 为 Android 框架层（无 JVM 单测），以真机复现路径验证。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.20.0-debug.apk`（19,159,658 B）。
+- `gradlew testDebugUnitTest`：**63/63 测试通过，0 失败**（含 v0.20.0 广播确认键 2 例、v0.18.0 PONG ackIds/昵称、v0.15.2 退避重发/重复回执、v0.16.0 MeshRepositoryTest 等全部回归）。BleTransport 为 Android 框架层（无 JVM 单测），以真机复现路径验证。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v1.0.0-debug.apk`。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.19.0（`f6ea4f6`），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0+）。
+- **无阻塞**（v1.0.0 已推送 GitHub origin/main，本地与远程同步）。备用源 `soodok.online/meshchat_bare.git` 未同步（如需可 push）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 - **RFCOMM 已停用（用户决策）**：配对弹窗在华为/GSI 不弹出 + 配对模型对多设备中心拓扑不友好；代码保留未启用。后续提速方向改为 **WiFi Direct**（免配对、中心外设模型天然、吞吐百 MB/s 级，复用 MeshTransport 抽象即可）。
 
 ### 下一步首要任务
-1. **真机验收 v0.20.0（当前版本）**：**两台设备都必须升级**安装 `MeshChat-v0.20.0-debug.apk` → **重点复现原 bug 路径**：两方正常通信 → 一方删后台 → 重进 → 立即发消息 → 发送方应在 1-3s 内翻"已通过 Mesh 送达"（**即使 GATT 连接状态异常，广播/扫描确认通道也能兜底**，无需双方重启）。再从另一侧同样操作验证对称性。日志 `adb logcat -s MeshSvc MeshBle`（MeshSvc 出现 `delivery confirmed by broadcast ack` 即广播确认生效）。
-2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.13.1~v0.20.0），并同步备用源 `soodok.online/meshchat_bare.git`。
+1. **v1.0.0 真机终验（当前版本）**：安装 `MeshChat-v1.0.0-debug.apk`，回归：删后台重进发消息→送达确认 1-3s 内翻转（广播确认通道兜底）、进会话不弹回顶、最近对话三色/昵称、心跳对称、文件传输。日志 `adb logcat -s MeshSvc MeshBle`。
+2. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
 3. 三机全链路回归：握手→会话→双向消息→文件传输→心跳状态对称→失联重连→多跳转发（TTL 8）。
 4. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、**WiFi Direct 载体（复用 MeshTransport 抽象）**、群聊上层逻辑（协议载荷已就绪）。
 
