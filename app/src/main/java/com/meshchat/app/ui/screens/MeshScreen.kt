@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -139,7 +140,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         // 本机（保留物理状态）
         val oldMe = existing["ME"]
         nodes.add(TopoNode(
-            id = "ME", name = "你", short = "ME", kind = TopoKind.ME, hops = 0, r = 7f,
+            id = "ME", name = "你", short = "ME", kind = TopoKind.ME, hops = 0, r = 27f,
             x = oldMe?.x ?: cx, y = oldMe?.y ?: cy,
             vx = oldMe?.vx ?: 0f, vy = oldMe?.vy ?: 0f,
         ))
@@ -151,24 +152,24 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 peer.presence == PeerPresence.OFFLINE -> TopoKind.STALE
                 else -> TopoKind.REACHABLE
             }
-            val r = if (peer.hops <= 1) 7f else if (peer.hops == 2) 6f else 5f
+            val r = if (peer.hops <= 1) 27f else if (peer.hops == 2) 22f else 19f
             val old = existing[peer.shortId]
             nodes.add(TopoNode(
                 id = peer.shortId, name = peer.name, short = peer.shortId.take(2),
                 kind = actualKind, hops = peer.hops, r = r,
-                x = old?.x ?: (cx + (Random.nextFloat() - 0.5f) * 60f),
-                y = old?.y ?: (cy + (Random.nextFloat() - 0.5f) * 60f),
+                x = old?.x ?: (cx + (Random.nextFloat() - 0.5f) * 160f),
+                y = old?.y ?: (cy + (Random.nextFloat() - 0.5f) * 160f),
                 vx = old?.vx ?: 0f, vy = old?.vy ?: 0f,
             ))
         }
     }
 
-    // 物理循环（~60fps）
+    // 物理循环（~60fps，被拖节点跳过物理，位置由手指直接控制）
     LaunchedEffect(canvasW, canvasH) {
         if (canvasW <= 0f || canvasH <= 0f) return@LaunchedEffect
         while (true) {
             delay(16)
-            topologyPhysicsStep(nodes, canvasW, canvasH)
+            topologyPhysicsStep(nodes, canvasW, canvasH, draggingNode?.id)
             frame++
         }
     }
@@ -180,7 +181,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(340.dp)
+                .aspectRatio(1f)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                 .background(InkSoft.copy(alpha = 0.4f))
                 .onSizeChanged {
@@ -195,33 +196,30 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                     .pointerInput(Unit) {
                         detectDragGestures(
                             onDragStart = { offset ->
-                                // 命中检测：找最近节点
+                                // 命中检测：只拖节点，空白处不响应
                                 draggingNode = nodes.minByOrNull {
                                     val dx = it.x - offset.x; val dy = it.y - offset.y
                                     dx * dx + dy * dy
                                 }?.takeIf {
                                     val dx = it.x - offset.x; val dy = it.y - offset.y
-                                    sqrt(dx * dx + dy * dy) <= it.r + 12f
+                                    sqrt(dx * dx + dy * dy) <= it.r + 45f
                                 }
                                 draggingNode?.let { it.vx = 0f; it.vy = 0f }
-                                if (draggingNode == null) {
-                                    // 点击空白：取消选中
-                                    selectedId = null
-                                }
+                                if (draggingNode == null) selectedId = null
                             },
                             onDrag = { _, drag ->
                                 draggingNode?.let {
                                     it.x += drag.x
                                     it.y += drag.y
+                                    frame++  // 立即触发重绘，不等 16ms 定时器
                                 }
                             },
                             onDragEnd = {
                                 draggingNode?.let {
-                                    it.vx = (Random.nextFloat() - 0.5f) * 0.4f
-                                    it.vy = (Random.nextFloat() - 0.5f) * 0.4f
+                                    it.vx = (Random.nextFloat() - 0.5f) * 1f
+                                    it.vy = (Random.nextFloat() - 0.5f) * 1f
+                                    selectedId = it.id
                                 }
-                                // 短按（未实际拖动）→ 选中
-                                draggingNode?.let { selectedId = it.id }
                                 draggingNode = null
                             },
                             onDragCancel = { draggingNode = null },
@@ -328,18 +326,19 @@ private class TopoNode(
     var vy: Float = 0f,
 )
 
-/** 物理引擎：库仑斥力 + 边弹簧 + 阻尼 + 微扰 + 边界反弹（无中心引力，自然分布）*/
-private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float) {
-    val repulsion = 700f       // 库仑斥力系数
-    val springK = 0.014f       // 弹簧刚度
-    val springLen = 48f        // 弹簧自然长度
+/** 物理引擎：库仑斥力 + 边弹簧 + 阻尼 + 微扰 + 边界反弹（无中心引力，自然分布）
+ *  pinnedId 节点跳过力计算与位置更新（拖拽中由手指直接控制位置）*/
+private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float, pinnedId: String? = null) {
+    val repulsion = 6000f      // 库仑斥力系数（适配正方形小画布）
+    val springK = 0.008f       // 弹簧刚度
+    val springLen = 120f       // 弹簧自然长度（缩小适配正方形）
     val damping = 0.9f         // 速度阻尼
-    val jitter = 0.015f        // 微扰（模拟设备移动）
-    val maxSpeed = 2f          // 限速
-    val margin = 30f           // 边界反弹区
+    val jitter = 0.05f         // 微扰
+    val maxSpeed = 6f          // 限速
+    val margin = 80f           // 边界反弹区
     val me = nodes.firstOrNull { it.id == "ME" } ?: return
 
-    // 1. 库仑斥力（O(n²)）
+    // 1. 库仑斥力（O(n²)，pinned 节点仍受其他节点斥力但自身不施力——保持稳定）
     for (i in nodes.indices) {
         for (j in i + 1 until nodes.size) {
             val a = nodes[i]; val b = nodes[j]
@@ -348,8 +347,9 @@ private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float) {
             if (dist < 1f) { dist = 1f; dx = 1f; dy = 0f }
             val f = repulsion / (dist * dist)
             val fx = dx / dist * f; val fy = dy / dist * f
-            a.vx -= fx; a.vy -= fy
-            b.vx += fx; b.vy += fy
+            // pinned 节点不接收力（位置由手指控制）
+            if (a.id != pinnedId) { a.vx -= fx; a.vy -= fy }
+            if (b.id != pinnedId) { b.vx += fx; b.vy += fy }
         }
     }
     // 2. 边弹簧力（本机 ↔ peer，对称）
@@ -362,11 +362,13 @@ private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float) {
         val k = if (n.kind == TopoKind.STALE) springK * 0.2f else springK
         val diff = dist - springLen
         val fx = dx / dist * diff * k; val fy = dy / dist * diff * k
-        me.vx += fx; me.vy += fy
-        n.vx -= fx; n.vy -= fy
+        // pinned 节点不接收力
+        if (me.id != pinnedId) { me.vx += fx; me.vy += fy }
+        if (n.id != pinnedId) { n.vx -= fx; n.vy -= fy }
     }
-    // 3. 阻尼 + 微扰 + 限速 + 位置更新 + 边界反弹
+    // 3. 阻尼 + 微扰 + 限速 + 位置更新 + 边界反弹（pinned 节点跳过）
     nodes.forEach { n ->
+        if (n.id == pinnedId) return@forEach
         n.vx *= damping; n.vy *= damping
         n.vx += (Random.nextFloat() - 0.5f) * jitter
         n.vy += (Random.nextFloat() - 0.5f) * jitter
@@ -382,13 +384,13 @@ private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float) {
 
 /** 点阵网格背景 */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDotGrid() {
-    val spacing = 24f
+    val spacing = 90f
     val dotColor = Cyan.copy(alpha = 0.06f)
     var y = spacing
     while (y < size.height) {
         var x = spacing
         while (x < size.width) {
-            drawCircle(dotColor, 1f, Offset(x, y))
+            drawCircle(dotColor, 2.5f, Offset(x, y))
             x += spacing
         }
         y += spacing
@@ -409,17 +411,17 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
         when (n.kind) {
             TopoKind.STALE -> drawLine(
                 color = TextSecondary.copy(alpha = if (isDim) 0.05f else 0.3f),
-                start = start, end = end, strokeWidth = 1f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(2f, 4f), 0f),
+                start = start, end = end, strokeWidth = 4f,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f, 15f), 0f),
             )
             TopoKind.DIRECT -> drawLine(
                 color = MeshGreen.copy(alpha = if (isDim) 0.2f else if (isSelEdge) 1f else 0.8f),
-                start = start, end = end, strokeWidth = if (isSelEdge) 2f else 1.5f,
+                start = start, end = end, strokeWidth = if (isSelEdge) 7.5f else 5.5f,
                 cap = StrokeCap.Round,
             )
             TopoKind.REACHABLE -> drawLine(
                 color = Cyan.copy(alpha = if (isDim) 0.05f else if (isSelEdge) 0.7f else 0.25f),
-                start = start, end = end, strokeWidth = if (isSelEdge) 1.5f else 1f,
+                start = start, end = end, strokeWidth = if (isSelEdge) 6f else 4f,
                 cap = StrokeCap.Round,
             )
             TopoKind.ME -> { /* 不会到达 */ }
@@ -427,13 +429,15 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
     }
 }
 
-/** 绘制拓扑节点 */
+/** 绘制拓扑节点（放大 2.5 倍）*/
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
     nodes: List<TopoNode>, selectedId: String?,
 ) {
     nodes.forEach { n ->
         val isSel = n.id == selectedId
         val isDim = selectedId != null && !isSel
+        val cx = n.x
+        val cy = n.y
         val (stroke, fill, label) = when (n.kind) {
             TopoKind.ME -> Triple(Cyan, Cyan, Color(0xFF081420))
             TopoKind.DIRECT -> Triple(MeshGreen, InkSoft, MeshGreen)
@@ -442,40 +446,40 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
         }
         // 选中：白色外圈光晕
         if (isSel) {
-            drawCircle(Color.White.copy(alpha = 0.5f), n.r + 5f, Offset(n.x, n.y))
+            drawCircle(Color.White.copy(alpha = 0.5f), n.r + 18f, Offset(cx, cy))
         }
         // 节点填充
         drawCircle(
             color = if (isDim) fill.copy(alpha = 0.5f) else fill,
             radius = n.r,
-            center = Offset(n.x, n.y),
+            center = Offset(cx, cy),
         )
         // 描边
         drawCircle(
             color = if (isDim) stroke.copy(alpha = 0.4f) else stroke,
             radius = n.r,
-            center = Offset(n.x, n.y),
-            style = Stroke(width = if (isSel) 2.4f else 1.8f),
+            center = Offset(cx, cy),
+            style = Stroke(width = if (isSel) 9f else 7f),
         )
         // 节点内短 ID（monospace）
         drawIntoCanvas { c ->
             val paint = android.graphics.Paint().apply {
                 color = (if (isDim) label.copy(alpha = 0.4f) else label).toArgb()
-                textSize = 7f * 2f  // px 粗略，Canvas 单位是 px
+                textSize = 27f
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
                 typeface = android.graphics.Typeface.MONOSPACE
             }
             val fm = paint.fontMetrics
-            val baseline = n.y - (fm.ascent + fm.descent) / 2f
-            c.nativeCanvas.drawText(n.short, n.x, baseline, paint)
+            val baseline = cy - (fm.ascent + fm.descent) / 2f
+            c.nativeCanvas.drawText(n.short, cx, baseline, paint)
         }
         // 本机下方小三角标识
         if (n.kind == TopoKind.ME) {
             val p = androidx.compose.ui.graphics.Path().apply {
-                moveTo(n.x, n.y + n.r + 2f)
-                lineTo(n.x - 2f, n.y + n.r + 5f)
-                lineTo(n.x + 2f, n.y + n.r + 5f)
+                moveTo(cx, cy + n.r + 7f)
+                lineTo(cx - 8f, cy + n.r + 20f)
+                lineTo(cx + 8f, cy + n.r + 20f)
                 close()
             }
             drawPath(p, Cyan.copy(alpha = 0.8f))
@@ -486,12 +490,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
                 color = (if (isSel) Color.White else Color(0xFFF5F7FA)).copy(
                     alpha = if (isDim) 0.35f else 0.9f
                 ).toArgb()
-                textSize = 8f * 2f
+                textSize = 33f
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
                 if (isSel) typeface = android.graphics.Typeface.DEFAULT_BOLD
             }
-            c.nativeCanvas.drawText(n.name, n.x, n.y - n.r - 6f, paint)
+            c.nativeCanvas.drawText(n.name, cx, cy - n.r - 24f, paint)
         }
     }
 }
