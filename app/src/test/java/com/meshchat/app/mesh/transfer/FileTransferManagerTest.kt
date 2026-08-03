@@ -161,6 +161,39 @@ class FileTransferManagerTest {
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
     }
 
+    @Test
+    fun `receives out-of-order and duplicate chunks then assembles full file`() = runTest {
+        val transport = CountingTransport()
+        val dir = kotlin.io.path.createTempDirectory("m5").toFile()
+        val manager = FileTransferManager(
+            transport = transport, shortId = "B", saver = FakeSaver(dir),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
+        )
+        val source = ByteArray(200 * 10) { (it % 251).toByte() }
+        val fileId = "recv-1"
+        fun chunk(index: Int) = FileBody(
+            fileId = fileId, fileName = "recv.bin", mime = "application/octet-stream",
+            size = source.size.toLong(), totalChunks = 10, chunkIndex = index,
+            chunkData = Base64.getEncoder().encodeToString(source.copyOfRange(index * 200, (index + 1) * 200)),
+        )
+        // 乱序 + 重复投递
+        for (i in listOf(5, 3, 9, 3, 0, 7, 2, 6, 8, 1, 4)) {
+            manager.onFileChunk(envelope(fileId, chunk(i)))
+        }
+        // 收齐后回最终 ACK（missing 空）且落盘
+        assertTrue(ackBodies(transport.frames).any { it.missing.isEmpty() })
+        val saved = File(dir, "recv.bin")
+        assertTrue(saved.exists())
+        assertEquals(source.toList(), saved.readBytes().toList())
+        assertEquals(TransferStatus.DONE, manager.progress.value?.status)
+        assertEquals(source.size.toLong(), manager.progress.value?.transferredBytes)
+    }
+
+    private fun envelope(fileId: String, body: FileBody) = MeshEnvelope(
+        id = "env-$fileId", kind = "FILE", srcId = "A", dstId = "B",
+        convId = "conv-A", ts = 1, body = body,
+    )
+
     private fun ack(fileId: String, total: Int, missing: List<Int>) = MeshEnvelope(
         id = "ack-${fileId}", kind = "FILE_ACK", srcId = "B", dstId = "A",
         convId = "conv-A", ts = 1, body = FileAckBody(fileId, total, missing),
