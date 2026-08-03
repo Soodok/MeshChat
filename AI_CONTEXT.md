@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.11.0（versionCode 22，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.12.0（versionCode 23，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -70,24 +70,25 @@ app/src/main/java/com/meshchat/app/
   - 单测新增 `isReturnDefaultValues` 豁免（MeshService 使用 android.util.Log）。
 - 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
 - **v0.11.0 修复消息方向显示**（用户真机反馈"B 收到消息像自己跟自己对话"）：`MeshRepository.toUiModel()` 原硬编码 `sentByMe = true`，所有消息（含收到的）都渲染在右侧自己气泡 → 改为 `sentByMe = srcId == service.shortId`（本机发出的靠右，对端发来的靠左）。真机通讯已正常。
-- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复提交。
+- **v0.12.0 文件传输全链路**（用户反馈"还不能传文件"）：协议层 `FileBody.fileId` + 新 `FileAckBody`（缺失 bitmap）；`mesh/transfer/FileTransferManager` 传输引擎——窗口 32 块/块 200B/15s 窗口超时/5 次重试上限/60s 接收无进展清理/串行单文件；`AndroidFileSaver` 落盘 Downloads（API 29+ MediaStore 免权限，26-28 WRITE_EXTERNAL_STORAGE）；MeshService `sendFile` + FILE/FILE_ACK 一跳分发（dstId 校验，不进 outbox）；接收端收齐校验大小 → 落盘 → 回填 fileMeta downloadsUri → DELIVERED；UI 文件气泡（图标/文件名/大小/进度条/完成状态）+ 系统文件选择器（OpenDocument）+ 点击打开（ACTION_VIEW）。规格：`docs/superpowers/specs/2026-08-03-meshchat-file-transfer-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-file-transfer.md`。真机验收待做。
+- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**22/22 测试通过，0 失败**（帧编解码/信封序列化/去重/转发决策/身份/服务自环闭环/握手确认容错/ack-of-ack 防循环/dstId 过滤/发起方单次回发）。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**。
-- **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。遗留：UI 显示细节（消息到达后界面呈现）待前端队友处理。
+- `gradlew testDebugUnitTest`：**31/31 测试通过，0 失败**（原 22 + 文件传输 9：协议 fileId/FileAckBody 编解码、窗口重发/超时重发/重试上限/串行约束/乱序重组落盘、MeshService FILE 落库/dstId 过滤）。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.12.0-debug.apk`。
+- **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
+- **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **UI 显示细节（已部分修复）**：消息方向已修（v0.11.0 `sentByMe = srcId == service.shortId`）；剩余待真机验证：ConversationScreen 消息流刷新时机、会话列表从 sessions 派生等。日志：`adb logcat -s MeshSvc MeshBle`。
-- **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
-- **GitHub 直连推送**：本地 `Connection was reset`（间歇性）→ 曾改用服务器中转（`git clone https://soodok.online/meshchat_bare.git` 仍可用作备用拉取源）；**2026-08-03 用户开梯子后已直推成功**，`origin/main` = `ab2f287`（含交接块更新），本地与远端完全同步。
+- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.12.0 全部内容（`9e22674` 起的 10 个提交），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0/v0.12.0）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
+- **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 
 ### 下一步首要任务
-1. **前端队友修 UI 显示**（本次推送目的，仓库已就绪）：`git clone https://soodok.online/meshchat_bare.git` → 打开已建会话后能看到双方消息（现传输已通、落库正确，仅界面呈现待确认）。
-2. 三机全链路回归：握手→会话→双向消息→失联重连→多跳转发（TTL 8）。
-3. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输上层逻辑（协议载荷已就绪）。
-4. 后端数据源接入前端：`MeshRepository.observeConversations()` 目前从 sessions 派生，待接入 Room 会话表驱动聊天列表。
+1. **真机验收文件传输（v0.12.0）**：A↔B 建立会话后附件按钮选文件（<10MB）→ 气泡出现进度条 → 传输完成 → B 的 Downloads 出现完整文件 → 点击可打开；断连场景（传输中关蓝牙/移开）窗口重传生效；日志 `adb logcat -s MeshSvc MeshBle`。
+2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.12.0 全部 8 个），并同步备用源 `soodok.online/meshchat_bare.git`。
+3. 三机全链路回归：握手→会话→双向消息→文件传输→失联重连→多跳转发（TTL 8）。
+4. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊上层逻辑（协议载荷已就绪）。
 
 ### 本次涉及的关键文件
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）
