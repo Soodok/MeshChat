@@ -1,0 +1,24 @@
+# Android / Gradle
+*.iml
+.gradle/
+build/
+local.properties
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# 构建产物
+*.apk
+*.aab
+*.ap_
+*.dex
+output.json
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
