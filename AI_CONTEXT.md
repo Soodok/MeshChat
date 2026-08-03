@@ -79,7 +79,7 @@ app/src/main/java/com/meshchat/app/
 ### 当前阻塞
 - **UI 显示细节待前端处理**：传输/路由/存储链路已通（双方 MeshSvc 确认消息到达并落库），但用户反馈"消息收不到"——需队友检查 ConversationScreen 消息流渲染（`observeMessages("conv-<对端ID>")` 的 flow 触发、`sentByMe` 方向、消息列表刷新时机）。日志：`adb logcat -s MeshSvc MeshBle`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
-- **GitHub 直连推送**：本地 `Connection was reset`（间歇性），**已改用服务器中转完成**：`git bundle` 分块上传 soodok.online → 解包为 bare 仓库 `/var/www/html/meshchat_bare.git`（dumb HTTP，`git update-server-info` 已生成），**队友拉取地址：`git clone https://soodok.online/meshchat_bare.git`**。main=fd10d7d（34 提交）。本地 `main` 仍领先 `origin/main` 5 提交，GitHub 网络恢复后需重新直推。
+- **GitHub 直连推送**：本地 `Connection was reset`（间歇性）→ 曾改用服务器中转（`git clone https://soodok.online/meshchat_bare.git` 仍可用作备用拉取源）；**2026-08-03 用户开梯子后已直推成功**，`origin/main` = `ab2f287`（含交接块更新），本地与远端完全同步。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 
 ### 下一步首要任务
