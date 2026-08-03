@@ -2,7 +2,9 @@ package com.meshchat.app
 
 import android.app.Application
 import android.bluetooth.BluetoothManager
+import android.content.Context
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.identity.ShortIdGen
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.MeshDatabase
@@ -15,7 +17,16 @@ class MeshChatApplication : Application() {
     }
 
     val store by lazy { RoomMeshStore(MeshDatabase.build(this)) }
-    val identity by lazy { LocalIdentity() }
+
+    /** 本机身份：短 ID 持久化存储，重启后保持同一 ID（否则会话/路由随重启失效）。 */
+    val identity by lazy {
+        val prefs = getSharedPreferences("meshchat_identity", Context.MODE_PRIVATE)
+        val stored = prefs.getString("short_id", null)
+        val id = stored ?: ShortIdGen.generate().also {
+            prefs.edit().putString("short_id", it).apply()
+        }
+        LocalIdentity(shortId = id)
+    }
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
     val service by lazy { MeshService(transport, store, identity, DedupCache()) }
 

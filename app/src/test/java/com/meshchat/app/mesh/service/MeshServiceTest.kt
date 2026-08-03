@@ -70,7 +70,8 @@ class MeshServiceTest {
 
         service.sendText(convId = "c1", dstId = "ME", text = "你好")
 
-        val stored = store.observeMessages("c1").first().first()
+        // 自环投递以「发送者短 ID」为会话键落库（conv-ME）
+        val stored = store.observeMessages("conv-ME").first().first()
         assertEquals("你好", stored.text)
         assertEquals(MessageStatus.DELIVERED, stored.status)
 
@@ -113,20 +114,43 @@ class MeshServiceTest {
         service.tickSessionState(t0 + 600)
         assertEquals(3, transport.broadcastCount)
 
-        // 对端确认到达：建立会话、停止重发，并回发一次确认（ack-of-ack）
+        // 收到对端确认：会话锁定、停止重发；接受方不再回发（防双方无限互发确认刷屏）
         service.handleFrame(ackFrame("OTHER", "ME"))
         assertEquals(setOf("OTHER"), service.sessions.value)
-        assertEquals(4, transport.broadcastCount)
+        assertEquals(3, transport.broadcastCount)
 
         service.tickSessionState(t0 + 800)
-        assertEquals(4, transport.broadcastCount) // 已确认，不再重发
+        assertEquals(3, transport.broadcastCount) // 已确认，不再重发
 
         // 新接受但一直未确认：超过重发窗口后自动停止
         val t1 = System.currentTimeMillis()
         service.acceptInvite("OTHER2")
-        assertEquals(5, transport.broadcastCount)
+        assertEquals(4, transport.broadcastCount)
         service.tickSessionState(t1 + ACK_RETRY_TIMEOUT_MS + 10)
-        assertEquals(5, transport.broadcastCount)
+        assertEquals(4, transport.broadcastCount)
+    }
+
+    @Test
+    fun `initiator replies ack-of-ack exactly once to stop retry loop`() {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+
+        // 发起方：发送邀请（pendingInvites 记录、广播 INVITE）
+        service.sendInvite("OTHER")
+        assertEquals(1, transport.broadcastCount)
+
+        // 收到接受方确认：锁定会话、回发一次 ack-of-ack 让对端停止重发
+        service.handleFrame(ackFrame("OTHER", "ME"))
+        assertEquals(2, transport.broadcastCount)
+        assertEquals(setOf("OTHER"), service.sessions.value)
+        assertEquals(0, service.pendingInvites.value.size)
+
+        // 接受方重发的冗余确认：不再回发，防止无限互发
+        service.handleFrame(ackFrame("OTHER", "ME"))
+        assertEquals(2, transport.broadcastCount)
     }
 
     @Test
@@ -139,14 +163,40 @@ class MeshServiceTest {
 
         val t0 = System.currentTimeMillis()
         service.acceptInvite("OTHER")             // 接受并回发确认
-        service.handleFrame(ackFrame("OTHER", "ME")) // 对端确认已收到（ack-of-ack）
-        assertEquals(2, transport.broadcastCount)
+        service.handleFrame(ackFrame("OTHER", "ME")) // 接受方收到确认：不回发（防循环）
+        assertEquals(1, transport.broadcastCount)
 
         // 对端因丢失确认而再次发起邀请：本机应重发确认并重启重发窗口
         service.handleFrame(inviteFrame("OTHER", "ME"))
-        assertEquals(3, transport.broadcastCount)
+        assertEquals(2, transport.broadcastCount)
         assertEquals(setOf("OTHER"), service.sessions.value)
         service.tickSessionState(t0 + 400)
-        assertEquals(4, transport.broadcastCount) // 重发窗口已重启
+        assertEquals(3, transport.broadcastCount) // 重发窗口已重启
+    }
+
+    @Test
+    fun `invite addressed to another peer is ignored to avoid broadcast leak`() {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+
+        // 广播帧：邀请发往 OTHER2，本机（ME）不得弹窗（invites 保持空）
+        service.handleFrame(inviteFrame("OTHER", "OTHER2"))
+        assertEquals(0, service.invites.value.size)
+
+        // 发往本机的邀请正常入队
+        service.handleFrame(inviteFrame("OTHER", "ME"))
+        assertEquals(setOf("OTHER"), service.invites.value.keys.toSet())
+
+        // 确认帧同样做 dstId 过滤：发往 OTHER2 的确认不得触发会话/重发停止
+        val t0 = System.currentTimeMillis()
+        service.acceptInvite("OTHER")
+        val before = transport.broadcastCount
+        service.handleFrame(ackFrame("OTHER", "OTHER2"))
+        assertEquals(before, transport.broadcastCount) // 非本机确认不触发 ack-of-ack
+        service.tickSessionState(t0 + 400)
+        assertEquals(before + 1, transport.broadcastCount) // 仍在重发
     }
 }

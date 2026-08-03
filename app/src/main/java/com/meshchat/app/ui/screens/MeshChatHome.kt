@@ -58,6 +58,8 @@ fun MeshChatHome(
     localShortId: String,
     localBluetoothName: String,
     localBluetoothAddress: String,
+    conversationTarget: String?,
+    onOpenConversation: (String?) -> Unit,
     onStartDiscovery: () -> Unit,
     onSendInvite: (String) -> Unit,
     onAcceptInvite: (String) -> Unit,
@@ -65,7 +67,6 @@ fun MeshChatHome(
     onSendMessage: (String) -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
-    var conversationTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
     val destination = MainDestination.valueOf(destinationName)
 
@@ -90,7 +91,7 @@ fun MeshChatHome(
     }
 
     BackHandler(enabled = conversationTarget != null || profileDetail != null) {
-        if (conversationTarget != null) conversationTarget = null else profileDetail = null
+        if (conversationTarget != null) onOpenConversation(null) else profileDetail = null
     }
 
     if (conversationTarget != null) {
@@ -101,7 +102,7 @@ fun MeshChatHome(
             messages = messages,
             title = title,
             connected = connected,
-            onBack = { conversationTarget = null },
+            onBack = { onOpenConversation(null) },
             onSendMessage = onSendMessage,
         )
         return
@@ -181,7 +182,7 @@ fun MeshChatHome(
                 MainDestination.CHATS -> ChatsScreen(
                     modifier = Modifier.padding(contentPadding),
                     conversations = conversations,
-                    onChatSelected = { conversationTarget = "ME" },
+                    onChatSelected = { onOpenConversation(it) }, // 进入所选会话（id = 对端短 ID），而非硬编码"我"
                 )
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),
@@ -192,7 +193,7 @@ fun MeshChatHome(
                     onPeerSelected = { peerId ->
                         // 未建立会话则先发邀请；无论状态都进入会话页（发起方即时反馈）
                         if (peerId !in sessions) onSendInvite(peerId)
-                        conversationTarget = peerId
+                        onOpenConversation(peerId)
                     },
                 )
                 MainDestination.PROFILE -> ProfileScreen(

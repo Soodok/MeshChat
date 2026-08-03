@@ -1,5 +1,6 @@
 package com.meshchat.app.mesh.service
 
+import android.util.Log
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
@@ -36,6 +37,8 @@ private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
 private const val LOST_THRESHOLD_MS = 1_500L      // 超过该时长无扫描更新 → 标记失联
 private const val LOST_REMOVE_MS = 5_000L         // 失联超过该时长 → 从列表移除
 
+private const val TAG = "MeshSvc"
+
 /** 接受邀请后持续重发确认的上限：超过则停止，避免无限广播空耗。 */
 internal const val ACK_RETRY_TIMEOUT_MS = 30_000L
 
@@ -46,6 +49,7 @@ class MeshService(
     private val dedup: DedupCache,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var started = false
     private var receiveJob: Job? = null
     private var peerJob: Job? = null
     private var tickJob: Job? = null
@@ -77,6 +81,8 @@ class MeshService(
     private val _ackRetries = MutableStateFlow<Map<String, Long>>(emptyMap())
 
     fun start() {
+        if (started) return // 幂等：防止「开始附近发现」被重复点击导致重复启动
+        started = true
         transport.start()
         receiveJob = scope.launch {
             transport.incoming.catch { }.collect { frame -> handleFrame(frame) }
@@ -109,6 +115,8 @@ class MeshService(
     }
 
     fun stop() {
+        if (!started) return
+        started = false
         receiveJob?.cancel()
         peerJob?.cancel()
         tickJob?.cancel()
@@ -215,8 +223,16 @@ class MeshService(
 
     private fun handleEnvelope(envelope: MeshEnvelope) {
         if (envelope.srcId == identity.shortId) return // 忽略自身回环帧
+        Log.d(TAG, "recv kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId} sessions=${_sessions.value.size}")
+        // 握手帧走双通道（write + notify）可能重复送达，按信封 id 去重
+        if (envelope.kind == "INVITE" || envelope.kind == "INVITE_ACK") {
+            if (dedup.contains(envelope.id)) return
+            dedup.mark(envelope.id)
+        }
         when (envelope.kind) {
             "INVITE" -> {
+                // 邀请是一跳点对点帧，仅处理发往本机的（防空广播把邀请泄露给无关节点弹窗）
+                if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 if (envelope.srcId in _sessions.value) {
                     // 已建立会话的对端再次发起请求（其确认可能丢失）：重发确认并重启重发窗口，帮助双方收敛
                     _ackRetries.update { it + (envelope.srcId to System.currentTimeMillis()) }
@@ -226,16 +242,21 @@ class MeshService(
                 }
             }
             "INVITE_ACK" -> {
+                // 确认同样为一跳点对点帧，仅处理发往本机的
+                if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                val firstTime = envelope.srcId !in _sessions.value
                 _sessions.update { it + envelope.srcId }
                 _invites.update { it - envelope.srcId }
                 _pendingInvites.update { it - envelope.srcId }
                 _ackRetries.update { it - envelope.srcId }
-                // 回发一次确认（ack-of-ack），让对端停止重发
-                sendInviteAck(envelope.srcId)
+                // 仅首次收到确认时回发一次（ack-of-ack），让对端停止重发；
+                // 之后对端重发的冗余 ACK 不再回发，防止双方无限互发确认刷屏
+                if (firstTime) sendInviteAck(envelope.srcId)
             }
             else -> {
-                // 仅已建立对话关系的节点间的消息参与路由投递
-                if (envelope.srcId in _sessions.value) {
+                // 投递以目标寻址为准：发往本机的消息直接投递，不依赖会话白名单
+                //（会话是内存态，重启即空；若按 srcId in sessions 拦截，会话丢失后消息被误丢）
+                if (envelope.dstId.isBlank() || envelope.dstId == identity.shortId || envelope.srcId in _sessions.value) {
                     route(envelope)
                 }
             }
@@ -245,12 +266,14 @@ class MeshService(
     private fun route(envelope: MeshEnvelope) {
         when (val decision = ForwardingDecision(identity.shortId, dedup).decide(envelope)) {
             ForwardDecision.Deliver -> {
+                Log.d(TAG, "deliver kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId}")
                 store.insertMessage(envelope.toStoredMessage())
                 store.updateMessageStatus(envelope.id, MessageStatus.DELIVERED)
                 sendReceipt(envelope)
             }
             is ForwardDecision.Forward -> {
                 val forwarded = envelope.copy(ttl = decision.ttl)
+                Log.d(TAG, "forward kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId} ttl=${decision.ttl}")
                 store.enqueueOutbox(
                     OutboxEntry(
                         id = forwarded.id,
@@ -278,8 +301,10 @@ class MeshService(
 
     private fun MeshEnvelope.toStoredMessage(): StoredMessage {
         val text = (body as? TextBody)?.text
+        // 会话键以「发送者短 ID」为统一命名基准（conv-<srcId>）：
+        // 发送方用对端 ID 命名、接收方用发送者 ID 命名会导致收发双方读写不同会话键，消息存了却查不到。
         return StoredMessage(
-            id = id, convId = convId, kind = kind, srcId = srcId, dstId = dstId,
+            id = id, convId = "conv-$srcId", kind = kind, srcId = srcId, dstId = dstId,
             text = text, ts = ts, status = MessageStatus.DELIVERED,
         )
     }

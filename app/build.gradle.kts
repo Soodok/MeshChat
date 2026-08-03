@@ -13,13 +13,18 @@ android {
         applicationId = "com.meshchat.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.8.0"
+        versionCode = 21
+        versionName = "0.10.0"
     }
 
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    testOptions {
+        // JVM 单测中 android.util.Log 等 Android API 返回默认值而非抛异常
+        unitTests.isReturnDefaultValues = true
     }
 
     packaging {

@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.8.0（versionCode 9，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.10.0（versionCode 21，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -56,24 +56,36 @@ app/src/main/java/com/meshchat/app/
   - **修复安卓 11 卡退根因**：Manifest 补 `BLUETOOTH`/`BLUETOOTH_ADMIN`（maxSdkVersion 30，Android ≤11 BLE 必需普通权限）；`ACCESS_FINE_LOCATION` 限 maxSdkVersion 30；`MeshChatApplication.localBluetoothName/Address` 加 runCatching 防御（原 `adapter.name` 在 Android ≤11 无 BLUETOOTH 权限时抛 SecurityException，ViewModelFactory 构造即崩）。
   - **权限按版本拆分**：`MainActivity.requiredPermissions` API≥31 请求 BLUETOOTH_SCAN/CONNECT/ADVERTISE，API≤30 只请求位置权限（原 3 个新权限在 Android 11 永不授予 → hasAllPermissions 恒 false → Mesh 永不启动）。
   - **安卓 12 能收不能发（待真机 logcat 确证）**：BleTransport 加诊断埋点（TAG=MeshBle：connect 状态/MTU 协商/服务发现/帧队列/写入返回值）+ 可靠性改进——connectGatt 统一主线程调用、requestMtu 失败不阻塞 discoverServices、服务发现失败重试 3 次（防 pendingFrames 永久滞留）、writeCharacteristic 失败打日志。
+- **v0.9.x~v0.10.0 真机联调全链路打通**（A11 安卓11 GSI / A12 华为12 / A16 安卓16 三机实测）：
+  - **draftId 过滤**：INVITE/INVITE_ACK 校验 dstId（防空广播把邀请泄露给无关节点弹窗）。
+  - **修复 A11 扫描不工作**：根因是**位置服务未开启**（Android ≤11 BLE 扫描依赖位置服务），`location_mode=3` 后扫描/主动连接恢复。已通过 adb 开启，用户侧需注意。
+  - **修复 notify NoSuchMethodError**：4 参数 `notifyCharacteristicChanged` 是 API 33+，Android 11 没有 → 按 `Build.VERSION.SDK_INT` 分支（<33 用 3 参数 + characteristic.value 传载荷）。
+  - **GATT 双通道**：broadcast 同时走「central 写特征」（writeToConnectedClients）+「server notify 回传」（notifySubscribers，含 CCCD 订阅 + onCharacteristicChanged 接收回调）。被邀请方无需主动连接也能回 ACK。
+  - **discoverServices 超时兜底**：5s 未回调自动重试（`DISCOVER_TIMEOUT_MS`，最多 3 次），解决部分 ROM/GSI 回调永不触发导致 pendingFrames 永久滞留。
+  - **ACK 重发收敛**：`INVITE_ACK` 仅**首次**收到时回发 ack-of-ack（用 pendingInvites 判定发起方），防止双方无限互发确认刷屏挤占 BLE 带宽。
+  - **短 ID 持久化**：`LocalIdentity` 短 ID 存 SharedPreferences（`meshchat_identity`），重启不变（原每次重启变 ID → 会话/路由失效）。
+  - **TEXT 按 dstId 投递**：去掉 srcId∈sessions 白名单拦截，发往本机（dstId 匹配）即投递，会话内存态丢失不误丢消息。
+  - **修复 UI 消息自环**：`MeshChatHome` 聊天列表点击硬编码 `conversationTarget="ME"` + `sendMessage` 硬编码 `conv-ME` → 全部提升到 ViewModel（`conversationTarget` StateFlow + `flatMapLatest` 消息流），点击进入真实会话、消息发往当前会话。
+  - **convId 对称**：接收方落库用 `conv-<srcId>`（发送者短 ID）作会话键，收发双方读写同一会话（原发送方用对端 ID、接收方用发送者 ID → 消息存了查不到）。
+  - 单测新增 `isReturnDefaultValues` 豁免（MeshService 使用 android.util.Log）。
 - 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**20/20 测试通过，0 失败**（帧编解码/信封序列化/去重/转发决策/身份/服务自环闭环/**握手确认容错**——重发直到确认/确认后停止/超时停止/已会话节点重复邀请重发）。
+- `gradlew testDebugUnitTest`：**22/22 测试通过，0 失败**（帧编解码/信封序列化/去重/转发决策/身份/服务自环闭环/握手确认容错/ack-of-ack 防循环/dstId 过滤/发起方单次回发）。
 - `gradlew assembleDebug`：**BUILD SUCCESSFUL**。
-- 服务层自环闭环（MeshServiceTest）：发送→投递→DELIVERED 状态、转发帧 TTL 递减 7 均验证通过。
-- v0.8.0 权限/兼容改动仅涉及 Manifest、MainActivity、Application、BleTransport，单测全部保持通过。
+- **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。遗留：UI 显示细节（消息到达后界面呈现）待前端队友处理。
 
 ### 当前阻塞
-- **BLE 真机双机联调**：代码链路就绪（广播短 ID、GATT 连接+MTU+服务发现等待、帧接力、对话握手、会话级投递、0.2s 探测刷新、失联标注/重连、质量评分）；待真机双机验证「握手→会话→消息投递」全链路与失联处理（当前无设备连接）。
+- **UI 显示细节待前端处理**：传输/路由/存储链路已通（双方 MeshSvc 确认消息到达并落库），但用户反馈"消息收不到"——需队友检查 ConversationScreen 消息流渲染（`observeMessages("conv-<对端ID>")` 的 flow 触发、`sentByMe` 方向、消息列表刷新时机）。日志：`adb logcat -s MeshSvc MeshBle`。
+- **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 - **GitHub 推送**：链路偶发 `Connection was reset`（间歇性），本地提交安全；重试即成功。
 
 ### 下一步首要任务
-1. **真机复测 v0.8.0**：安卓 11 装新包验证不再卡退且可发邀请；安卓 12 验证发送邀请是否恢复。若安卓 12 仍「能收不能发」，抓 logcat（`adb logcat -s MeshBle`）——重点看：`connect[addr] newState=2` 是否出现（GATT 连接是否建立）、`services discovered` 是否成功、`writeCharacteristic failed` 是否出现、`service not ready … queue frame` 是否持续（服务发现失败帧滞留）。将关键行反馈给下一位 Agent 定位。
-2. BLE 真机双机全链路联调（v0.7.0 握手容错）：A 发起对话 → B 接受 → A 数秒内自动进入会话；再测 B 拒绝、A 在 B 接受瞬间关蓝牙等丢包场景。
+1. **前端队友修 UI 显示**（本次推送目的）：打开已建会话后能看到双方消息（现传输已通、落库正确，仅界面呈现待确认）。
+2. 三机全链路回归：握手→会话→双向消息→失联重连→多跳转发（TTL 8）。
 3. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输上层逻辑（协议载荷已就绪）。
-4. 后端数据源接入前端：`MeshRepository.observeConversations()` 返回空流，待接入 Room 会话表驱动聊天列表（当前仅「我」自环会话与握手建立的节点会话可进）。
+4. 后端数据源接入前端：`MeshRepository.observeConversations()` 目前从 sessions 派生，待接入 Room 会话表驱动聊天列表。
 
 ### 本次涉及的关键文件
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）

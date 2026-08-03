@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattServer
 import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
@@ -18,6 +19,7 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
@@ -47,11 +49,60 @@ class BleTransport(
     private companion object {
         const val TAG = "MeshBle"
         const val MAX_DISCOVER_RETRIES = 3
+        const val MAX_SERVICE_ADD_RETRIES = 5
+        const val PENDING_FRAME_TIMEOUT_MS = 30_000L
+        const val CONNECT_RETRY_COOLDOWN_MS = 5_000L
+        const val DISCOVER_TIMEOUT_MS = 5_000L
+        /** 客户端特征配置描述符（CCCD）标准 UUID，用于订阅 notify。 */
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
     }
 
     // GATT Server：暴露服务，接收邻近节点写入的帧
     private var gattServer: BluetoothGattServer? = null
+    private var serviceAddAttempts = 0
+    /** 已连接（作为 server 被连入）的设备：address -> device；用于 notify 回传。 */
+    private val serverDevices = HashMap<String, BluetoothDevice>()
+    /** 已订阅 notify 的 server 连接设备地址。 */
+    private val subscribedDevices = HashSet<String>()
     private val gattServerCallback = object : BluetoothGattServerCallback() {
+        override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+            Log.d(TAG, "service added status=$status (${if (status == BluetoothGatt.GATT_SUCCESS) "OK" else "FAIL"})")
+            if (status != BluetoothGatt.GATT_SUCCESS) addServiceWithRetry(service)
+        }
+
+        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            Log.d(TAG, "server conn[${device.address}] newState=$newState status=$status")
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                serverDevices[device.address] = device
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                serverDevices.remove(device.address)
+                subscribedDevices.remove(device.address)
+            }
+        }
+
+        override fun onDescriptorWriteRequest(
+            device: BluetoothDevice,
+            requestId: Int,
+            descriptor: BluetoothGattDescriptor,
+            preparedWrite: Boolean,
+            responseNeeded: Boolean,
+            offset: Int,
+            value: ByteArray?,
+        ) {
+            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+            val enabled = value != null && value.isNotEmpty() && value[0].toInt() != 0
+            if (enabled) {
+                subscribedDevices.add(device.address)
+                Log.d(TAG, "subscribed[${device.address}]")
+            } else {
+                subscribedDevices.remove(device.address)
+            }
+        }
+
+        override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+            Log.d(TAG, "server mtu[${device.address}] mtu=$mtu")
+        }
+
         override fun onCharacteristicWriteRequest(
             device: BluetoothDevice,
             requestId: Int,
@@ -61,6 +112,7 @@ class BleTransport(
             offset: Int,
             value: ByteArray?,
         ) {
+            Log.d(TAG, "write request from ${device.address} (${value?.size ?: 0}B)")
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
             if (value != null) runCatching { MeshFrame.decode(value) }.onSuccess { _incoming.tryEmit(it) }
         }
@@ -69,7 +121,9 @@ class BleTransport(
     // 客户端连接（待转发时按 peerId 建立连接）
     private val gattClients = HashMap<String, BluetoothGatt>()
     private val peerIds = HashMap<String, String>() // deviceAddress -> peerId
-    private val pendingFrames = HashMap<String, MutableList<MeshFrame>>() // deviceAddress -> 待服务发现后补写的帧
+    private val connectAttempts = HashMap<String, Long>() // deviceAddress -> 上次连接尝试时间（失败冷却）
+    // 待服务发现后补写的帧：address -> (入队时间戳, 帧)；超时未补写则丢弃，防止永久滞留
+    private val pendingFrames = HashMap<String, MutableList<Pair<Long, MeshFrame>>>()
 
     override fun start() {
         Log.d(TAG, "start: shortId=$advertiseShortId")
@@ -86,14 +140,20 @@ class BleTransport(
 
     override fun stop() {
         gattServer?.close()
+        gattServer = null
+        serverDevices.clear()
+        subscribedDevices.clear()
         gattClients.values.forEach { it.close() }
         gattClients.clear()
+        connectAttempts.clear()
+        pendingFrames.clear()
         bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
         bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
     }
 
     override fun broadcast(frame: MeshFrame) {
-        writeToConnectedClients(frame)
+        writeToConnectedClients(frame)   // 通道1：本机 central → 已连接的对端（写特征）
+        notifySubscribers(frame)          // 通道2：已连入本机的对端（server 连接，notify 回传）
     }
 
     override fun sendTo(peerId: String, frame: MeshFrame) { /* 按 peerId 解析地址后写入 */ }
@@ -103,11 +163,32 @@ class BleTransport(
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         val characteristic = BluetoothGattCharacteristic(
             charUuid,
-            BluetoothGattCharacteristic.PROPERTY_WRITE,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
+        // CCCD：对端 central 订阅 notify，server 即可向其回传帧（不依赖本机主动连接）
+        characteristic.addDescriptor(
+            BluetoothGattDescriptor(
+                UUID.fromString("00002902-0000-1000-8000-00805F9B34FB"),
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
+            ),
+        )
         service.addCharacteristic(characteristic)
-        gattServer?.addService(service)
+        addServiceWithRetry(service)
+    }
+
+    /** 注册 GATT 服务，失败自动重试（部分 ROM/GSI 首次 addService 会失败）。 */
+    private fun addServiceWithRetry(service: BluetoothGattService) {
+        if (serviceAddAttempts >= MAX_SERVICE_ADD_RETRIES) {
+            Log.e(TAG, "addService giving up after $serviceAddAttempts attempts")
+            return
+        }
+        serviceAddAttempts++
+        val ok = runCatching { gattServer?.addService(service) ?: false }.getOrDefault(false)
+        if (!ok) {
+            Log.w(TAG, "addService returned false (attempt #$serviceAddAttempts), retrying in 500ms")
+            mainHandler.postDelayed({ addServiceWithRetry(service) }, 500L)
+        }
     }
 
     private fun startAdvertising() {
@@ -152,23 +233,32 @@ class BleTransport(
 
     private fun connectTo(device: BluetoothDevice) {
         if (gattClients.containsKey(device.address)) return
+        val now = System.currentTimeMillis()
+        val lastTry = connectAttempts[device.address]
+        if (lastTry != null && now - lastTry < CONNECT_RETRY_COOLDOWN_MS) return // 失败冷却，防高频重连
+        connectAttempts[device.address] = now
         // connectGatt 文档要求在带 Looper 的线程调用，统一调度到主线程
         mainHandler.post {
             if (gattClients.containsKey(device.address)) return@post
             val gatt = runCatching {
                 device.connectGatt(context, false, object : BluetoothGattCallback() {
                     private var discoverRetries = 0
+                    private var servicesDiscovered = false
+                    private var discoverTimer: Runnable? = null
 
                     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                         Log.d(TAG, "connect[${device.address}] newState=$newState status=$status")
                         when (newState) {
                             BluetoothProfile.STATE_CONNECTED -> {
+                                connectAttempts.remove(device.address)
+                                servicesDiscovered = false
                                 runCatching { gatt.requestMtu(512) }
                                     .onFailure { Log.w(TAG, "requestMtu failed: $it") }
-                                gatt.discoverServices()
+                                discoverServicesWithTimeout(gatt)
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
-                                // 移除连接记录：持续扫描重新发现时会自动重连
+                                // 移除连接记录：持续扫描重新发现时会自动重连（受冷却限制）
+                                discoverTimer?.let { mainHandler.removeCallbacks(it) }
                                 gatt.close()
                                 gattClients.remove(device.address)
                                 pendingFrames.remove(device.address)
@@ -176,14 +266,65 @@ class BleTransport(
                         }
                     }
 
+                    /** discoverServices + 超时兜底：部分 ROM 上回调永不触发，导致帧滞留 pendingFrames。 */
+                    private fun discoverServicesWithTimeout(gatt: BluetoothGatt) {
+                        gatt.discoverServices()
+                        val timer = object : Runnable {
+                            override fun run() {
+                                when {
+                                    servicesDiscovered -> Unit
+                                    discoverRetries++ < MAX_DISCOVER_RETRIES -> {
+                                        Log.w(TAG, "discoverServices timeout for ${device.address}, retry #$discoverRetries")
+                                        gatt.discoverServices()
+                                        mainHandler.postDelayed(this, DISCOVER_TIMEOUT_MS)
+                                    }
+                                    else -> Log.w(TAG, "discoverServices timeout for ${device.address}, giving up")
+                                }
+                            }
+                        }
+                        discoverTimer = timer
+                        mainHandler.postDelayed(timer, DISCOVER_TIMEOUT_MS)
+                    }
+
                     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                         Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
                     }
 
+                    @Deprecated("Deprecated in Java")
+                    override fun onCharacteristicChanged(
+                        gatt: BluetoothGatt,
+                        characteristic: BluetoothGattCharacteristic,
+                    ) {
+                        // API 33 以下走此重载：值从特征对象读取
+                        onCharacteristicChanged(gatt, characteristic, characteristic.value ?: ByteArray(0))
+                    }
+
+                    override fun onCharacteristicChanged(
+                        gatt: BluetoothGatt,
+                        characteristic: BluetoothGattCharacteristic,
+                        value: ByteArray,
+                    ) {
+                        Log.d(TAG, "notify received from ${device.address} (${value.size}B)")
+                        runCatching { MeshFrame.decode(value) }.onSuccess { _incoming.tryEmit(it) }
+                    }
+
                     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                        servicesDiscovered = true
+                        discoverTimer?.let { mainHandler.removeCallbacks(it) }
                         if (status == BluetoothGatt.GATT_SUCCESS) {
                             Log.d(TAG, "services discovered[${device.address}]")
-                            pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it) }
+                            // 订阅对端 notify（写 CCCD），对端即可通过 server→central 通道回传帧
+                            val char = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
+                            if (char != null) {
+                                runCatching {
+                                    gatt.setCharacteristicNotification(char, true)
+                                    char.getDescriptor(CCCD_UUID)?.let { cccd ->
+                                        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                                        gatt.writeDescriptor(cccd)
+                                    }
+                                }
+                            }
+                            pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it.second) }
                         } else if (discoverRetries++ < MAX_DISCOVER_RETRIES) {
                             Log.w(TAG, "services discover failed(status=$status), retry #$discoverRetries")
                             gatt.discoverServices()
@@ -198,14 +339,18 @@ class BleTransport(
     }
 
     private fun writeToConnectedClients(frame: MeshFrame) {
+        val now = System.currentTimeMillis()
         gattClients.forEach { (address, gatt) ->
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
             if (characteristic != null) {
                 writeTo(gatt, frame)
             } else {
-                // 服务尚未发现：暂存，待 onServicesDiscovered 后补写
-                Log.w(TAG, "service not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
-                pendingFrames.getOrPut(address) { mutableListOf() }.add(frame)
+                // 服务尚未发现：暂存，待 onServicesDiscovered 后补写；超时帧丢弃防永久滞留
+                val queued = pendingFrames.getOrPut(address) { mutableListOf() }
+                queued.removeAll { now - it.first > PENDING_FRAME_TIMEOUT_MS }
+                if (queued.size >= 32) queued.removeAt(0)
+                queued.add(now to frame)
+                Log.w(TAG, "service not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
             }
         }
     }
@@ -215,5 +360,29 @@ class BleTransport(
         characteristic.value = frame.encode()
         val ok = runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
         if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
+    }
+
+    /** 通道2：通过 GATT Server 的 notify 向已订阅的 central 对端回传帧（无需本机主动连接）。 */
+    private fun notifySubscribers(frame: MeshFrame) {
+        val server = gattServer ?: return
+        val characteristic = server.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return
+        val bytes = frame.encode()
+        // notifyCharacteristicChanged 必须在主线程调用，否则部分 ROM 直接抛异常
+        mainHandler.post {
+            subscribedDevices.forEach { address ->
+                val device = serverDevices[address] ?: return@forEach
+                val ok = runCatching {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        // API 33+：4 参数重载，载荷作为参数传入
+                        server.notifyCharacteristicChanged(device, characteristic, false, bytes)
+                    } else {
+                        // API 33 以下：无 4 参数重载（否则 NoSuchMethodError），载荷写入特征对象后走 3 参数版本
+                        characteristic.value = bytes
+                        server.notifyCharacteristicChanged(device, characteristic, false)
+                    }
+                }.onFailure { Log.e(TAG, "notify error for $address: $it") }.isSuccess
+                if (!ok) Log.w(TAG, "notify failed for $address")
+            }
+        }
     }
 }
