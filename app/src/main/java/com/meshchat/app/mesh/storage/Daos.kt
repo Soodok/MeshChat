@@ -1,0 +1,43 @@
+package com.meshchat.app.mesh.storage
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface MessageDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: MessageEntity)
+
+    @Query("UPDATE messages SET status = :status WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String)
+
+    @Query("SELECT * FROM messages WHERE convId = :convId ORDER BY ts ASC")
+    fun observeByConv(convId: String): Flow<List<MessageEntity>>
+}
+
+@Dao
+interface OutboxDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: OutboxEntity)
+
+    @Query("SELECT * FROM outbox WHERE expireAt > :now ORDER BY attempts ASC LIMIT 20")
+    suspend fun next(now: Long): List<OutboxEntity>
+
+    @Query("DELETE FROM outbox WHERE id = :id")
+    suspend fun remove(id: String)
+}
+
+@Dao
+interface PeerDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: PeerEntity)
+
+    @Query("DELETE FROM peers WHERE shortId = :id")
+    suspend fun remove(id: String)
+
+    @Query("SELECT * FROM peers")
+    fun observeAll(): Flow<List<PeerEntity>>
+}
