@@ -46,12 +46,13 @@ import com.meshchat.app.ui.theme.TextSecondary
 @Composable
 fun ConversationScreen(
     messages: List<ChatMessage>,
+    title: String,
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
-        ConversationHeader(onBack)
+        ConversationHeader(title, onBack)
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.Center,
@@ -101,18 +102,18 @@ fun ConversationScreen(
 }
 
 @Composable
-private fun ConversationHeader(onBack: () -> Unit) {
+private fun ConversationHeader(title: String, onBack: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 44.dp, start = 12.dp, end = 20.dp, bottom = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") }
         Box(Modifier.size(42.dp).clip(androidx.compose.foundation.shape.CircleShape).background(InkSoft), contentAlignment = Alignment.Center) {
-            Text("林", style = MaterialTheme.typography.titleMedium)
+            Text(title.take(1), style = MaterialTheme.typography.titleMedium)
         }
         Spacer(Modifier.width(12.dp))
         Column {
-            Text("林宇航", style = MaterialTheme.typography.titleLarge)
+            Text(title, style = MaterialTheme.typography.titleLarge)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(8.dp).background(MeshGreen, androidx.compose.foundation.shape.CircleShape))
                 Text("已连接 · 2 跳", color = MeshGreen, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 6.dp))

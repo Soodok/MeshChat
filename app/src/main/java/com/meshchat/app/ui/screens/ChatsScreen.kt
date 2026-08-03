@@ -21,23 +21,43 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.ChatPreview
-import com.meshchat.app.data.nearbyChats
-import com.meshchat.app.data.queuedChats
+import com.meshchat.app.data.Reachability
 import com.meshchat.app.ui.components.PresenceAvatar
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider as MeshDivider
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
-fun ChatsScreen(modifier: Modifier = Modifier, onChatSelected: (String) -> Unit) {
+fun ChatsScreen(
+    modifier: Modifier = Modifier,
+    conversations: List<ChatPreview>,
+    onChatSelected: (String) -> Unit,
+) {
+    val reachable = conversations.filter { it.reachability == Reachability.REACHABLE }
+    val queued = conversations.filter { it.reachability == Reachability.QUEUED }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 8.dp)) {
-        item { SectionLabel("最近对话") }
-        items(nearbyChats, key = { it.id }) { chat ->
-            ChatRow(chat, onClick = { onChatSelected(chat.id) })
-        }
-        item { SectionLabel("等待路由", topPadding = 22.dp) }
-        items(queuedChats, key = { it.id }) { chat ->
-            ChatRow(chat, onClick = { onChatSelected(chat.id) })
+        if (conversations.isEmpty()) {
+            item {
+                Text(
+                    text = "暂无对话",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 32.dp),
+                )
+            }
+        } else {
+            if (reachable.isNotEmpty()) {
+                item { SectionLabel("最近对话") }
+                items(reachable, key = { it.id }) { chat ->
+                    ChatRow(chat, onClick = { onChatSelected(chat.id) })
+                }
+            }
+            if (queued.isNotEmpty()) {
+                item { SectionLabel("等待路由", topPadding = 22.dp) }
+                items(queued, key = { it.id }) { chat ->
+                    ChatRow(chat, onClick = { onChatSelected(chat.id) })
+                }
+            }
         }
     }
 }

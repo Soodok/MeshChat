@@ -59,9 +59,9 @@ class BleTransport(
     private val peerIds = HashMap<String, String>() // deviceAddress -> peerId
 
     override fun start() {
-        registerServer()
-        startAdvertising()
-        startScanning()
+        runCatching { registerServer() }
+        runCatching { startAdvertising() }
+        runCatching { startScanning() }
     }
 
     override fun stop() {

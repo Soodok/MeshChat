@@ -33,7 +33,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.ChatMessage
+import com.meshchat.app.data.ChatPreview
 import com.meshchat.app.data.MainDestination
+import com.meshchat.app.data.MeshPeer
 import com.meshchat.app.ui.components.SecurityNote
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Ink
@@ -42,7 +44,13 @@ import com.meshchat.app.ui.theme.MeshGreen
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
-fun MeshChatHome(messages: List<ChatMessage>, onSendMessage: (String) -> Unit) {
+fun MeshChatHome(
+    messages: List<ChatMessage>,
+    conversations: List<ChatPreview>,
+    peers: List<MeshPeer>,
+    onStartDiscovery: () -> Unit,
+    onSendMessage: (String) -> Unit,
+) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var conversationOpen by rememberSaveable { mutableStateOf(false) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -53,7 +61,7 @@ fun MeshChatHome(messages: List<ChatMessage>, onSendMessage: (String) -> Unit) {
     }
 
     if (conversationOpen) {
-        ConversationScreen(messages = messages, onBack = { conversationOpen = false }, onSendMessage = onSendMessage)
+        ConversationScreen(messages = messages, title = "我", onBack = { conversationOpen = false }, onSendMessage = onSendMessage)
         return
     }
 
@@ -125,9 +133,14 @@ fun MeshChatHome(messages: List<ChatMessage>, onSendMessage: (String) -> Unit) {
             when (activeDestination) {
                 MainDestination.CHATS -> ChatsScreen(
                     modifier = Modifier.padding(contentPadding),
+                    conversations = conversations,
                     onChatSelected = { conversationOpen = true },
                 )
-                MainDestination.MESH -> MeshScreen(modifier = Modifier.padding(contentPadding))
+                MainDestination.MESH -> MeshScreen(
+                    modifier = Modifier.padding(contentPadding),
+                    peers = peers,
+                    onStartDiscovery = onStartDiscovery,
+                )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),
                     onOpenKeys = { profileDetail = "keys" },

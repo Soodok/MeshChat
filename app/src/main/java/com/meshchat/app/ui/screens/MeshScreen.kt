@@ -35,7 +35,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.MeshPeer
-import com.meshchat.app.data.meshPeers
 import com.meshchat.app.ui.components.SignalBars
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider as MeshDivider
@@ -44,16 +43,30 @@ import com.meshchat.app.ui.theme.MeshGreen
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
-fun MeshScreen(modifier: Modifier = Modifier) {
+fun MeshScreen(
+    modifier: Modifier = Modifier,
+    peers: List<MeshPeer>,
+    onStartDiscovery: () -> Unit,
+) {
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology() }
         item {
-            Text("附近节点（6）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+            Text("附近节点（${peers.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
         }
-        items(meshPeers, key = { it.name }) { peer -> PeerRow(peer) }
+        if (peers.isEmpty()) {
+            item {
+                Text(
+                    text = "暂无邻近节点，请开始附近发现",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                )
+            }
+        }
+        items(peers, key = { it.name }) { peer -> PeerRow(peer) }
         item {
             Button(
-                onClick = { },
+                onClick = onStartDiscovery,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Color(0xFF081420)),
             ) {

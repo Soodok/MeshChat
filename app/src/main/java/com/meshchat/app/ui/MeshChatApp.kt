@@ -12,9 +12,14 @@ import com.meshchat.app.ui.theme.Ink
 @Composable
 fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewModelFactory())) {
     val messages by viewModel.messages.collectAsStateWithLifecycle()
+    val conversations by viewModel.conversations.collectAsStateWithLifecycle()
+    val peers by viewModel.peers.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
         MeshChatHome(
             messages = messages,
+            conversations = conversations,
+            peers = peers,
+            onStartDiscovery = viewModel::startDiscovery,
             onSendMessage = viewModel::sendMessage,
         )
     }
