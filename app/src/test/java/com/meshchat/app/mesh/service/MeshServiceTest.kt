@@ -414,6 +414,13 @@ class MeshServiceTest {
         assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
     }
 
+    private fun textFrame(id: String, srcId: String, dstId: String, text: String) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(id = id, kind = "TEXT", srcId = srcId, dstId = dstId, convId = "conv-$dstId", ttl = 8, ts = 1, body = TextBody(text)),
+        ).toByteArray(),
+    )
+
     @Test
     fun `incoming text triggers onIncomingMessage with peer name`() {
         val transport = CountingTransport()
@@ -424,17 +431,76 @@ class MeshServiceTest {
         )
         service.start()
         service.handleFrame(pingFrame("OTHER", "老王"))   // 先让昵称入表
-        service.handleFrame(MeshFrame(
-            FrameType.DATA,
-            MeshJson.encodeEnvelope(MeshEnvelope(
-                id = "t1", kind = "TEXT", srcId = "OTHER", dstId = "ME",
-                convId = "conv-ME", ttl = 8, ts = 1, body = TextBody("你好"),
-            )).toByteArray(),
-        ))
+        service.handleFrame(textFrame("t1", "OTHER", "ME", "你好"))
         assertTrue(received.isNotEmpty())
         assertEquals("OTHER", received.first().first)
         assertEquals("老王", received.first().second)
         assertEquals("你好", received.first().third)
         service.stop()
+    }
+
+    private fun receiptFrame(msgId: String) = MeshFrame(
+        FrameType.RECEIPT,
+        "{\"id\":\"$msgId\",\"srcId\":\"OTHER\",\"dstId\":\"ME\"}".toByteArray(),
+    )
+
+    @Test
+    fun `text without receipt is retransmitted then marked failed`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        val msgId = store.queryMessages("conv-OTHER").first().id
+        assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
+        assertEquals(1, transport.broadcastCount)   // 首次广播
+
+        service.resendPendingReceipts(t0 + 6_000)
+        assertEquals("5s 未确认应重发", 2, transport.broadcastCount)
+        service.resendPendingReceipts(t0 + 12_000)
+        assertEquals(3, transport.broadcastCount)
+        service.resendPendingReceipts(t0 + 18_000)
+        assertEquals(4, transport.broadcastCount)
+        service.resendPendingReceipts(t0 + 24_000)
+        assertEquals("重试达上限应标 FAILED 且不再重发", 4, transport.broadcastCount)
+        assertEquals(MessageStatus.FAILED, store.queryMessages("conv-OTHER").first().status)
+    }
+
+    @Test
+    fun `receipt stops retransmission`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        val msgId = store.queryMessages("conv-OTHER").first().id
+        service.resendPendingReceipts(t0 + 6_000)
+        assertEquals(2, transport.broadcastCount)
+
+        service.handleFrame(receiptFrame(msgId))     // 收到回执
+        assertEquals(MessageStatus.DELIVERED, store.queryMessages("conv-OTHER").first().status)
+        service.resendPendingReceipts(t0 + 12_000)
+        assertEquals("回执后不再重发", 2, transport.broadcastCount)
+    }
+
+    @Test
+    fun `duplicate text from resend triggers receipt again`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(textFrame("m1", "OTHER", "ME", "hi"))
+        assertEquals(1, transport.broadcastCount)    // Deliver 后回 RECEIPT
+        assertEquals(1, store.queryMessages("conv-OTHER").size)
+
+        // 发送方重发的同 id 消息：dedup 命中 Drop，但必须补发回执让发送方收敛
+        service.handleFrame(textFrame("m1", "OTHER", "ME", "hi"))
+        assertEquals("重复帧应补发 RECEIPT", 2, transport.broadcastCount)
+        assertEquals("不得重复落库", 1, store.queryMessages("conv-OTHER").size)
     }
 }

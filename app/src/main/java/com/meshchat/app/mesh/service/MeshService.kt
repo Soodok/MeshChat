@@ -45,6 +45,8 @@ private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
 private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校准一次
 private const val LOST_HEARTBEAT_MS = 3_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1-2 帧丢失）
 private const val LOST_REMOVE_MS = 5_000L         // 失联超过该时长 → 从列表移除
+private const val RECEIPT_TIMEOUT_MS = 5_000L     // 消息发出后未收到送达回执的等待时间，超时重发
+private const val MAX_RECEIPT_RETRIES = 3         // 重发上限：超过标记 FAILED（不再无限卡 SENDING）
 
 private const val TAG = "MeshSvc"
 
@@ -126,6 +128,10 @@ class MeshService(
     /** 上次 PING 广播时刻（tick 200ms 节流到 1s）。 */
     private var lastPingAt = 0L
 
+    /** 待送达确认的 TEXT：id -> (信封, 上次发送时刻, 重试次数)。回执（RECEIPT）是广播帧可能丢失，需超时重发。 */
+    private class PendingText(val envelope: MeshEnvelope, var lastSentAt: Long, var retries: Int = 0)
+    private val pendingReceipts = LinkedHashMap<String, PendingText>()
+
     /** 本机短 ID（对端寻址标识）。 */
     val shortId: String get() = identity.shortId
 
@@ -173,6 +179,7 @@ class MeshService(
                 delay(REFRESH_INTERVAL_MS)
                 val now = System.currentTimeMillis()
                 heartbeatTick(now)
+                resendPendingReceipts(now)
                 // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
                 tickSessionState(now)
                 // 文件传输接收超时清理（60s 无进展丢弃）
@@ -209,6 +216,8 @@ class MeshService(
                 srcId = envelope.srcId, dstId = dstId, text = text, ts = envelope.ts,
             ),
         )
+        // 登记待确认：回执（RECEIPT）是广播帧可能丢失，由 resendPendingReceipts 超时重发收敛
+        pendingReceipts[envelope.id] = PendingText(envelope, System.currentTimeMillis())
         route(envelope)
     }
 
@@ -317,6 +326,28 @@ class MeshService(
             if (now - entry.lastSeen > LOST_REMOVE_MS) iterator.remove()
         }
         _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+    }
+
+    /**
+     * 待确认 TEXT 重发（tick 每 200ms 调用）：
+     * 5s 未收到送达回执 → 重发同 id 消息（接收方 dedup 命中会补回执）；重试达上限标记 FAILED，避免状态卡 SENDING。
+     */
+    internal fun resendPendingReceipts(now: Long) {
+        val it = pendingReceipts.entries.iterator()
+        while (it.hasNext()) {
+            val (id, p) = it.next()
+            if (now - p.lastSentAt < RECEIPT_TIMEOUT_MS) continue
+            if (p.retries >= MAX_RECEIPT_RETRIES) {
+                Log.w(TAG, "text $id no receipt after ${MAX_RECEIPT_RETRIES} retries, mark FAILED")
+                store.updateMessageStatus(id, MessageStatus.FAILED)
+                it.remove()
+                continue
+            }
+            p.retries++
+            p.lastSentAt = now
+            Log.w(TAG, "resend text $id retry=${p.retries}")
+            transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(p.envelope).toByteArray()))
+        }
     }
 
     /** 广播 PING（带本机昵称），对端收到回 PONG。 */
@@ -490,7 +521,10 @@ class MeshService(
                 )
                 transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(forwarded).toByteArray()))
             }
-            ForwardDecision.Drop -> Unit
+            ForwardDecision.Drop -> {
+                // 重复 TEXT（发送方超时重发等确认）：本机已投递过，补发回执让发送方收敛，不再重复落库
+                if (envelope.kind == "TEXT") sendReceipt(envelope)
+            }
         }
     }
 
@@ -503,6 +537,7 @@ class MeshService(
         val text = frame.payloadText
         val id = Regex("\"id\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: return
         store.updateMessageStatus(id, MessageStatus.DELIVERED)
+        pendingReceipts.remove(id)
     }
 
     private fun MeshEnvelope.toStoredMessage(): StoredMessage {
