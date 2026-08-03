@@ -41,11 +41,12 @@ object BluetoothQuality {
         return raw.coerceIn(0, 100)
     }
 
-    /** 信号强度条数（0-3），与前端 SignalBars 对齐。 */
+    /** 信号强度条数（0-3），与前端 SignalBars 对齐。
+     *  用户阈值（|RSSI| 绝对值）：40~75 满格、75~85 两格、85~100 一格、>100 零格。 */
     fun bars(rssi: Int): Int = when {
-        rssi >= -60 -> 3
-        rssi >= -75 -> 2
-        rssi >= -90 -> 1
+        rssi >= -75 -> 3
+        rssi >= -85 -> 2
+        rssi >= -100 -> 1
         else -> 0
     }
 }
