@@ -13,6 +13,7 @@ import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
 import com.meshchat.app.mesh.storage.OutboxEntry
 import com.meshchat.app.mesh.storage.StoredMessage
+import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.MeshTransport
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -20,7 +21,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 private const val DEFAULT_TTL = 8
@@ -34,16 +39,28 @@ class MeshService(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var receiveJob: Job? = null
+    private var peerJob: Job? = null
+
+    private val _peers = MutableStateFlow<List<MeshPeerInfo>>(emptyList())
+    val peers: StateFlow<List<MeshPeerInfo>> = _peers.asStateFlow()
 
     fun start() {
         transport.start()
         receiveJob = scope.launch {
             transport.incoming.catch { }.collect { frame -> handleFrame(frame) }
         }
+        peerJob = scope.launch {
+            transport.foundPeers.catch { }.collect { info ->
+                _peers.update { current ->
+                    (current.filterNot { it.shortId == info.shortId } + info)
+                }
+            }
+        }
     }
 
     fun stop() {
         receiveJob?.cancel()
+        peerJob?.cancel()
         transport.stop()
         scope.cancel()
     }

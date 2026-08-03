@@ -24,18 +24,21 @@ import java.util.UUID
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
-/** 蓝牙载体实现：广播通告 + 扫描发现 + GATT 服务端/客户端 + 帧收发。 */
+/** 蓝牙载体实现：广播通告（Service Data 携带短 ID）+ 扫描发现（按 Service Data 识别）+ GATT 服务端/客户端 + 帧收发。 */
 class BleTransport(
     private val context: Context,
     private val serviceUuid: UUID = UUID.fromString("0000A5E1-0000-1000-8000-00805F9B34FB"),
     private val charUuid: UUID = UUID.fromString("0000A5E2-0000-1000-8000-00805F9B34FB"),
-    private val advertiseNamePrefix: String = "MESHCHAT:",
+    private val advertiseShortId: String = "0000",
 ) : MeshTransport {
 
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     private val _incoming = MutableSharedFlow<MeshFrame>(extraBufferCapacity = 64)
     override val incoming: SharedFlow<MeshFrame> = _incoming
+
+    private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
+    override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
     // GATT Server：暴露服务，接收邻近节点写入的帧
     private var gattServer: BluetoothGattServer? = null
@@ -100,6 +103,7 @@ class BleTransport(
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(serviceUuid))
+            .addServiceData(ParcelUuid(serviceUuid), advertiseShortId.toByteArray())
             .build()
         advertiser.startAdvertising(settings, data, advertiseCallback)
     }
@@ -116,10 +120,15 @@ class BleTransport(
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device ?: return
-            val deviceName = device.name ?: result.scanRecord?.deviceName ?: return
-            if (!deviceName.startsWith(advertiseNamePrefix)) return
-            val peerId = deviceName.removePrefix(advertiseNamePrefix)
-            peerIds[device.address] = peerId
+            val record = result.scanRecord ?: return
+            // 识别广播中的 Service Data：内容为本机短 ID
+            val shortId = record.serviceData[ParcelUuid(serviceUuid)]
+                ?.toString(Charsets.UTF_8)
+                ?.takeIf { it.isNotBlank() } ?: return
+            peerIds[device.address] = shortId
+            _foundPeers.tryEmit(
+                MeshPeerInfo(shortId = shortId, deviceAddress = device.address, rssi = result.rssi),
+            )
             connectTo(device)
         }
     }

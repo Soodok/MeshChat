@@ -25,6 +25,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +52,7 @@ fun MeshScreen(
     peers: List<MeshPeer>,
     onStartDiscovery: () -> Unit,
 ) {
+    var discovering by remember { mutableStateOf(false) }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology() }
         item {
@@ -56,7 +61,7 @@ fun MeshScreen(
         if (peers.isEmpty()) {
             item {
                 Text(
-                    text = "暂无邻近节点，请开始附近发现",
+                    text = if (discovering) "正在扫描邻近节点…" else "暂无邻近节点，请开始附近发现",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
@@ -66,12 +71,15 @@ fun MeshScreen(
         items(peers, key = { it.name }) { peer -> PeerRow(peer) }
         item {
             Button(
-                onClick = onStartDiscovery,
+                onClick = {
+                    onStartDiscovery()
+                    discovering = true
+                },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Color(0xFF081420)),
             ) {
                 Icon(Icons.AutoMirrored.Outlined.BluetoothSearching, null)
-                Text("开始附近发现", modifier = Modifier.padding(start = 8.dp))
+                Text(if (discovering) "重新发现" else "开始附近发现", modifier = Modifier.padding(start = 8.dp))
             }
         }
     }

@@ -9,6 +9,9 @@ class InMemoryTransport : MeshTransport {
     private val _incoming = MutableSharedFlow<MeshFrame>(replay = 32, extraBufferCapacity = 64)
     override val incoming: SharedFlow<MeshFrame> = _incoming
 
+    private val _foundPeers = MutableSharedFlow<MeshPeerInfo>()
+    override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
+
     override fun start() = Unit
     override fun stop() = Unit
     override fun broadcast(frame: MeshFrame) {

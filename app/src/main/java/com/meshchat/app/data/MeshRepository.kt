@@ -3,6 +3,7 @@ package com.meshchat.app.data
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
+import com.meshchat.app.mesh.transport.MeshPeerInfo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -27,7 +28,7 @@ class MeshRepositoryImpl(
         flowOf(emptyList()) // 会话数据源：待按后端会话表接入
 
     override fun observePeers(): Flow<List<MeshPeer>> =
-        flowOf(emptyList()) // 节点数据源：待按邻居表接入
+        service.peers.map { list -> list.map { it.toUiModel() } }
 
     override fun startDiscovery() {
         service.start()
@@ -39,6 +40,16 @@ class MeshRepositoryImpl(
     override fun sendText(convId: String, text: String) {
         val dstId = convId.substringAfterLast("-").takeIf { it != "ME" } ?: "ME"
         service.sendText(convId, dstId, text)
+    }
+
+    private fun MeshPeerInfo.toUiModel(): MeshPeer {
+        val strength = when {
+            rssi >= -60 -> 3
+            rssi >= -75 -> 2
+            rssi >= -90 -> 1
+            else -> 0
+        }
+        return MeshPeer(name = shortId, hops = hops, strength = strength, reachable = true)
     }
 
     private fun com.meshchat.app.mesh.storage.StoredMessage.toUiModel(): ChatMessage {
