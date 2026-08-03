@@ -491,6 +491,68 @@ class MeshServiceTest {
         service.stop()
     }
 
+    @Test
+    fun `text without receipt retransmits with backoff and never fails`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        val msgId = store.queryMessages("conv-OTHER").first().id
+        assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
+        assertEquals(1, transport.broadcastCount)   // 首次广播
+
+        service.resendPendingReceipts(t0 + 6_000)      // 退避 5s → retry 1
+        assertEquals("5s 未确认应重发", 2, transport.broadcastCount)
+        service.resendPendingReceipts(t0 + 17_000)     // 退避 10s（距上次 11s）→ retry 2
+        assertEquals(3, transport.broadcastCount)
+        // 超上限不 FAILED 不清除：零容错，继续退避重发直到收到回执
+        service.resendPendingReceipts(t0 + 38_000)     // 退避 20s → retry 3
+        service.resendPendingReceipts(t0 + 79_000)     // 退避 40s → retry 4
+        assertEquals("退避重发应继续", 5, transport.broadcastCount)
+        assertEquals("不得标记 FAILED，保持 SENDING 等待收敛", MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
+
+        // 收到回执 → 送达 + 停止重发
+        service.handleFrame(receiptFrame(msgId))
+        assertEquals(MessageStatus.DELIVERED, store.queryMessages("conv-OTHER").first().status)
+        service.resendPendingReceipts(t0 + 96_000)
+        assertEquals("回执后不再重发", 5, transport.broadcastCount)
+    }
+
+    @Test
+    fun `receiving node repeats receipt for recent messages`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(textFrame("m1", "OTHER", "ME", "hi"))
+        val before = transport.frames.count { it.type == FrameType.RECEIPT }
+        assertEquals("首次送达应回执", 1, before)
+
+        val t0 = System.currentTimeMillis()
+        service.heartbeatTick(t0 + 3_100)          // 3s 后心跳周期 → 重复回执
+        assertEquals("近期消息应周期性重复回执", before + 1, transport.frames.count { it.type == FrameType.RECEIPT })
+    }
+
+    @Test
+    fun `peers are restored from message history when peer table empty`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        // peers 表为空，但历史消息里有对端会话（conv-OTHER）
+        store.insertMessage(
+            StoredMessage(id = "h1", convId = "conv-OTHER", kind = "TEXT", srcId = "ME", dstId = "OTHER", text = "hi", ts = 1),
+        )
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        assertTrue("消息历史对端应恢复为已知节点", service.peers.value.any { it.shortId == "OTHER" })
+        service.stop()
+    }
+
     private fun textFrame(id: String, srcId: String, dstId: String, text: String) = MeshFrame(
         FrameType.DATA,
         MeshJson.encodeEnvelope(
@@ -520,30 +582,6 @@ class MeshServiceTest {
         FrameType.RECEIPT,
         "{\"id\":\"$msgId\",\"srcId\":\"OTHER\",\"dstId\":\"ME\"}".toByteArray(),
     )
-
-    @Test
-    fun `text without receipt is retransmitted then marked failed`() {
-        val transport = CountingTransport()
-        val store = InMemoryMeshStore()
-        val service = MeshService(
-            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
-        )
-        val t0 = System.currentTimeMillis()
-        service.sendText("conv-OTHER", "OTHER", "hi")
-        val msgId = store.queryMessages("conv-OTHER").first().id
-        assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
-        assertEquals(1, transport.broadcastCount)   // 首次广播
-
-        service.resendPendingReceipts(t0 + 6_000)
-        assertEquals("5s 未确认应重发", 2, transport.broadcastCount)
-        service.resendPendingReceipts(t0 + 12_000)
-        assertEquals(3, transport.broadcastCount)
-        service.resendPendingReceipts(t0 + 18_000)
-        assertEquals(4, transport.broadcastCount)
-        service.resendPendingReceipts(t0 + 24_000)
-        assertEquals("重试达上限应标 FAILED 且不再重发", 4, transport.broadcastCount)
-        assertEquals(MessageStatus.FAILED, store.queryMessages("conv-OTHER").first().status)
-    }
 
     @Test
     fun `receipt stops retransmission`() {

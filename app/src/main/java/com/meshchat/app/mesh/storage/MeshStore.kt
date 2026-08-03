@@ -38,4 +38,6 @@ interface MeshStore {
     fun loadPeers(): List<PeerEntity>
     /** 进程重启后恢复未确认（SENDING）的 TEXT，重建重发队列。 */
     fun loadUndeliveredTexts(): List<StoredMessage>
+    /** 从消息历史反推已知对端短 ID（peers 表为空时的兜底）。 */
+    fun loadKnownPeerIds(): List<String>
 }

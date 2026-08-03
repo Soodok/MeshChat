@@ -16,6 +16,7 @@ import com.meshchat.app.mesh.routing.ForwardingDecision
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
 import com.meshchat.app.mesh.storage.OutboxEntry
+import com.meshchat.app.mesh.storage.PeerEntity
 import com.meshchat.app.mesh.storage.StoredMessage
 import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transfer.FileTransferManager
@@ -47,7 +48,9 @@ private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校�
 private const val LOST_HEARTBEAT_MS = 3_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1-2 帧丢失）
 private const val OFFLINE_THRESHOLD_MS = 30_000L  // 无心跳超过该时长 → 离线（保留显示置黑）
 private const val RECEIPT_TIMEOUT_MS = 5_000L     // 消息发出后未收到送达回执的等待时间，超时重发
-private const val MAX_RECEIPT_RETRIES = 3         // 重发上限：超过标记 FAILED（不再无限卡 SENDING）
+private const val MAX_RESEND_INTERVAL_MS = 60_000L // 重发退避封顶：5s→10s→20s→40s→60s，永不 FAILED（零容错）
+private const val RECEIPT_REPEAT_INTERVAL_MS = 3_000L    // 接收方重复回执周期（近期消息周期性补发）
+private const val RECEIPT_REPEAT_WINDOW_MS = 60_000L     // 重复回执窗口：收到消息后 60s 内周期性补发
 
 private const val TAG = "MeshSvc"
 
@@ -132,6 +135,10 @@ class MeshService(
     /** 待送达确认的 TEXT：id -> (信封, 上次发送时刻, 重试次数)。回执（RECEIPT）是广播帧可能丢失，需超时重发。 */
     private class PendingText(val envelope: MeshEnvelope, var lastSentAt: Long, var retries: Int = 0)
     private val pendingReceipts = LinkedHashMap<String, PendingText>()
+
+    /** 近期收到的消息：msgId -> (信封, 收到时刻)。60s 窗口内周期性重复回执，确保发送方必能收敛。 */
+    private val recentReceived = LinkedHashMap<String, Pair<MeshEnvelope, Long>>()
+    private var lastReceiptRepeatAt = 0L
 
     /** 本机短 ID（对端寻址标识）。 */
     val shortId: String get() = identity.shortId
@@ -317,10 +324,19 @@ class MeshService(
     }
 
     /**
-     * 启动时从 peers 表恢复已知节点（寻找中状态）：主界面不再空，心跳/扫描到达即转在线。
+     * 启动时恢复已知节点（寻找中状态）：主界面不再空，心跳/扫描到达即转在线。
+     * peers 表为空时从消息历史反推对端兜底。Room 访问异常静默降级（不阻塞启动）。
      */
     private fun restoreKnownPeers() {
-        val known = store.loadPeers()
+        var known = runCatching { store.loadPeers() }.getOrDefault(emptyList())
+        if (known.isEmpty()) {
+            // 兜底：历史消息中的会话对端（老版本升级上来 peers 表可能为空）
+            val fromHistory = runCatching { store.loadKnownPeerIds() }.getOrDefault(emptyList())
+            if (fromHistory.isNotEmpty()) {
+                Log.w(TAG, "peers table empty, restore ${fromHistory.size} peers from message history")
+                known = fromHistory.map { PeerEntity(shortId = it, displayName = "", lastSeen = 0L, hops = 1) }
+            }
+        }
         Log.d(TAG, "restore ${known.size} known peers from store")
         for (p in known) {
             peerEntries.putIfAbsent(
@@ -368,6 +384,16 @@ class MeshService(
             lastPingAt = now
             sendPing()
         }
+        // 重复回执：近期收到的消息每 3s 补发一次回执（60s 窗口），发送方在线时段内必达
+        if (now - lastReceiptRepeatAt >= RECEIPT_REPEAT_INTERVAL_MS) {
+            lastReceiptRepeatAt = now
+            val rit = recentReceived.entries.iterator()
+            while (rit.hasNext()) {
+                val (msgId, pair) = rit.next()
+                if (now - pair.second > RECEIPT_REPEAT_WINDOW_MS) rit.remove()
+                else sendReceipt(pair.first)
+            }
+        }
         val iterator = peerEntries.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next().value
@@ -386,20 +412,16 @@ class MeshService(
 
     /**
      * 待确认 TEXT 重发（tick 每 200ms 调用；pingTriggered = 对方心跳在线时立即重发）：
-     * 5s 未收到送达回执 → 重发同 id 消息（接收方 dedup 命中会补回执）；重试达上限标记 FAILED，避免状态卡 SENDING。
+     * 指数退避（5s→60s 封顶），**永不标记 FAILED、永不从队列移除**——直到收到回执（DELIVERED）为止，
+     * 覆盖任意断线/后台空窗（零容错）。配合接收方 60s 重复回执窗口，双方在线时段内必收敛。
      */
     internal fun resendPendingReceipts(now: Long, pingTriggered: Boolean = false) {
-        val minGap = if (pingTriggered) 0L else RECEIPT_TIMEOUT_MS
         val it = pendingReceipts.entries.iterator()
         while (it.hasNext()) {
             val (id, p) = it.next()
-            if (now - p.lastSentAt < minGap) continue
-            if (p.retries >= MAX_RECEIPT_RETRIES) {
-                Log.w(TAG, "text $id no receipt after ${MAX_RECEIPT_RETRIES} retries, mark FAILED")
-                store.updateMessageStatus(id, MessageStatus.FAILED)
-                it.remove()
-                continue
-            }
+            // 退避间隔：重试越多间隔越长（5s, 10s, 20s, 40s, 60s 封顶）
+            val gap = if (pingTriggered) 0L else minOf(RECEIPT_TIMEOUT_MS * (1L shl minOf(p.retries, 4)), MAX_RESEND_INTERVAL_MS)
+            if (now - p.lastSentAt < gap) continue
             p.retries++
             p.lastSentAt = now
             Log.w(TAG, "resend text $id retry=${p.retries}${if (pingTriggered) " (ping-triggered)" else ""}")
@@ -435,7 +457,7 @@ class MeshService(
         }
         // 总是落库（昵称可能为空/扫描帧）：保证重启后节点持久化恢复，不再依赖 PING 交换
         val name = if (displayName.isNotBlank()) displayName else existing?.info?.displayName ?: ""
-        store.upsertPeer(peerId, name, now, existing?.info?.hops ?: 1)
+        runCatching { store.upsertPeer(peerId, name, now, existing?.info?.hops ?: 1) }
         // 同步刷新 peers 流：UI/通知实时可见，无需等下一轮 tick
         _peers.value = peerEntries.values.map { it.info.copy(lost = false, presence = PeerPresence.ONLINE) }
     }
@@ -563,6 +585,8 @@ class MeshService(
                 store.insertMessage(envelope.toStoredMessage())
                 store.updateMessageStatus(envelope.id, MessageStatus.DELIVERED)
                 sendReceipt(envelope)
+                // 记录近期收到的消息：60s 窗口内周期性重复回执，发送方回执丢失也能收敛
+                if (envelope.kind == "TEXT") recentReceived[envelope.id] = envelope to System.currentTimeMillis()
                 // 收到消息回调（通知用）：仅对端发来的 TEXT 触发
                 if (envelope.kind == "TEXT" && envelope.srcId != identity.shortId) {
                     val fromName = peerEntries[envelope.srcId]?.info?.displayName?.ifBlank { envelope.srcId } ?: envelope.srcId

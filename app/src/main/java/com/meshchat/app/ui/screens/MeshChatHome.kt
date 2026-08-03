@@ -134,10 +134,13 @@ fun MeshChatHome(
             else -> peers.firstOrNull { it.shortId == target }?.name ?: target
         }
         val connected = target == "ME" || target in sessions
+        val peerPresence = if (target == "ME") com.meshchat.app.mesh.transport.PeerPresence.ONLINE
+            else peers.firstOrNull { it.shortId == target }?.presence
         ConversationScreen(
             messages = messages,
             title = title,
             connected = connected,
+            peerPresence = peerPresence,
             onBack = { onOpenConversation(null) },
             onSendMessage = onSendMessage,
             onPickFile = { filePicker.launch(arrayOf("*/*")) },

@@ -58,6 +58,7 @@ fun ConversationScreen(
     messages: List<ChatMessage>,
     title: String,
     connected: Boolean,
+    peerPresence: com.meshchat.app.mesh.transport.PeerPresence?,
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
     onPickFile: (() -> Unit)? = null,
@@ -77,8 +78,10 @@ fun ConversationScreen(
     LaunchedEffect(messages.size) {
         if (messages.isEmpty()) return@LaunchedEffect
         if (!scrollInitialized) {
-            // 首次有消息（可能异步到达）：无论位置强制滚底
+            // 首次有消息（可能异步到达）：无论位置强制滚底；布局未完成时延迟重滚一次确保到底
             scrollInitialized = true
+            listState.scrollToItem(messages.size - 1)
+            kotlinx.coroutines.delay(80)
             listState.scrollToItem(messages.size - 1)
         } else if (isNearBottom) {
             listState.animateScrollToItem(messages.size - 1)
@@ -90,7 +93,7 @@ fun ConversationScreen(
     Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
         ConversationHeader(title, onBack)
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -100,6 +103,41 @@ fun ConversationScreen(
                 color = if (connected) MeshGreen else MeshAmber,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(start = 7.dp),
+            )
+        }
+        // 对方网络状况：程序据此协商送达，用户据此判断消息去向
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val presence = peerPresence ?: com.meshchat.app.mesh.transport.PeerPresence.SEARCHING
+            androidx.compose.foundation.layout.Box(
+                Modifier.size(8.dp).background(
+                    when (presence) {
+                        com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
+                        com.meshchat.app.mesh.transport.PeerPresence.SEARCHING,
+                        com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> MeshAmber
+                        com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
+                    },
+                    androidx.compose.foundation.shape.CircleShape,
+                ),
+            )
+            Text(
+                when (presence) {
+                    com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
+                    com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
+                    com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> "对方断线重连中…"
+                    com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> "对方离线 · 消息将排队待对方上线"
+                },
+                color = when (presence) {
+                    com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
+                    com.meshchat.app.mesh.transport.PeerPresence.SEARCHING,
+                    com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> MeshAmber
+                    com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
+                },
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 6.dp),
             )
         }
         Text(
