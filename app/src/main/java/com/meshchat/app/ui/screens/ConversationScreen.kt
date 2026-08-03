@@ -22,7 +22,6 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.AttachFile
-import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -104,55 +103,8 @@ fun ConversationScreen(
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA).format(java.util.Date())
     }
     Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
-        ConversationHeader(title, onBack)
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Lock, null, tint = if (connected) MeshGreen else MeshAmber, modifier = Modifier.size(16.dp))
-            Text(
-                if (connected) "会话已建立" else "等待对方接受对话请求…",
-                color = if (connected) MeshGreen else MeshAmber,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(start = 7.dp),
-            )
-        }
-        // 对方网络状况：程序据此协商送达，用户据此判断消息去向
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val presence = peerPresence ?: com.meshchat.app.mesh.transport.PeerPresence.SEARCHING
-            androidx.compose.foundation.layout.Box(
-                Modifier.size(8.dp).background(
-                    when (presence) {
-                        com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
-                        com.meshchat.app.mesh.transport.PeerPresence.SEARCHING,
-                        com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> MeshAmber
-                        com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
-                    },
-                    androidx.compose.foundation.shape.CircleShape,
-                ),
-            )
-            Text(
-                when (presence) {
-                    com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
-                    com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
-                    com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> "对方断线重连中…"
-                    com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> "对方离线 · 消息将排队待对方上线"
-                },
-                color = when (presence) {
-                    com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
-                    com.meshchat.app.mesh.transport.PeerPresence.SEARCHING,
-                    com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> MeshAmber
-                    com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
-                },
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(start = 6.dp),
-            )
-        }
+        // 会话状态 + 对端网络状况已合并进标题栏（名字下方一行），不再单独占内容空间
+        ConversationHeader(title, connected, peerPresence, onBack)
         Text(
             today,
             color = TextSecondary,
@@ -196,9 +148,14 @@ fun ConversationScreen(
 }
 
 @Composable
-private fun ConversationHeader(title: String, onBack: () -> Unit) {
+private fun ConversationHeader(
+    title: String,
+    connected: Boolean,
+    peerPresence: com.meshchat.app.mesh.transport.PeerPresence?,
+    onBack: () -> Unit,
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 44.dp, start = 12.dp, end = 20.dp, bottom = 14.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 44.dp, start = 12.dp, end = 20.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") }
@@ -208,6 +165,30 @@ private fun ConversationHeader(title: String, onBack: () -> Unit) {
         Spacer(Modifier.width(12.dp))
         Column {
             Text(title, style = MaterialTheme.typography.titleLarge)
+            // 会话建立状态 + 对端网络状况合并为一行（圆点 + 文字），不再单独占内容空间
+            val presence = peerPresence ?: com.meshchat.app.mesh.transport.PeerPresence.SEARCHING
+            val statusColor = when {
+                !connected -> MeshAmber
+                presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
+                presence == com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
+                else -> MeshAmber
+            }
+            val statusText = when {
+                !connected -> "等待对方接受对话请求…"
+                presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
+                presence == com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
+                presence == com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> "对方断线重连中…"
+                else -> "对方离线 · 消息将排队待对方上线"
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(7.dp).background(statusColor, androidx.compose.foundation.shape.CircleShape))
+                Text(
+                    statusText,
+                    color = statusColor,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
         }
     }
 }
