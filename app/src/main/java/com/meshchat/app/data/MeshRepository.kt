@@ -83,7 +83,7 @@ class MeshRepositoryImpl(
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
         val strength = BluetoothQuality.bars(rssi)
         return MeshPeer(
-            name = shortId, hops = hops, strength = strength,
+            name = displayName.ifBlank { shortId }, shortId = shortId, hops = hops, strength = strength,
             rssi = rssi, lost = lost, reachable = !lost,
         )
     }

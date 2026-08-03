@@ -65,6 +65,10 @@ fun MeshChatHome(
     localBluetoothName: String,
     localBluetoothAddress: String,
     conversationTarget: String?,
+    displayName: String,
+    onDisplayNameChange: (String) -> Unit,
+    backgroundEnabled: Boolean,
+    onBackgroundEnabledChange: (Boolean) -> Unit,
     onOpenConversation: (String?) -> Unit,
     onStartDiscovery: () -> Unit,
     onSendInvite: (String) -> Unit,
@@ -125,7 +129,10 @@ fun MeshChatHome(
 
     if (conversationTarget != null) {
         val target = conversationTarget!!
-        val title = if (target == "ME") "我" else target
+        val title = when {
+            target == "ME" -> "我"
+            else -> peers.firstOrNull { it.shortId == target }?.name ?: target
+        }
         val connected = target == "ME" || target in sessions
         ConversationScreen(
             messages = messages,
@@ -147,7 +154,13 @@ fun MeshChatHome(
                 bluetoothAddress = localBluetoothAddress,
                 onBack = { profileDetail = null },
             )
-            "settings" -> GeneralSettingsScreen(onBack = { profileDetail = null })
+            "settings" -> GeneralSettingsScreen(
+                displayName = displayName,
+                onDisplayNameChange = onDisplayNameChange,
+                backgroundEnabled = backgroundEnabled,
+                onBackgroundEnabledChange = onBackgroundEnabledChange,
+                onBack = { profileDetail = null },
+            )
         }
         return
     }

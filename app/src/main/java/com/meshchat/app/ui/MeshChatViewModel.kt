@@ -21,12 +21,34 @@ class MeshChatViewModel(
     private val repository: MeshRepository,
     val localBluetoothName: String,
     val localBluetoothAddress: String,
+    private val displayNameProvider: () -> String,
+    private val setDisplayName: (String) -> Unit,
+    private val backgroundEnabledProvider: () -> Boolean,
+    private val setBackgroundEnabled: (Boolean) -> Unit,
+    private val conversationRequest: kotlinx.coroutines.flow.StateFlow<String?>,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
 
     /** 供 UI 展示当前会话状态。 */
     val currentConversation: StateFlow<String?> = conversationTarget
+
+    val localDisplayName: String get() = displayNameProvider()
+
+    fun updateDisplayName(value: String) = setDisplayName(value)
+
+    val backgroundEnabled: Boolean get() = backgroundEnabledProvider()
+
+    fun updateBackgroundEnabled(value: Boolean) = setBackgroundEnabled(value)
+
+    init {
+        // 通知点击 → 打开对应会话（convId = conv-<shortId>，target 取短 ID）
+        viewModelScope.launch {
+            conversationRequest.collect { convId ->
+                convId?.let { openConversation(it.substringAfterLast("-")) }
+            }
+        }
+    }
 
     /** 文件传输进度（发送/接收统一）。 */
     val fileProgress: StateFlow<com.meshchat.app.mesh.transfer.FileProgress?> =

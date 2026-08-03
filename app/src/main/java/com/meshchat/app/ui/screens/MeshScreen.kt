@@ -76,12 +76,12 @@ fun MeshScreen(
                 )
             }
         }
-        items(peers, key = { it.name }) { peer ->
+        items(peers, key = { it.shortId }) { peer ->
             PeerRow(
                 peer = peer,
-                connected = peer.name in sessions,
-                pending = peer.name in pendingInvites,
-                onClick = { onPeerSelected(peer.name) },
+                connected = peer.shortId in sessions,
+                pending = peer.shortId in pendingInvites,
+                onClick = { onPeerSelected(peer.shortId) },
             )
         }
         item {
@@ -144,7 +144,14 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
             Icon(Icons.Outlined.PhoneAndroid, null, tint = TextSecondary)
         }
         Spacer(Modifier.width(14.dp))
-        Text(peer.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(peer.name, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "ID ${peer.shortId}",
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = TextSecondary,
+            )
+        }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SignalBars(peer.strength)

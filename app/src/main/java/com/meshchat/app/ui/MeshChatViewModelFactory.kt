@@ -14,6 +14,11 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             repository = MeshRepositoryImpl(app.service, app.store),
             localBluetoothName = app.localBluetoothName ?: "未知",
             localBluetoothAddress = app.localBluetoothAddress ?: "未知",
+            displayNameProvider = { app.displayName },
+            setDisplayName = { app.displayName = it },
+            backgroundEnabledProvider = { app.backgroundEnabled },
+            setBackgroundEnabled = { app.backgroundEnabled = it },
+            conversationRequest = app.conversationRequest,
         ) as T
     }
 }

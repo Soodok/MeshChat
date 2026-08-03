@@ -35,7 +35,8 @@ data class FileUiMeta(
 )
 
 data class MeshPeer(
-    val name: String,
+    val name: String,       // 显示名（昵称，缺省回退短 ID）
+    val shortId: String,    // 寻址标识（点击/匹配/会话键）
     val hops: Int,
     val strength: Int,
     val rssi: Int = 0,

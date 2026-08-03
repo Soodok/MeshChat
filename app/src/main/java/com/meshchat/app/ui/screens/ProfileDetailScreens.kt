@@ -28,6 +28,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -121,14 +122,40 @@ fun IdentityKeyScreen(
 }
 
 @Composable
-fun GeneralSettingsScreen(onBack: () -> Unit) {
+fun GeneralSettingsScreen(
+    displayName: String,
+    onDisplayNameChange: (String) -> Unit,
+    backgroundEnabled: Boolean,
+    onBackgroundEnabledChange: (Boolean) -> Unit,
+    onBack: () -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         DetailHeader(title = "通用设置", icon = Icons.Outlined.Settings, onBack = onBack)
+        Text("节点昵称", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+        OutlinedTextField(
+            value = displayName,
+            onValueChange = onDisplayNameChange,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            singleLine = true,
+            label = { Text("昵称（广播给邻近节点）") },
+        )
         Text(
-            "暂无可用设置项",
-            style = MaterialTheme.typography.bodyMedium,
+            "昵称随心跳广播，邻近节点将以此标识你。",
+            style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        HorizontalDivider(color = Divider, modifier = Modifier.padding(top = 14.dp))
+        SettingsSwitchRow(
+            title = "后台常驻",
+            checked = backgroundEnabled,
+            onCheckedChange = onBackgroundEnabledChange,
+        )
+        Text(
+            "开启后息屏/退后台仍持续收发消息并弹通知。",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
     }
 }
