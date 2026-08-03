@@ -41,14 +41,15 @@ class FileTransferManager(
         private const val TAG = "MeshFile"
         // 块 50B（base64 68B）→ 整帧 ~453B，须 < MTU 512 可用载荷 509B（实测 200B 块整帧 661-684B 必超，对端一个块都收不到）
         const val CHUNK_BYTES = 50
-        const val WINDOW = 32
+        // 窗口 8 块（~4KB/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
+        const val WINDOW = 8
         const val WINDOW_TIMEOUT_MS = 15_000L
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
         /**
          * ACK 缺失列表截断上限：全文件缺失列表随文件膨胀（1000 块缺失 ~4KB 帧）会超 MTU，
-         * 发送端只关心当前窗口（32 块）内缺失——更早窗口已收齐（ACK 推进前提），
-         * 当前窗口缺失必然位于缺失列表前部，前 40 项足够覆盖窗口内缺失且整帧 < 470B。
+         * 发送端只关心当前窗口内缺失——更早窗口已收齐（ACK 推进前提），
+         * 当前窗口缺失必然位于缺失列表前部。须 > WINDOW（8）才能覆盖窗口内全部缺失且整帧 < 470B。
          */
         const val MAX_ACK_MISSING = 40
     }
@@ -180,9 +181,15 @@ class FileTransferManager(
     private fun readWindow(s: SendSession, start: Int, count: Int): Map<Int, String>? = runCatching {
         val source = s.openSource()
         val cache = LinkedHashMap<Int, String>()
-        source.skip(start * CHUNK_BYTES.toLong())
+        // InputStream.skip 不保证跳过全部字节（Java 契约），必须循环丢弃到目标偏移，否则多窗口读到的块错位
+        var remaining = start * CHUNK_BYTES.toLong()
+        val buf = ByteArray(CHUNK_BYTES)
+        while (remaining > 0) {
+            val n = source.read(buf, 0, minOf(CHUNK_BYTES, remaining.toInt()))
+            if (n <= 0) break
+            remaining -= n
+        }
         for (i in 0 until count) {
-            val buf = ByteArray(CHUNK_BYTES)
             val n = source.read(buf)
             cache[start + i] = Base64.getEncoder().encodeToString(buf.copyOfRange(0, n.coerceAtLeast(0)))
         }

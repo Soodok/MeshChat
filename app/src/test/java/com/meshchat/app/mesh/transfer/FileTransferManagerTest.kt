@@ -59,14 +59,15 @@ class FileTransferManagerTest {
         }
 
     @Test
-    fun `first window sends 32 chunks then retries only missing chunk and completes`() = runTest {
+    fun `first window sends 8 chunks then retries only missing chunk and completes`() = runTest {
         val transport = CountingTransport()
         val dir = kotlin.io.path.createTempDirectory("mesh").toFile()
         val manager = FileTransferManager(
             transport = transport, shortId = "A", saver = FakeSaver(dir),
             scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
         )
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 33) { it.toByte() }   // 33 块 → 2 个窗口
+        val w = FileTransferManager.WINDOW
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 33) { it.toByte() }   // 33 块 → 5 窗口
         val fileId = manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -74,24 +75,22 @@ class FileTransferManagerTest {
         )!!
         assertTrue(fileId.isNotBlank())
 
-        // 等首窗 32 块发出
-        val firstWindow = awaitChunks(transport, 32)
+        // 等首窗 w 块发出
+        val firstWindow = awaitChunks(transport, w)
         assertEquals(0, firstWindow.first().chunkIndex)
-        assertEquals(31, firstWindow.last().chunkIndex)
+        assertEquals(w - 1, firstWindow.last().chunkIndex)
 
-        // 回 ACK：缺第 3 块
+        // 回 ACK：缺第 3 块 → 仅重发第 3 块
         manager.onFileAck(ack(fileId, 33, listOf(3)))
         val retried = awaitChunks(transport, 1)
         assertEquals(3, retried.first().chunkIndex)
 
-        // 窗口完成 → 回 ACK 空推进第二窗（块 32）
-        manager.onFileAck(ack(fileId, 33, emptyList()))
-        val secondWindow = awaitChunks(transport, 1)
-        assertEquals(32, secondWindow.first().chunkIndex)
-        // 第二窗完成 → 再回 ACK 空 → 全部收齐
-        manager.onFileAck(ack(fileId, 33, emptyList()))
-
-        awaitDone(manager)
+        // 连续回 empty ACK 推进剩余窗口直至完成
+        var guard = 0
+        while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 60) {
+            manager.onFileAck(ack(fileId, 33, emptyList()))
+            kotlinx.coroutines.delay(20)
+        }
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
         assertEquals(33L * FileTransferManager.CHUNK_BYTES, manager.progress.value?.transferredBytes)
     }
@@ -109,12 +108,17 @@ class FileTransferManagerTest {
             openSource = { ByteArrayInputStream(bytes) },
             fileName = "b.bin", mime = "application/octet-stream", size = bytes.size.toLong(),
         )
-        val first = awaitChunks(transport, 32)
+        val w = FileTransferManager.WINDOW
+        val first = awaitChunks(transport, w)
         // 不回 ACK → 整窗重发
-        val resent = awaitChunks(transport, 32)
+        val resent = awaitChunks(transport, w)
         assertTrue(resent.all { c -> first.any { it.chunkIndex == c.chunkIndex } })
-        // 补 ACK 完成
-        manager.onFileAck(ack(first.first().fileId, 32, emptyList()))
+        // 循环补 empty ACK 推进全部窗口（32 块 / 窗口 8 = 4 窗口）
+        var guard = 0
+        while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 30) {
+            manager.onFileAck(ack(first.first().fileId, 32, emptyList()))
+            kotlinx.coroutines.delay(20)
+        }
         awaitDone(manager)
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
     }
