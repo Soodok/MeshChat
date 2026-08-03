@@ -1,6 +1,8 @@
 package com.meshchat.app.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,8 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.content.Intent
+import android.provider.OpenableColumns
+import android.widget.Toast
 import com.meshchat.app.data.ChatMessage
 import com.meshchat.app.data.ChatPreview
 import com.meshchat.app.data.MainDestination
@@ -65,10 +71,33 @@ fun MeshChatHome(
     onAcceptInvite: (String) -> Unit,
     onRejectInvite: (String) -> Unit,
     onSendMessage: (String) -> Unit,
+    onSendFile: (name: String, mime: String, size: Long, openSource: () -> java.io.InputStream) -> Unit,
+    onOpenFile: (ChatMessage) -> Unit = {},
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
     val destination = MainDestination.valueOf(destinationName)
+    val context = LocalContext.current
+
+    // 系统文件选择器：选文件后取名称/MIME/大小，回调上层发送
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val resolver = context.contentResolver
+            val name = resolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) c.getString(idx) else "file"
+                } else "file"
+            } ?: "file"
+            val mime = resolver.getType(uri) ?: "application/octet-stream"
+            val size = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+            if (size <= 0L) {
+                Toast.makeText(context, "空文件不支持发送", Toast.LENGTH_SHORT).show()
+            } else {
+                onSendFile(name, mime, size) { resolver.openInputStream(uri)!! }
+            }
+        }
+    }
 
     // 收到的对话请求弹窗
     var pendingInvite by remember { mutableStateOf<String?>(null) }
@@ -104,6 +133,8 @@ fun MeshChatHome(
             connected = connected,
             onBack = { onOpenConversation(null) },
             onSendMessage = onSendMessage,
+            onPickFile = { filePicker.launch(arrayOf("*/*")) },
+            onOpenFile = onOpenFile,
         )
         return
     }

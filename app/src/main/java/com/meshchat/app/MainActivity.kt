@@ -23,6 +23,7 @@ class MainActivity : ComponentActivity() {
             add(Manifest.permission.BLUETOOTH_ADVERTISE)
         } else {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)  // API 26-28 写公共 Downloads 需要
         }
     }.toTypedArray()
 
