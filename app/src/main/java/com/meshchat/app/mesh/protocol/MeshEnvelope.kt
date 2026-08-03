@@ -9,7 +9,7 @@ sealed interface EnvelopeBody
 
 @Serializable
 @SerialName("TEXT")
-data class TextBody(val text: String, val replyTo: String? = null) : EnvelopeBody
+data class TextBody(val text: String, val replyTo: String? = null, val displayName: String = "") : EnvelopeBody
 
 @Serializable
 @SerialName("FILE")
@@ -33,7 +33,11 @@ data class FileAckBody(
 
 @Serializable
 @SerialName("PING")
-data class PresenceBody(val displayName: String) : EnvelopeBody
+data class PresenceBody(
+    val displayName: String,
+    /** 心跳确认携带：本机已收到的对端消息 id 列表（送达确认随 PING/PONG 往返，复用已验证通畅的心跳通道，不依赖丢帧的独立回执广播）。 */
+    val ackIds: List<String> = emptyList(),
+) : EnvelopeBody
 
 @Serializable
 @SerialName("GROUP")

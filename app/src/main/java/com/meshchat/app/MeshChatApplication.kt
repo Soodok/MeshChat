@@ -94,4 +94,12 @@ class MeshChatApplication : Application() {
             service.start()
         }
     }
+
+    override fun onCreate() {
+        super.onCreate()
+        // 进程一启动即开始扫描/心跳（"删掉后台再进"也自动寻找）：
+        // 此刻 MainActivity 尚未创建、Android 12+ 限制前台服务后台启动，故直接启动 Mesh 逻辑本体（幂等），
+        // 前台服务由 MainActivity onCreate/onResume 的 startMesh() 补上（App 已在前台，无启动限制）。
+        runCatching { service.start() }
+    }
 }

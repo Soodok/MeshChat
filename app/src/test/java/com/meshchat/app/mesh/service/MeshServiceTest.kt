@@ -487,6 +487,78 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `pong ack ids confirm delivery immediately`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        val msgId = store.queryMessages("conv-OTHER").first().id
+        assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
+
+        // 对方随心跳 PONG 携带本机消息的 ackIds（硬实时确认，复用心跳通道）→ 立即标记送达
+        service.handleFrame(
+            MeshFrame(
+                FrameType.DATA,
+                MeshJson.encodeEnvelope(
+                    MeshEnvelope(
+                        id = UUID.randomUUID().toString(), kind = "PONG",
+                        srcId = "OTHER", dstId = "ME", convId = "conv-ME",
+                        ttl = 8, ts = System.currentTimeMillis(),
+                        body = PresenceBody("老王", ackIds = listOf(msgId)),
+                    ),
+                ).toByteArray(),
+            ),
+        )
+        assertEquals("PONG 携带 ackIds 应立即标记已送达", MessageStatus.DELIVERED, store.queryMessages("conv-OTHER").first().status)
+        service.resendPendingReceipts(System.currentTimeMillis() + 10_000)
+        assertEquals("确认后不再重发", 1, transport.broadcastCount)
+    }
+
+    @Test
+    fun `ping reply pong carries ack ids for received messages`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(textFrame("m1", "OTHER", "ME", "hi"))   // 本机收到 OTHER 的消息
+        val before = transport.broadcastCount
+        service.handleFrame(pingFrame("OTHER", "老王"))              // OTHER 心跳在线
+        val pongEnv = transport.frames.drop(before)
+            .mapNotNull { runCatching { MeshJson.decodeEnvelope(it.payloadText) }.getOrNull() }
+            .first { it.kind == "PONG" }
+        val ack = (pongEnv.body as? PresenceBody)?.ackIds
+        assertTrue("回 PONG 应携带已收到消息的 ackIds", ack != null && ack.contains("m1"))
+    }
+
+    @Test
+    fun `received text carries sender name into peers`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // 对方发来带昵称的消息（不依赖 PING 时序，收到消息即学到昵称）
+        service.handleFrame(
+            MeshFrame(
+                FrameType.DATA,
+                MeshJson.encodeEnvelope(
+                    MeshEnvelope(
+                        id = UUID.randomUUID().toString(), kind = "TEXT",
+                        srcId = "OTHER", dstId = "ME", convId = "conv-OTHER",
+                        ttl = 8, ts = System.currentTimeMillis(),
+                        body = TextBody("hi", displayName = "老王"),
+                    ),
+                ).toByteArray(),
+            ),
+        )
+        val peer = service.peers.value.firstOrNull { it.shortId == "OTHER" }
+        assertEquals("收到消息即学到对方昵称", "老王", peer?.displayName)
+        assertEquals("昵称应落库供重启恢复", "老王", store.loadPeers().firstOrNull { it.shortId == "OTHER" }?.displayName)
+    }
+
+    @Test
     fun `undelivered texts are re-registered on start`() {
         val transport = CountingTransport()
         val store = InMemoryMeshStore()

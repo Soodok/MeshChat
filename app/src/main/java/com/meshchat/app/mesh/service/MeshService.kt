@@ -221,7 +221,7 @@ class MeshService(
             convId = convId,
             ttl = DEFAULT_TTL,
             ts = System.currentTimeMillis(),
-            body = TextBody(text),
+            body = TextBody(text, displayName = identity.displayName),
         )
         store.insertMessage(
             StoredMessage(
@@ -288,7 +288,7 @@ class MeshService(
                 convId = "conv-$peerId",
                 ttl = DEFAULT_TTL,
                 ts = System.currentTimeMillis(),
-                body = TextBody("对话请求"),
+                body = TextBody("对话请求", displayName = identity.displayName),
             ),
         )
     }
@@ -446,6 +446,14 @@ class MeshService(
         transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray()))
     }
 
+    /** 本机近期收到的、来自指定对端的消息 id 列表（最多 50 条，随心跳 PONG 回执给对端确认送达）。 */
+    private fun ackIdsFor(srcId: String): List<String> =
+        recentReceived.values.asSequence()
+            .filter { it.first.srcId == srcId }
+            .map { it.first.id }
+            .take(50)
+            .toList()
+
     /** 标记节点可见：更新 lastSeen；带昵称时更新显示名并落库。 */
     private fun markSeen(peerId: String, displayName: String) {
         val now = System.currentTimeMillis()
@@ -539,20 +547,28 @@ class MeshService(
                 // 心跳广播帧：仅处理发往本机/广播；回 PONG 双向确认在线，同时交换昵称
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
-                // 对方在线 → 立即重发未确认消息（后台恢复场景秒级收敛，不等 5s 定时）
+                // 对方在线 → 立即重发未确认消息（后台恢复场景秒级收敛，不等 3s 定时）
                 resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
+                // 硬实时送达确认：回 PONG 携带本机已收到的对端消息 id——确认搭心跳便车，
+                // 复用已验证通畅的双向心跳通道，彻底绕开独立回执广播（RECEIPT）在 BLE 上的丢帧
                 val pong = MeshEnvelope(
                     id = UUID.randomUUID().toString(), kind = "PONG",
                     srcId = identity.shortId, dstId = envelope.srcId, convId = "conv-${envelope.srcId}",
                     ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
-                    body = PresenceBody(identity.displayName),
+                    body = PresenceBody(identity.displayName, ackIds = ackIdsFor(envelope.srcId)),
                 )
                 transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(pong).toByteArray()))
             }
             "PONG" -> {
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
-                // 对方确认本机心跳 → 也立即重发未确认消息（PING/PONG 双触发，确认机会翻倍）
+                // 硬实时送达确认：先消化对方随心跳回执的消息（标记送达并移出队列），再重发仍未确认的
+                (envelope.body as? PresenceBody)?.ackIds?.forEach { id ->
+                    if (pendingReceipts.remove(id) != null) {
+                        store.updateMessageStatus(id, MessageStatus.DELIVERED)
+                    }
+                }
+                // 对方确认本机心跳 → 立即重发仍未确认的消息（PING/PONG 双触发，确认机会翻倍）
                 resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
             }
             "FILE" -> {
@@ -593,8 +609,13 @@ class MeshService(
                 store.insertMessage(envelope.toStoredMessage())
                 store.updateMessageStatus(envelope.id, MessageStatus.DELIVERED)
                 sendReceipt(envelope)
-                // 记录近期收到的消息：60s 窗口内周期性重复回执，发送方回执丢失也能收敛
-                if (envelope.kind == "TEXT") recentReceived[envelope.id] = envelope to System.currentTimeMillis()
+                if (envelope.kind == "TEXT") {
+                    // 收到消息即学对方昵称（TEXT 随信封携带 displayName）并落库：
+                    // 对话列表/等待路由立刻显示名字，不依赖 PING 心跳时序
+                    markSeen(envelope.srcId, (envelope.body as? TextBody)?.displayName ?: "")
+                    // 记录近期收到的消息：窗口内周期性重复回执 + 心跳 PONG 携带确认，发送方必能收敛
+                    recentReceived[envelope.id] = envelope to System.currentTimeMillis()
+                }
                 // 收到消息回调（通知用）：仅对端发来的 TEXT 触发
                 if (envelope.kind == "TEXT" && envelope.srcId != identity.shortId) {
                     val fromName = peerEntries[envelope.srcId]?.info?.displayName?.ifBlank { envelope.srcId } ?: envelope.srcId
