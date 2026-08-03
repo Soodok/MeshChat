@@ -269,6 +269,38 @@ class MeshServiceTest {
         service.stop()
     }
 
+    private class MemorySessionStore : SessionStore {
+        val saved = mutableListOf<Set<String>>()
+        var stored: Set<String> = emptySet()
+        override fun load(): Set<String> = stored
+        override fun save(sessions: Set<String>) {
+            saved.add(sessions)
+            stored = sessions
+        }
+    }
+
+    @Test
+    fun `sessions are saved on accept and restored on start`() {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val sessionStore = MemorySessionStore()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+            sessionStore = sessionStore,
+        )
+        service.acceptInvite("OTHER")
+        assertTrue("acceptInvite 后应保存会话", sessionStore.stored.contains("OTHER"))
+
+        // 新实例（模拟重启）从同一 store 恢复
+        val restarted = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+            sessionStore = sessionStore,
+        )
+        restarted.start()
+        assertEquals(setOf("OTHER"), restarted.sessions.value)
+        restarted.stop()
+    }
+
     @Test
     fun `file chunk goes through rfcomm sendTo when connected`() = runTest {
         val identity = LocalIdentity(shortId = "ME")

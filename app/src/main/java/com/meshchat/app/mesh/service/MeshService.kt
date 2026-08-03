@@ -70,6 +70,15 @@ class MeshService(
     private val tmpDir: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
     /** RFCOMM 高吞吐通道（可选）：文件帧优先走它，无连接回退 BLE broadcast。 */
     private val rfcomm: RfcommChannel? = null,
+    /** 会话关系持久化（默认内存 Noop，不持久化；生产注入 SharedPrefsSessionStore）。 */
+    private val sessionStore: SessionStore = object : SessionStore {
+        override fun load(): Set<String> = emptySet()
+        override fun save(sessions: Set<String>) {}
+    },
+    /** 收到新消息回调（fromId/fromName/text）：MeshChatService 注入用于弹通知。 */
+    private val onIncomingMessage: (fromId: String, fromName: String, text: String) -> Unit = { _, _, _ -> },
+    /** 文件接收完成回调（fileName）：通知「文件已保存」。 */
+    private val onFileSaved: (fileName: String) -> Unit = {},
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -132,6 +141,7 @@ class MeshService(
     fun start() {
         if (started) return // 幂等：防止「开始附近发现」被重复点击导致重复启动
         started = true
+        _sessions.value = sessionStore.load()   // 重启恢复已建立的会话关系
         transport.start()
         rfcomm?.start()
         receiveJob = scope.launch {
@@ -263,6 +273,7 @@ class MeshService(
     /** 接受对话请求：建立会话关系并启动持续确认（每 0.2s 重发 INVITE_ACK，直至对端确认或超时）。 */
     fun acceptInvite(peerId: String) {
         _sessions.update { it + peerId }
+        sessionStore.save(_sessions.value)
         _invites.update { it - peerId }
         _ackRetries.update { it + (peerId to System.currentTimeMillis()) }
         sendInviteAck(peerId)
@@ -344,6 +355,7 @@ class MeshService(
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 val firstTime = envelope.srcId !in _sessions.value
                 _sessions.update { it + envelope.srcId }
+                sessionStore.save(_sessions.value)
                 _invites.update { it - envelope.srcId }
                 _pendingInvites.update { it - envelope.srcId }
                 _ackRetries.update { it - envelope.srcId }
