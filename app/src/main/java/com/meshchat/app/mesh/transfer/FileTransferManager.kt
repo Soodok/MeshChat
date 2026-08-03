@@ -44,7 +44,7 @@ class FileTransferManager(
         const val CHUNK_BYTES = 50
         // 窗口 8 块（~4KB/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
         const val WINDOW = 8
-        const val WINDOW_TIMEOUT_MS = 8_000L   // ACK 丢失后的等待上限：15s 太长（丢一次 ACK 白等 15s），8s 平衡慢速链路与重发
+        const val WINDOW_TIMEOUT_MS = 1_000L    // ACK 全丢时的兜底：每块 ACK 模式下窗口往返 ~500ms，1s 足够；越短丢 ACK 恢复越快
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
         /** 窗口内逐块广播的间隔：BLE notify 连发会触发系统丢弃，30ms 节流显著降丢帧。 */
@@ -266,14 +266,14 @@ class FileTransferManager(
         }
         session.lastActivity = System.currentTimeMillis()
         val data = runCatching { Base64.getDecoder().decode(body.chunkData) }.getOrNull() ?: return
-        val isNew = session.writeChunk(body.chunkIndex, data)
+        session.writeChunk(body.chunkIndex, data)   // 重复块内部幂等跳过
         updateReceiveProgress(session, TransferStatus.RUNNING)
 
         session.ackCounter++
         if (session.isComplete) {
             completeReceive(session)
-        } else if (!isNew || session.ackCounter % WINDOW == 0) {
-            // 重复块（发送端超时整窗重发）立即回 ACK，让发送端尽快推进，避免 15s 干等
+        } else {
+            // 每收一块（新/重复）都回 ACK：发送端收到后立即补缺，无需等满窗口，丢帧恢复从窗口超时降到亚秒级
             sendAck(session)
         }
     }
