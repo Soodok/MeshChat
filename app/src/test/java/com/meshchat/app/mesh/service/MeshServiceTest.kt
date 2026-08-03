@@ -16,6 +16,7 @@ import com.meshchat.app.mesh.transport.MeshTransport
 import java.io.File
 import java.util.Base64
 import java.util.UUID
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -265,6 +266,32 @@ class MeshServiceTest {
             )).toByteArray(),
         ))
         assertTrue(store.observeMessages("conv-OTHER").first().isEmpty())
+        service.stop()
+    }
+
+    @Test
+    fun `file chunk goes through rfcomm sendTo when connected`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val rfcommSent = mutableListOf<Pair<String, MeshFrame>>()
+        val rfcomm = object : RfcommChannel {
+            override val incoming = MutableSharedFlow<MeshFrame>()
+            override fun start() {}
+            override fun stop() {}
+            override suspend fun connect(peerId: String, address: String) = false
+            override fun isConnectedTo(peerId: String) = peerId == "OTHER"
+            override fun sendTo(peerId: String, frame: MeshFrame) { rfcommSent.add(peerId to frame) }
+        }
+        val service = MeshService(
+            transport = transport, store = store, identity = identity, dedup = DedupCache(),
+            rfcomm = rfcomm,
+        )
+        service.sendFile("conv-OTHER", "OTHER", { java.io.ByteArrayInputStream(ByteArray(100) { 1 }) }, "f.txt", "text/plain", 100)
+        var guard = 0
+        while (rfcommSent.isEmpty() && transport.broadcastCount == 0 && guard++ < 100) kotlinx.coroutines.delay(20)
+        assertTrue("RFCOMM 连接时应走 sendTo 而非 BLE broadcast", rfcommSent.isNotEmpty())
+        assertEquals("OTHER", rfcommSent.first().first)
         service.stop()
     }
 }

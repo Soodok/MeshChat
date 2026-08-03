@@ -30,6 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
@@ -48,6 +49,16 @@ private const val TAG = "MeshSvc"
 /** 接受邀请后持续重发确认的上限：超过则停止，避免无限广播空耗。 */
 internal const val ACK_RETRY_TIMEOUT_MS = 30_000L
 
+/** RFCOMM 高速通道最小契约：MeshService 只依赖连接查询/点对点写/生命周期，不绑定具体实现（可测替身）。 */
+interface RfcommChannel {
+    val incoming: SharedFlow<MeshFrame>
+    fun start()
+    fun stop()
+    suspend fun connect(peerId: String, address: String): Boolean
+    fun isConnectedTo(peerId: String): Boolean
+    fun sendTo(peerId: String, frame: MeshFrame)
+}
+
 class MeshService(
     private val transport: MeshTransport,
     private val store: MeshStore,
@@ -57,6 +68,8 @@ class MeshService(
         override fun save(tmpFile: File, fileName: String, mime: String): String? = null
     },
     private val tmpDir: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
+    /** RFCOMM 高吞吐通道（可选）：文件帧优先走它，无连接回退 BLE broadcast。 */
+    private val rfcomm: RfcommChannel? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -68,6 +81,7 @@ class MeshService(
     private val transfer = FileTransferManager(
         transport = transport, shortId = identity.shortId, saver = fileSaver,
         scope = scope, tmpDirProvider = tmpDir,
+        sendFrame = { dstId, frame -> sendFrame(dstId, frame) },
         onProgress = { p ->
             // 终态同步落库状态（fileId 即消息 id）
             when (p.status) {
@@ -119,8 +133,13 @@ class MeshService(
         if (started) return // 幂等：防止「开始附近发现」被重复点击导致重复启动
         started = true
         transport.start()
+        rfcomm?.start()
         receiveJob = scope.launch {
             transport.incoming.catch { }.collect { frame -> handleFrame(frame) }
+        }
+        // RFCOMM 通道合流：文件帧经高速通道到达时同样走 handleFrame
+        rfcomm?.incoming?.let { flow ->
+            scope.launch { flow.catch { }.collect { frame -> handleFrame(frame) } }
         }
         peerJob = scope.launch {
             transport.foundPeers.catch { }.collect { info ->
@@ -158,6 +177,7 @@ class MeshService(
         peerJob?.cancel()
         tickJob?.cancel()
         transport.stop()
+        rfcomm?.stop()
         scope.cancel()
     }
 
@@ -197,6 +217,23 @@ class MeshService(
             ),
         )
         return fileId
+    }
+
+    /** 文件帧发送路由：RFCOMM 已连接则走高速通道，否则 BLE broadcast 兜底。 */
+    private fun sendFrame(dstId: String, frame: MeshFrame) {
+        if (rfcomm != null && rfcomm.isConnectedTo(dstId)) rfcomm.sendTo(dstId, frame)
+        else transport.broadcast(frame)
+    }
+
+    /** 会话建立后按 BLE 扫描到的对端 MAC 发起 RFCOMM 连接（配对弹窗由系统处理，失败静默回退 BLE）。 */
+    private fun connectRfcomm(peerId: String) {
+        val rf = rfcomm ?: return
+        if (rf.isConnectedTo(peerId)) return
+        val address = _peers.value.firstOrNull { it.shortId == peerId }?.deviceAddress ?: return
+        scope.launch {
+            Log.d(TAG, "rfcomm connect attempt peer=$peerId addr=$address")
+            rf.connect(peerId, address)
+        }
     }
 
     /** fileMeta 列 JSON 序列化（fileName/mime 转义，防止引号破坏 JSON）。 */
@@ -312,7 +349,11 @@ class MeshService(
                 _ackRetries.update { it - envelope.srcId }
                 // 仅首次收到确认时回发一次（ack-of-ack），让对端停止重发；
                 // 之后对端重发的冗余 ACK 不再回发，防止双方无限互发确认刷屏
-                if (firstTime) sendInviteAck(envelope.srcId)
+                if (firstTime) {
+                    sendInviteAck(envelope.srcId)
+                    // 会话建立 → 尝试建立 RFCOMM 高速通道（文件传输用）；失败静默回退 BLE
+                    connectRfcomm(envelope.srcId)
+                }
             }
             "FILE" -> {
                 // 一跳帧（同握手帧）：仅处理发往本机；非本机忽略（ACK 一跳语义下多跳无法回传）

@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import com.meshchat.app.mesh.protocol.MeshFrame
+import com.meshchat.app.mesh.service.RfcommChannel
 import java.io.InputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -32,7 +33,7 @@ import kotlinx.coroutines.launch
 class RfcommTransport(
     private val context: Context,
     private val sdpUuid: UUID = UUID.fromString("0000A5E3-0000-1000-8000-00805F9B34FB"),
-) : MeshTransport {
+) : MeshTransport, RfcommChannel {
     companion object {
         private const val TAG = "MeshRfcomm"
         private const val SERVICE_NAME = "MeshChat"
@@ -76,7 +77,7 @@ class RfcommTransport(
     }
 
     /** 客户端主动连接（会话建立后由 MeshService 调用）：peerId 用于寻址，address 为经典蓝牙 MAC。 */
-    suspend fun connect(peerId: String, address: String): Boolean {
+    override suspend fun connect(peerId: String, address: String): Boolean {
         val device = adapter?.getRemoteDevice(address) ?: return false
         if (!ensureBonded(device)) { Log.w(TAG, "bond failed for $address"); return false }
         val socket = runCatching {
@@ -93,7 +94,7 @@ class RfcommTransport(
         return true
     }
 
-    fun isConnectedTo(peerId: String): Boolean = sockets.containsKey(peerId)
+    override fun isConnectedTo(peerId: String): Boolean = sockets.containsKey(peerId)
 
     override fun sendTo(peerId: String, frame: MeshFrame) {
         val pair = sockets[peerId] ?: run { Log.w(TAG, "no rfcomm socket for $peerId"); return }
