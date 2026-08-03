@@ -71,4 +71,16 @@ class MeshEnvelopeTest {
         assertEquals(2, body.totalChunks)
         assertEquals(listOf(1), body.missing)
     }
+
+    @Test
+    fun `presence body roundtrips with PING kind`() {
+        val envelope = MeshEnvelope(
+            id = "p1", kind = "PING", srcId = "AB12", dstId = "",
+            convId = "conv-AB12", ttl = 8, ts = 1,
+            body = PresenceBody(displayName = "老王"),
+        )
+        val decoded = MeshJson.decodeEnvelope(MeshJson.encodeEnvelope(envelope))
+        assertEquals("PING", decoded.kind)
+        assertEquals("老王", (decoded.body as PresenceBody).displayName)
+    }
 }

@@ -27,8 +27,18 @@ class MeshChatApplication : Application() {
         val id = stored ?: ShortIdGen.generate().also {
             prefs.edit().putString("short_id", it).apply()
         }
-        LocalIdentity(shortId = id)
+        val name = prefs.getString("display_name", null)
+        LocalIdentity(shortId = id, displayName = name ?: "节点$id")
     }
+
+    /** 本机昵称：设置页可改，持久化，随 PING 广播给邻近节点。 */
+    var displayName: String
+        get() = identity.displayName
+        set(value) {
+            identity.displayName = value.trim().ifEmpty { "节点${identity.shortId}" }
+            getSharedPreferences("meshchat_identity", Context.MODE_PRIVATE)
+                .edit().putString("display_name", identity.displayName).apply()
+        }
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
     val service by lazy {
         MeshService(

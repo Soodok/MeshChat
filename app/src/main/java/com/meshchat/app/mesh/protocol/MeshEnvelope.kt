@@ -32,6 +32,10 @@ data class FileAckBody(
 ) : EnvelopeBody
 
 @Serializable
+@SerialName("PING")
+data class PresenceBody(val displayName: String) : EnvelopeBody
+
+@Serializable
 @SerialName("GROUP")
 data class GroupBody(
     val op: String,           // JOIN | LEAVE | MSG
