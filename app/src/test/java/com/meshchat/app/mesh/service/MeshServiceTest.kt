@@ -1,6 +1,7 @@
 package com.meshchat.app.mesh.service
 
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
@@ -9,15 +10,27 @@ import com.meshchat.app.mesh.protocol.TextBody
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.storage.InMemoryMeshStore
 import com.meshchat.app.mesh.storage.MessageStatus
+import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transport.InMemoryTransport
 import com.meshchat.app.mesh.transport.MeshTransport
+import java.io.File
+import java.util.Base64
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MeshServiceTest {
+    private class FakeSaver(private val dir: File) : FileSaver {
+        override fun save(tmpFile: File, fileName: String, mime: String): String {
+            val target = File(dir, fileName)
+            tmpFile.copyTo(target, overwrite = true)
+            return target.absolutePath
+        }
+    }
+
     /** 统计广播次数的传输替身：验证握手确认的重发与停止。 */
     private class CountingTransport : MeshTransport {
         private val inner = InMemoryTransport()
@@ -198,5 +211,60 @@ class MeshServiceTest {
         assertEquals(before, transport.broadcastCount) // 非本机确认不触发 ack-of-ack
         service.tickSessionState(t0 + 400)
         assertEquals(before + 1, transport.broadcastCount) // 仍在重发
+    }
+
+    @Test
+    fun `file chunk addressed to me is stored as file message`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = identity, dedup = DedupCache(),
+            fileSaver = FakeSaver(kotlin.io.path.createTempDirectory("svc").toFile()),
+        )
+        service.start()
+        val body = FileBody(
+            fileId = "f-svc", fileName = "x.txt", mime = "text/plain",
+            size = 100, totalChunks = 1, chunkIndex = 0,
+            chunkData = Base64.getEncoder().encodeToString(ByteArray(100) { 7 }),
+        )
+        service.handleFrame(MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(MeshEnvelope(
+                id = "e-1", kind = "FILE", srcId = "OTHER", dstId = "ME",
+                convId = "conv-ME", ttl = 8, ts = 1, body = body,
+            )).toByteArray(),
+        ))
+        val stored = store.observeMessages("conv-OTHER").first().first()
+        assertEquals("FILE", stored.kind)
+        assertEquals("f-svc", stored.id)
+        assertEquals(MessageStatus.DELIVERED, stored.status)
+        service.stop()
+    }
+
+    @Test
+    fun `file chunk not addressed to me is ignored`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = identity, dedup = DedupCache(),
+            fileSaver = FakeSaver(kotlin.io.path.createTempDirectory("svc2").toFile()),
+        )
+        service.start()
+        val body = FileBody(
+            fileId = "f-other", fileName = "x.txt", mime = "text/plain",
+            size = 100, totalChunks = 1, chunkIndex = 0,
+            chunkData = Base64.getEncoder().encodeToString(ByteArray(100) { 7 }),
+        )
+        service.handleFrame(MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(MeshEnvelope(
+                id = "e-2", kind = "FILE", srcId = "OTHER", dstId = "OTHER2",
+                convId = "conv-OTHER2", ttl = 8, ts = 1, body = body,
+            )).toByteArray(),
+        ))
+        assertTrue(store.observeMessages("conv-OTHER").first().isEmpty())
+        service.stop()
     }
 }

@@ -2,6 +2,8 @@ package com.meshchat.app.mesh.service
 
 import android.util.Log
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.protocol.FileAckBody
+import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
@@ -14,8 +16,12 @@ import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
 import com.meshchat.app.mesh.storage.OutboxEntry
 import com.meshchat.app.mesh.storage.StoredMessage
+import com.meshchat.app.mesh.transfer.FileSaver
+import com.meshchat.app.mesh.transfer.FileTransferManager
+import com.meshchat.app.mesh.transfer.TransferStatus
 import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.MeshTransport
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,12 +53,41 @@ class MeshService(
     private val store: MeshStore,
     private val identity: LocalIdentity,
     private val dedup: DedupCache,
+    private val fileSaver: FileSaver = object : FileSaver {
+        override fun save(tmpFile: File, fileName: String, mime: String): String? = null
+    },
+    private val tmpDir: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
     private var receiveJob: Job? = null
     private var peerJob: Job? = null
     private var tickJob: Job? = null
+
+    /** 文件传输引擎：发送状态机 + 接收重组 + 窗口批量 bitmap 确认。 */
+    private val transfer = FileTransferManager(
+        transport = transport, shortId = identity.shortId, saver = fileSaver,
+        scope = scope, tmpDirProvider = tmpDir,
+        onProgress = { p ->
+            // 终态同步落库状态（fileId 即消息 id）
+            when (p.status) {
+                TransferStatus.DONE -> store.updateMessageStatus(p.fileId, MessageStatus.DELIVERED)
+                TransferStatus.FAILED -> store.updateMessageStatus(p.fileId, MessageStatus.FAILED)
+                else -> Unit
+            }
+        },
+        onSaved = { _, fileId, fileName, mime, size, uri ->
+            // 接收收齐：回填 Downloads URI 并标记送达
+            store.updateFileMeta(fileId, fileMetaJson(fileName, mime, size, uri))
+            store.updateMessageStatus(fileId, MessageStatus.DELIVERED)
+        },
+    )
+
+    /** 接收端已落库的文件 id（占位消息去重）。 */
+    private val receivedFiles = mutableSetOf<String>()
+
+    /** 文件传输进度（发送/接收统一，含终态）。 */
+    val fileProgress: StateFlow<com.meshchat.app.mesh.transfer.FileProgress?> = transfer.progress
 
     private val _peers = MutableStateFlow<List<MeshPeerInfo>>(emptyList())
     val peers: StateFlow<List<MeshPeerInfo>> = _peers.asStateFlow()
@@ -110,6 +145,8 @@ class MeshService(
                 _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
                 // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
                 tickSessionState(now)
+                // 文件传输接收超时清理（60s 无进展丢弃）
+                transfer.tick(now)
             }
         }
     }
@@ -142,6 +179,27 @@ class MeshService(
             ),
         )
         route(envelope)
+    }
+
+    /** 发送文件：fileId 即消息 id（落库占位）；返回 null 表示传输中（串行约束）或目标为空。 */
+    fun sendFile(convId: String, dstId: String, openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long): String? {
+        if (dstId.isBlank()) return null
+        val fileId = transfer.sendFile(convId, dstId, openSource, fileName, mime, size) ?: return null
+        store.insertMessage(
+            StoredMessage(
+                id = fileId, convId = convId, kind = "FILE", srcId = identity.shortId,
+                dstId = dstId, text = fileName,
+                fileMeta = fileMetaJson(fileName, mime, size, null),
+                status = MessageStatus.SENDING, ts = System.currentTimeMillis(),
+            ),
+        )
+        return fileId
+    }
+
+    /** fileMeta 列 JSON 序列化（fileName/mime 转义，防止引号破坏 JSON）。 */
+    private fun fileMetaJson(fileName: String, mime: String, size: Long, uri: String?): String {
+        fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
+        return """{"fileName":"${esc(fileName)}","mime":"${esc(mime)}","size":$size,"downloadsUri":"${uri?.let { esc(it) } ?: ""}"}"""
     }
 
     /** 向对端发起对话请求（建立对话关系的前置握手）。 */
@@ -252,6 +310,27 @@ class MeshService(
                 // 仅首次收到确认时回发一次（ack-of-ack），让对端停止重发；
                 // 之后对端重发的冗余 ACK 不再回发，防止双方无限互发确认刷屏
                 if (firstTime) sendInviteAck(envelope.srcId)
+            }
+            "FILE" -> {
+                // 一跳帧（同握手帧）：仅处理发往本机；非本机忽略（ACK 一跳语义下多跳无法回传）
+                if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                val body = envelope.body as? FileBody ?: return
+                // 先落库占位（按 fileId 去重；upsert 幂等），再收块——收齐回调会置 DELIVERED，顺序不能反
+                if (receivedFiles.add(body.fileId)) {
+                    store.insertMessage(
+                        StoredMessage(
+                            id = body.fileId, convId = "conv-${envelope.srcId}", kind = "FILE",
+                            srcId = envelope.srcId, dstId = envelope.dstId, text = body.fileName,
+                            fileMeta = fileMetaJson(body.fileName, body.mime, body.size, null),
+                            status = MessageStatus.SENDING, ts = envelope.ts,
+                        ),
+                    )
+                }
+                transfer.onFileChunk(envelope)
+            }
+            "FILE_ACK" -> {
+                if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                transfer.onFileAck(envelope)
             }
             else -> {
                 // 投递以目标寻址为准：发往本机的消息直接投递，不依赖会话白名单

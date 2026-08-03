@@ -9,7 +9,9 @@ import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
+import com.meshchat.app.mesh.transfer.AndroidFileSaver
 import com.meshchat.app.mesh.transport.BleTransport
+import java.io.File
 
 class MeshChatApplication : Application() {
     private val bluetoothManager: BluetoothManager by lazy {
@@ -28,7 +30,13 @@ class MeshChatApplication : Application() {
         LocalIdentity(shortId = id)
     }
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
-    val service by lazy { MeshService(transport, store, identity, DedupCache()) }
+    val service by lazy {
+        MeshService(
+            transport, store, identity, DedupCache(),
+            fileSaver = AndroidFileSaver(this),
+            tmpDir = { File(filesDir, "transfers") },
+        )
+    }
 
     /** 本机蓝牙名称（用于界面展示本设备蓝牙信息）；无权限/异常时返回 null 而非崩溃。 */
     val localBluetoothName: String? get() = runCatching { bluetoothManager.adapter?.name }.getOrNull()

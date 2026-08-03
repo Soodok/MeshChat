@@ -34,7 +34,7 @@ class FileTransferManager(
     private val maxWindowRetries: Int = MAX_WINDOW_RETRIES,
     private val tmpDirProvider: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
     private val onProgress: (FileProgress) -> Unit = {},
-    private val onSaved: (convId: String, fileId: String, fileName: String, uri: String?) -> Unit = { _, _, _, _ -> },
+    private val onSaved: (convId: String, fileId: String, fileName: String, mime: String, size: Long, uri: String?) -> Unit = { _, _, _, _, _, _ -> },
 ) {
     companion object {
         const val CHUNK_BYTES = 200
@@ -268,7 +268,7 @@ class FileTransferManager(
         s.tmpFile.delete()
         sendAck(s, final = true)
         receivers.remove(s.fileId)
-        onSaved(s.convId, s.fileId, s.fileName, uri)
+        onSaved(s.convId, s.fileId, s.fileName, s.mime, s.size, uri)
         updateReceiveProgress(s, TransferStatus.DONE)
     }
 
