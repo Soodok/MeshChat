@@ -36,6 +36,9 @@ private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
 private const val LOST_THRESHOLD_MS = 1_500L      // 超过该时长无扫描更新 → 标记失联
 private const val LOST_REMOVE_MS = 5_000L         // 失联超过该时长 → 从列表移除
 
+/** 接受邀请后持续重发确认的上限：超过则停止，避免无限广播空耗。 */
+internal const val ACK_RETRY_TIMEOUT_MS = 30_000L
+
 class MeshService(
     private val transport: MeshTransport,
     private val store: MeshStore,
@@ -70,6 +73,9 @@ class MeshService(
     private val _invites = MutableStateFlow<Map<String, Long>>(emptyMap())
     val invites: StateFlow<Map<String, Long>> = _invites.asStateFlow()
 
+    /** 已接受邀请、正在向对端持续重发确认的节点：peerId -> 重发开始时间戳。 */
+    private val _ackRetries = MutableStateFlow<Map<String, Long>>(emptyMap())
+
     fun start() {
         transport.start()
         receiveJob = scope.launch {
@@ -96,6 +102,8 @@ class MeshService(
                     }
                 }
                 _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+                // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
+                tickSessionState(now)
             }
         }
     }
@@ -146,10 +154,16 @@ class MeshService(
         )
     }
 
-    /** 接受对话请求：建立会话关系并回发确认。 */
+    /** 接受对话请求：建立会话关系并启动持续确认（每 0.2s 重发 INVITE_ACK，直至对端确认或超时）。 */
     fun acceptInvite(peerId: String) {
         _sessions.update { it + peerId }
         _invites.update { it - peerId }
+        _ackRetries.update { it + (peerId to System.currentTimeMillis()) }
+        sendInviteAck(peerId)
+    }
+
+    /** 发送对话接受确认帧。 */
+    private fun sendInviteAck(peerId: String) {
         transport.broadcast(
             MeshFrame(
                 FrameType.DATA,
@@ -167,6 +181,19 @@ class MeshService(
                 ).toByteArray(),
             ),
         )
+    }
+
+    /**
+     * 会话状态机（每 0.2s 由 tick 驱动一次）：
+     * 对已接受邀请的对端持续重发 INVITE_ACK，直至收到对端确认或超时，确保发起方必能进入对话状态。
+     */
+    internal fun tickSessionState(now: Long) {
+        for ((peerId, startedAt) in _ackRetries.value) {
+            when {
+                now - startedAt > ACK_RETRY_TIMEOUT_MS -> _ackRetries.update { it - peerId }
+                else -> sendInviteAck(peerId)
+            }
+        }
     }
 
     /** 拒绝对话请求。 */
@@ -187,9 +214,14 @@ class MeshService(
     }
 
     private fun handleEnvelope(envelope: MeshEnvelope) {
+        if (envelope.srcId == identity.shortId) return // 忽略自身回环帧
         when (envelope.kind) {
             "INVITE" -> {
-                if (envelope.srcId !in _sessions.value) {
+                if (envelope.srcId in _sessions.value) {
+                    // 已建立会话的对端再次发起请求（其确认可能丢失）：重发确认并重启重发窗口，帮助双方收敛
+                    _ackRetries.update { it + (envelope.srcId to System.currentTimeMillis()) }
+                    sendInviteAck(envelope.srcId)
+                } else {
                     _invites.update { it + (envelope.srcId to envelope.ts) }
                 }
             }
@@ -197,10 +229,13 @@ class MeshService(
                 _sessions.update { it + envelope.srcId }
                 _invites.update { it - envelope.srcId }
                 _pendingInvites.update { it - envelope.srcId }
+                _ackRetries.update { it - envelope.srcId }
+                // 回发一次确认（ack-of-ack），让对端停止重发
+                sendInviteAck(envelope.srcId)
             }
             else -> {
-                // 仅已建立对话关系的节点（或本机自环）间的消息参与路由投递
-                if (envelope.srcId in _sessions.value || envelope.srcId == identity.shortId) {
+                // 仅已建立对话关系的节点间的消息参与路由投递
+                if (envelope.srcId in _sessions.value) {
                     route(envelope)
                 }
             }

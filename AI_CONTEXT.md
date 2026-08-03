@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.6.0（versionCode 7，构建时间 2026-08-03 15:06）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.7.0（versionCode 8，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -51,11 +51,12 @@ app/src/main/java/com/meshchat/app/
 - **v0.6.0 探测增强**：节点状态每 200ms 刷新（`MeshService` tick，`REFRESH_INTERVAL_MS=200`）；节点行显示 RSSI 数值（dBm）+ 等级标签（S/A/B/C/D）；失联状态机——>1.5s 无扫描更新标记 `lost`（红色「失去连接·正在重连…」），>5s 移除；`BleTransport` 断开连接时移除记录，持续扫描自动重连。
 - **v0.6.0 蓝牙质量评分模块**：`mesh/quality/BluetoothQuality.kt`（独立，供后续复用）——`grade(rssi, deviceFactor)` 返回 S/A/B/C/D 等级、`score(rssi)` 0-100 分、`bars(rssi)` 0-3 信号条；deviceFactor 预留设备能力修正。
 - **v0.6.0 本机蓝牙信息**：`MeshChatApplication` 暴露 `localBluetoothName/Address`，身份页新增「本机蓝牙信息」（蓝牙名称/MAC 地址）区块。
+- **v0.7.0 握手确认容错**（修复「被发起者接受后发起者收不到确认」）：`MeshService` 新增 `_ackRetries` 状态机——接受邀请后立即回发 `INVITE_ACK`，并由 tick 每 0.2s 持续重发，直至收到对端确认或超时（`ACK_RETRY_TIMEOUT_MS=30s`）；收到对端 `INVITE_ACK` 时建立会话并**回发一次 ack-of-ack** 令对端停止重发；已建立会话的对端再次发 `INVITE`（其确认丢失场景）时重发确认并重启重发窗口；`handleEnvelope` 忽略自身回环帧（防会话被自身 ACK 污染）。
 - 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**18/18 测试通过，0 失败**（帧编解码/信封序列化/去重/转发决策/身份/服务自环闭环）。
+- `gradlew testDebugUnitTest`：**20/20 测试通过，0 失败**（帧编解码/信封序列化/去重/转发决策/身份/服务自环闭环/**握手确认容错**——重发直到确认/确认后停止/超时停止/已会话节点重复邀请重发）。
 - `gradlew assembleDebug`：**BUILD SUCCESSFUL**。
 - 服务层自环闭环（MeshServiceTest）：发送→投递→DELIVERED 状态、转发帧 TTL 递减 7 均验证通过。
 
@@ -64,7 +65,7 @@ app/src/main/java/com/meshchat/app/
 - **GitHub 推送**：链路偶发 `Connection was reset`（间歇性），本地提交安全；重试即成功。
 
 ### 下一步首要任务
-1. BLE 真机双机联调（v0.4.0）：流程 = 双方打开 App 发现节点 → A 点击节点发起对话 → B 弹窗接受 → 会话建立 → 互发消息验证 GATT 投递与回执。联调反馈渠道：logcat 抓 `MeshService`/`BleTransport`。已知待验证点：MTU 协商实际值、`writeCharacteristic` 对超长载荷（>协商 MTU）仍会失败（分片未实现）。
+1. BLE 真机双机联调（v0.7.0）：流程 = 双方打开 App 发现节点 → A 点击节点发起对话 → B 弹窗接受 → 会话建立 → 互发消息验证 GATT 投递与回执。重点验证本次修复：**B 接受后 A 是否在数秒内自动进入会话**（ACK 每 0.2s 重发，A 收到即锁定会话）；再测 B 拒绝、A 在 B 接受瞬间关闭蓝牙等丢包场景。联调反馈渠道：logcat 抓 `MeshService`/`BleTransport`。已知待验证点：MTU 协商实际值、`writeCharacteristic` 对超长载荷（>协商 MTU）仍会失败（分片未实现）。
 2. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输上层逻辑（协议载荷已就绪）。
 3. 后端数据源接入前端：`MeshRepository.observeConversations()` 返回空流，待接入 Room 会话表驱动聊天列表（当前仅「我」自环会话与握手建立的节点会话可进）。
 
