@@ -8,6 +8,7 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
+        android:name=".MeshChatApplication"
         android:allowBackup="true"
         android:label="MeshChat"
         android:supportsRtl="true"
