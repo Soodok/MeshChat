@@ -10,7 +10,7 @@ import com.meshchat.app.ui.screens.MeshChatHome
 import com.meshchat.app.ui.theme.Ink
 
 @Composable
-fun MeshChatApp(viewModel: MeshChatViewModel = viewModel()) {
+fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewModelFactory())) {
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
         MeshChatHome(

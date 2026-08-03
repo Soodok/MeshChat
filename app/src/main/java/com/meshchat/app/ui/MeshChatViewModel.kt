@@ -1,26 +1,22 @@
 package com.meshchat.app.ui
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.meshchat.app.data.ChatMessage
-import com.meshchat.app.data.linMessages
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import com.meshchat.app.data.MeshRepository
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
-class MeshChatViewModel : ViewModel() {
-    private val _messages = MutableStateFlow(linMessages)
-    val messages = _messages.asStateFlow()
+class MeshChatViewModel(
+    private val repository: MeshRepository,
+) : ViewModel() {
+    val messages: StateFlow<List<ChatMessage>> = repository.observeMessages("conv-ME")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun sendMessage(text: String) {
         if (text.isBlank()) return
-        _messages.update { messages ->
-            messages + ChatMessage(
-                id = "local-${System.currentTimeMillis()}",
-                text = text.trim(),
-                sentByMe = true,
-                time = "刚刚",
-                delivery = "正在通过 Mesh 发送",
-            )
-        }
+        viewModelScope.launch { repository.sendText("conv-ME", text.trim()) }
     }
 }
