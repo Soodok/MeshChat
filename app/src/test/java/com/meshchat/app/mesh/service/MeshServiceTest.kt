@@ -6,6 +6,7 @@ import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
+import com.meshchat.app.mesh.protocol.PresenceBody
 import com.meshchat.app.mesh.protocol.TextBody
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.storage.InMemoryMeshStore
@@ -32,16 +33,18 @@ class MeshServiceTest {
         }
     }
 
-    /** 统计广播次数的传输替身：验证握手确认的重发与停止。 */
+    /** 统计广播次数 + 记录帧的传输替身：验证心跳重发与停止。 */
     private class CountingTransport : MeshTransport {
         private val inner = InMemoryTransport()
         var broadcastCount = 0
+        var frames = mutableListOf<MeshFrame>()
         override val incoming = inner.incoming
         override val foundPeers = inner.foundPeers
         override fun start() = inner.start()
         override fun stop() = inner.stop()
         override fun broadcast(frame: MeshFrame) {
             broadcastCount++
+            frames.add(frame)
             inner.broadcast(frame)
         }
         override fun sendTo(peerId: String, frame: MeshFrame) = inner.sendTo(peerId, frame)
@@ -324,6 +327,114 @@ class MeshServiceTest {
         while (rfcommSent.isEmpty() && transport.broadcastCount == 0 && guard++ < 100) kotlinx.coroutines.delay(20)
         assertTrue("RFCOMM 连接时应走 sendTo 而非 BLE broadcast", rfcommSent.isNotEmpty())
         assertEquals("OTHER", rfcommSent.first().first)
+        service.stop()
+    }
+
+    private fun pingFrame(srcId: String, name: String) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(
+                id = UUID.randomUUID().toString(), kind = "PING",
+                srcId = srcId, dstId = "", convId = "conv-$srcId",
+                ttl = 8, ts = 0, body = PresenceBody(displayName = name),
+            ),
+        ).toByteArray(),
+    )
+
+    private fun pongFrame(srcId: String, name: String, dstId: String) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(
+                id = UUID.randomUUID().toString(), kind = "PONG",
+                srcId = srcId, dstId = dstId, convId = "conv-$srcId",
+                ttl = 8, ts = 0, body = PresenceBody(displayName = name),
+            ),
+        ).toByteArray(),
+    )
+
+    private fun dataKinds(frames: List<MeshFrame>): List<String> =
+        frames.mapNotNull { runCatching { MeshJson.decodeEnvelope(it.payloadText) }.getOrNull()?.kind }
+
+    @Test
+    fun `ping replies pong and records peer name`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val before = transport.broadcastCount
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertTrue("收 PING 应回 PONG", dataKinds(transport.frames.drop(before)).contains("PONG"))
+        assertEquals("OTHER", service.peers.value.first().shortId)
+        assertEquals("老王", service.peers.value.first().displayName)
+    }
+
+    @Test
+    fun `pong records peer seen without reply`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(pongFrame("OTHER", "老王", "ME"))
+        assertEquals("老王", service.peers.value.first().displayName)
+        val kinds = dataKinds(transport.frames)
+        assertTrue("PONG 不应触发回发", !kinds.contains("PING"))
+    }
+
+    @Test
+    fun `peer marked lost after heartbeat timeout and revived by ping`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertEquals(false, service.peers.value.first().lost)
+        service.heartbeatTick(t0 + 3_100)
+        assertEquals("3s 无心跳应判失联", true, service.peers.value.first().lost)
+        service.handleFrame(pingFrame("OTHER", "老王"))   // 心跳恢复（markSeen 写真实时钟）
+        val t1 = System.currentTimeMillis()
+        service.heartbeatTick(t1 + 100)                   // 恢复后 100ms → 在线
+        assertEquals("恢复心跳应回在线", false, service.peers.value.first().lost)
+    }
+
+    @Test
+    fun `heartbeat pings at most once per second`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.heartbeatTick(t0)                    // 首帧
+        service.heartbeatTick(t0 + 200)
+        service.heartbeatTick(t0 + 400)
+        service.heartbeatTick(t0 + 600)
+        service.heartbeatTick(t0 + 800)
+        assertEquals(1, dataKinds(transport.frames).count { it == "PING" })
+        service.heartbeatTick(t0 + 1_000)            // 满 1s → 第二帧
+        assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
+    }
+
+    @Test
+    fun `incoming text triggers onIncomingMessage with peer name`() {
+        val transport = CountingTransport()
+        val received = mutableListOf<Triple<String, String, String>>()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+            onIncomingMessage = { fromId, fromName, text -> received.add(Triple(fromId, fromName, text)) },
+        )
+        service.start()
+        service.handleFrame(pingFrame("OTHER", "老王"))   // 先让昵称入表
+        service.handleFrame(MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(MeshEnvelope(
+                id = "t1", kind = "TEXT", srcId = "OTHER", dstId = "ME",
+                convId = "conv-ME", ttl = 8, ts = 1, body = TextBody("你好"),
+            )).toByteArray(),
+        ))
+        assertTrue(received.isNotEmpty())
+        assertEquals("OTHER", received.first().first)
+        assertEquals("老王", received.first().second)
+        assertEquals("你好", received.first().third)
         service.stop()
     }
 }

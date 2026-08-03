@@ -8,6 +8,7 @@ import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
+import com.meshchat.app.mesh.protocol.PresenceBody
 import com.meshchat.app.mesh.protocol.TextBody
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.routing.ForwardDecision
@@ -41,7 +42,8 @@ import kotlinx.coroutines.launch
 private const val DEFAULT_TTL = 8
 private const val OUTBOX_TTL_MS = 60_000L
 private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
-private const val LOST_THRESHOLD_MS = 1_500L      // 超过该时长无扫描更新 → 标记失联
+private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校准一次
+private const val LOST_HEARTBEAT_MS = 3_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1-2 帧丢失）
 private const val LOST_REMOVE_MS = 5_000L         // 失联超过该时长 → 从列表移除
 
 private const val TAG = "MeshSvc"
@@ -103,6 +105,7 @@ class MeshService(
             // 接收收齐：回填 Downloads URI 并标记送达
             store.updateFileMeta(fileId, fileMetaJson(fileName, mime, size, uri))
             store.updateMessageStatus(fileId, MessageStatus.DELIVERED)
+            onFileSaved(fileName)   // 通知「文件已保存」
         },
     )
 
@@ -118,7 +121,10 @@ class MeshService(
     /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
     private val peerEntries = LinkedHashMap<String, PeerEntry>()
 
-    private data class PeerEntry(val info: MeshPeerInfo, var lastSeen: Long, var lost: Boolean)
+    private data class PeerEntry(var info: MeshPeerInfo, var lastSeen: Long, var lost: Boolean)
+
+    /** 上次 PING 广播时刻（tick 200ms 节流到 1s）。 */
+    private var lastPingAt = 0L
 
     /** 本机短 ID（对端寻址标识）。 */
     val shortId: String get() = identity.shortId
@@ -154,24 +160,19 @@ class MeshService(
         peerJob = scope.launch {
             transport.foundPeers.catch { }.collect { info ->
                 val now = System.currentTimeMillis()
-                peerEntries[info.shortId] = PeerEntry(info, lastSeen = now, lost = false)
+                val existing = peerEntries[info.shortId]
+                // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖
+                peerEntries[info.shortId] = PeerEntry(
+                    if (existing != null) info.copy(displayName = existing.info.displayName) else info,
+                    lastSeen = now, lost = false,
+                )
             }
         }
         tickJob = scope.launch {
             while (isActive) {
                 delay(REFRESH_INTERVAL_MS)
                 val now = System.currentTimeMillis()
-                val iterator = peerEntries.entries.iterator()
-                while (iterator.hasNext()) {
-                    val entry = iterator.next().value
-                    val age = now - entry.lastSeen
-                    when {
-                        age > LOST_REMOVE_MS -> iterator.remove()          // 5 秒无应答 → 节点消失
-                        age > LOST_THRESHOLD_MS -> entry.lost = true       // 超过 1.5s 无更新 → 明显标注失联
-                        else -> entry.lost = false
-                    }
-                }
-                _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+                heartbeatTick(now)
                 // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
                 tickSessionState(now)
                 // 文件传输接收超时清理（60s 无进展丢弃）
@@ -301,6 +302,55 @@ class MeshService(
     }
 
     /**
+     * 心跳 tick（tick 循环每 200ms 调用）：
+     * 每 1s 广播 PING（带本机昵称）；按 3s 超时更新各节点在线状态。
+     */
+    internal fun heartbeatTick(now: Long) {
+        if (now - lastPingAt >= HEARTBEAT_INTERVAL_MS) {
+            lastPingAt = now
+            sendPing()
+        }
+        val iterator = peerEntries.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next().value
+            entry.lost = now - entry.lastSeen > LOST_HEARTBEAT_MS
+            if (now - entry.lastSeen > LOST_REMOVE_MS) iterator.remove()
+        }
+        _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+    }
+
+    /** 广播 PING（带本机昵称），对端收到回 PONG。 */
+    private fun sendPing() {
+        val env = MeshEnvelope(
+            id = UUID.randomUUID().toString(), kind = "PING",
+            srcId = identity.shortId, dstId = "", convId = "conv-${identity.shortId}",
+            ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
+            body = PresenceBody(identity.displayName),
+        )
+        transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray()))
+    }
+
+    /** 标记节点可见：更新 lastSeen；带昵称时更新显示名并落库。 */
+    private fun markSeen(peerId: String, displayName: String) {
+        val now = System.currentTimeMillis()
+        val existing = peerEntries[peerId]
+        if (existing != null) {
+            existing.lastSeen = now
+            if (displayName.isNotBlank() && displayName != existing.info.displayName) {
+                existing.info = existing.info.copy(displayName = displayName)
+            }
+        } else {
+            peerEntries[peerId] = PeerEntry(
+                MeshPeerInfo(shortId = peerId, deviceAddress = "", rssi = 0, hops = 1, displayName = displayName),
+                lastSeen = now, lost = false,
+            )
+        }
+        if (displayName.isNotBlank()) store.upsertPeer(peerId, displayName, now, 1)
+        // 同步刷新 peers 流：UI/通知实时可见，无需等下一轮 tick
+        _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+    }
+
+    /**
      * 会话状态机（每 0.2s 由 tick 驱动一次）：
      * 对已接受邀请的对端持续重发 INVITE_ACK，直至收到对端确认或超时，确保发起方必能进入对话状态。
      */
@@ -367,6 +417,22 @@ class MeshService(
                     connectRfcomm(envelope.srcId)
                 }
             }
+            "PING" -> {
+                // 心跳广播帧：仅处理发往本机/广播；回 PONG 双向确认在线，同时交换昵称
+                if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
+                val pong = MeshEnvelope(
+                    id = UUID.randomUUID().toString(), kind = "PONG",
+                    srcId = identity.shortId, dstId = envelope.srcId, convId = "conv-${envelope.srcId}",
+                    ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
+                    body = PresenceBody(identity.displayName),
+                )
+                transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(pong).toByteArray()))
+            }
+            "PONG" -> {
+                if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
+            }
             "FILE" -> {
                 // 一跳帧（同握手帧）：仅处理发往本机；非本机忽略（ACK 一跳语义下多跳无法回传）
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
@@ -405,6 +471,11 @@ class MeshService(
                 store.insertMessage(envelope.toStoredMessage())
                 store.updateMessageStatus(envelope.id, MessageStatus.DELIVERED)
                 sendReceipt(envelope)
+                // 收到消息回调（通知用）：仅对端发来的 TEXT 触发
+                if (envelope.kind == "TEXT" && envelope.srcId != identity.shortId) {
+                    val fromName = peerEntries[envelope.srcId]?.info?.displayName?.ifBlank { envelope.srcId } ?: envelope.srcId
+                    onIncomingMessage(envelope.srcId, fromName, (envelope.body as? TextBody)?.text ?: "")
+                }
             }
             is ForwardDecision.Forward -> {
                 val forwarded = envelope.copy(ttl = decision.ttl)
