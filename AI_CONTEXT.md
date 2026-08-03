@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.10.0（versionCode 21，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.11.0（versionCode 22，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -69,7 +69,8 @@ app/src/main/java/com/meshchat/app/
   - **convId 对称**：接收方落库用 `conv-<srcId>`（发送者短 ID）作会话键，收发双方读写同一会话（原发送方用对端 ID、接收方用发送者 ID → 消息存了查不到）。
   - 单测新增 `isReturnDefaultValues` 豁免（MeshService 使用 android.util.Log）。
 - 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
-- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）。
+- **v0.11.0 修复消息方向显示**（用户真机反馈"B 收到消息像自己跟自己对话"）：`MeshRepository.toUiModel()` 原硬编码 `sentByMe = true`，所有消息（含收到的）都渲染在右侧自己气泡 → 改为 `sentByMe = srcId == service.shortId`（本机发出的靠右，对端发来的靠左）。真机通讯已正常。
+- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复提交。
 
 ### 已验证内容
 - `gradlew testDebugUnitTest`：**22/22 测试通过，0 失败**（帧编解码/信封序列化/去重/转发决策/身份/服务自环闭环/握手确认容错/ack-of-ack 防循环/dstId 过滤/发起方单次回发）。
@@ -77,7 +78,7 @@ app/src/main/java/com/meshchat/app/
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。遗留：UI 显示细节（消息到达后界面呈现）待前端队友处理。
 
 ### 当前阻塞
-- **UI 显示细节待前端处理**：传输/路由/存储链路已通（双方 MeshSvc 确认消息到达并落库），但用户反馈"消息收不到"——需队友检查 ConversationScreen 消息流渲染（`observeMessages("conv-<对端ID>")` 的 flow 触发、`sentByMe` 方向、消息列表刷新时机）。日志：`adb logcat -s MeshSvc MeshBle`。
+- **UI 显示细节（已部分修复）**：消息方向已修（v0.11.0 `sentByMe = srcId == service.shortId`）；剩余待真机验证：ConversationScreen 消息流刷新时机、会话列表从 sessions 派生等。日志：`adb logcat -s MeshSvc MeshBle`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 - **GitHub 直连推送**：本地 `Connection was reset`（间歇性）→ 曾改用服务器中转（`git clone https://soodok.online/meshchat_bare.git` 仍可用作备用拉取源）；**2026-08-03 用户开梯子后已直推成功**，`origin/main` = `ab2f287`（含交接块更新），本地与远端完全同步。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。

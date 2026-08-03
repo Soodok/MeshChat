@@ -90,7 +90,7 @@ class MeshRepositoryImpl(
         return ChatMessage(
             id = id,
             text = text ?: "",
-            sentByMe = true,
+            sentByMe = srcId == service.shortId,
             time = time,
             delivery = delivery,
         )
