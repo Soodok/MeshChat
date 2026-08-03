@@ -4,12 +4,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.meshchat.app.data.ChatMessage
 import com.meshchat.app.data.ChatPreview
+import com.meshchat.app.data.FileUiMeta
 import com.meshchat.app.data.MeshPeer
 import com.meshchat.app.data.MeshRepository
+import com.meshchat.app.mesh.transfer.TransferStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -24,9 +28,32 @@ class MeshChatViewModel(
     /** 供 UI 展示当前会话状态。 */
     val currentConversation: StateFlow<String?> = conversationTarget
 
-    /** 消息随当前会话切换：打开哪个会话就观察哪个会话的消息。 */
-    val messages: StateFlow<List<ChatMessage>> = conversationTarget
-        .flatMapLatest { target -> repository.observeMessages("conv-${target ?: "ME"}") }
+    /** 文件传输进度（发送/接收统一）。 */
+    val fileProgress: StateFlow<com.meshchat.app.mesh.transfer.FileProgress?> =
+        repository.observeFileProgress()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 进度按 fileId 映射为气泡可用的文件元数据（用于动态进度条）。 */
+    private val fileProgressMap: StateFlow<Map<String, FileUiMeta>> = fileProgress
+        .map { p ->
+            if (p == null) emptyMap()
+            else mapOf(
+                p.fileId to FileUiMeta(
+                    fileName = p.fileName, size = p.totalBytes,
+                    progress = if (p.totalBytes > 0) ((p.transferredBytes * 100) / p.totalBytes).toInt().coerceIn(0, 100) else 0,
+                    done = p.status == TransferStatus.DONE,
+                ),
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /** 消息随当前会话切换：打开哪个会话就观察哪个会话的消息；文件消息叠加实时进度。 */
+    val messages: StateFlow<List<ChatMessage>> = combine(
+        conversationTarget.flatMapLatest { target -> repository.observeMessages("conv-${target ?: "ME"}") },
+        fileProgressMap,
+    ) { list, progressMap ->
+        list.map { m -> if (m.file != null && m.id in progressMap) m.copy(file = progressMap[m.id]) else m }
+    }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val conversations: StateFlow<List<ChatPreview>> = repository.observeConversations()
@@ -72,5 +99,14 @@ class MeshChatViewModel(
         if (text.isBlank()) return
         val target = conversationTarget.value ?: return
         viewModelScope.launch { repository.sendText("conv-$target", text.trim()) }
+    }
+
+    /** 发送文件到当前会话（串行：传输中 sendFile 内部拒绝）。size 为 0 时拒绝（空文件不支持）。 */
+    fun sendFile(openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long) {
+        if (size <= 0) return
+        val target = conversationTarget.value ?: return
+        viewModelScope.launch {
+            repository.sendFile("conv-$target", target, openSource, fileName, mime, size)
+        }
     }
 }

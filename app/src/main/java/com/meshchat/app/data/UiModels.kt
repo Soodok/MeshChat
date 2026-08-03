@@ -23,6 +23,15 @@ data class ChatMessage(
     val sentByMe: Boolean,
     val time: String,
     val delivery: String? = null,
+    val file: FileUiMeta? = null,
+)
+
+data class FileUiMeta(
+    val fileName: String,
+    val size: Long,
+    val progress: Int,      // 0-100
+    val done: Boolean,
+    val uri: String? = null,  // 接收方收齐后回填的 Downloads URI（点击打开用）
 )
 
 data class MeshPeer(

@@ -20,6 +20,8 @@ interface MeshRepository {
     fun observePendingInvites(): Flow<Set<String>>
     fun observeInvites(): Flow<Map<String, Long>>
     fun sendText(convId: String, text: String)
+    fun sendFile(convId: String, dstId: String, openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long): String?
+    fun observeFileProgress(): Flow<com.meshchat.app.mesh.transfer.FileProgress?>
     fun sendInvite(peerId: String)
     fun acceptInvite(peerId: String)
     fun rejectInvite(peerId: String)
@@ -66,6 +68,12 @@ class MeshRepositoryImpl(
         service.sendText(convId, dstId, text)
     }
 
+    override fun sendFile(convId: String, dstId: String, openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long): String? =
+        service.sendFile(convId, dstId, openSource, fileName, mime, size)
+
+    override fun observeFileProgress(): Flow<com.meshchat.app.mesh.transfer.FileProgress?> =
+        service.fileProgress
+
     override fun sendInvite(peerId: String) = service.sendInvite(peerId)
 
     override fun acceptInvite(peerId: String) = service.acceptInvite(peerId)
@@ -87,12 +95,25 @@ class MeshRepositoryImpl(
             MessageStatus.DELIVERED -> "已通过 Mesh 送达"
             MessageStatus.FAILED -> "未送达"
         }
+        val file = if (kind == "FILE") {
+            val meta = runCatching {
+                kotlinx.serialization.json.Json.decodeFromString<Map<String, String>>(fileMeta ?: "{}")
+            }.getOrDefault(emptyMap())
+            FileUiMeta(
+                fileName = meta["fileName"] ?: text ?: "文件",
+                size = meta["size"]?.toLongOrNull() ?: 0L,
+                progress = 0,
+                done = status == MessageStatus.DELIVERED,
+                uri = meta["downloadsUri"]?.takeIf { it.isNotBlank() },
+            )
+        } else null
         return ChatMessage(
             id = id,
             text = text ?: "",
             sentByMe = srcId == service.shortId,
             time = time,
             delivery = delivery,
+            file = file,
         )
     }
 }
