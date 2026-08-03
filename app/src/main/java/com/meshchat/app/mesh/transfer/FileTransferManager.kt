@@ -1,5 +1,6 @@
 package com.meshchat.app.mesh.transfer
 
+import android.util.Log
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
@@ -37,7 +38,9 @@ class FileTransferManager(
     private val onSaved: (convId: String, fileId: String, fileName: String, mime: String, size: Long, uri: String?) -> Unit = { _, _, _, _, _, _ -> },
 ) {
     companion object {
-        const val CHUNK_BYTES = 200
+        private const val TAG = "MeshFile"
+        // 块 50B（base64 68B）→ 整帧 ~453B，须 < MTU 512 可用载荷 509B（实测 200B 块整帧 661-684B 必超，对端一个块都收不到）
+        const val CHUNK_BYTES = 50
         const val WINDOW = 32
         const val WINDOW_TIMEOUT_MS = 15_000L
         const val MAX_WINDOW_RETRIES = 5
@@ -110,6 +113,7 @@ class FileTransferManager(
             convId = convId, dstId = dstId, openSource = openSource,
             fileName = fileName, mime = mime, size = size,
         )
+        Log.d(TAG, "sendFile start fileId=${session.fileId} size=$size chunks=${(size + CHUNK_BYTES - 1) / CHUNK_BYTES} name=$fileName")
         sending = session
         scope.launch { runSender(session) }
         return session.fileId
@@ -122,9 +126,14 @@ class FileTransferManager(
             var windowStart = 0
             while (windowStart < totalChunks) {
                 val inWindow = minOf(WINDOW, totalChunks - windowStart)
-                val cache = readWindow(s, windowStart, inWindow) ?: run { finish(s, TransferStatus.FAILED); return }
+                val cache = readWindow(s, windowStart, inWindow)
+                if (cache == null) {
+                    Log.e(TAG, "readWindow failed for ${s.fileId} at $windowStart")
+                    finish(s, TransferStatus.FAILED); return
+                }
                 s.expectStart = windowStart
                 s.expectEnd = windowStart + inWindow - 1
+                Log.d(TAG, "send window ${s.fileId} [$windowStart..${s.expectEnd}]/${totalChunks} frames=${inWindow} chunkBytes=$CHUNK_BYTES")
                 broadcastWindow(s, cache)
                 var retries = 0
                 while (true) {
@@ -135,11 +144,13 @@ class FileTransferManager(
                     ackWaiter = null
                     if (ack == null) {
                         retries++
+                        Log.w(TAG, "window timeout ${s.fileId} [$windowStart..${s.expectEnd}] retry=$retries")
                         if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
                         broadcastWindow(s, cache)
                         continue
                     }
                     val need = ack.missing.filter { it in s.expectStart..s.expectEnd }
+                    Log.d(TAG, "ack ${s.fileId} missing=${ack.missing.size} inWindow=${need.size}")
                     if (need.isEmpty()) {
                         windowStart += inWindow
                         s.lastMissingCount = Int.MAX_VALUE
@@ -154,6 +165,7 @@ class FileTransferManager(
             }
             finish(s, TransferStatus.DONE)
         } catch (e: Exception) {
+            Log.e(TAG, "sender crashed ${s.fileId}: $e")
             finish(s, TransferStatus.FAILED)
         }
     }
@@ -239,7 +251,10 @@ class FileTransferManager(
     fun onFileAck(envelope: MeshEnvelope) {
         val body = envelope.body as? FileAckBody ?: return
         val s = sending ?: return
-        if (body.fileId == s.fileId) ackWaiter?.complete(body)
+        if (body.fileId == s.fileId) {
+            Log.d(TAG, "recv FILE_ACK ${body.fileId} missing=${body.missing.size}")
+            ackWaiter?.complete(body)
+        }
     }
 
     /** 接收超时清理：由外部 tick 驱动（MeshService 200ms 循环）。 */

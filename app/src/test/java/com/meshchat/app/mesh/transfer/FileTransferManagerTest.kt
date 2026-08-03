@@ -65,7 +65,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(dir),
             scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
         )
-        val bytes = ByteArray(200 * 33) { it.toByte() }   // 33 块 → 2 个窗口
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 33) { it.toByte() }   // 33 块 → 2 个窗口
         val fileId = manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -92,7 +92,7 @@ class FileTransferManagerTest {
 
         awaitDone(manager)
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
-        assertEquals(33 * 200L, manager.progress.value?.transferredBytes)
+        assertEquals(33L * FileTransferManager.CHUNK_BYTES, manager.progress.value?.transferredBytes)
     }
 
     @Test
@@ -102,7 +102,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m2").toFile()),
             scope = backgroundScope, windowTimeoutMs = 100, maxWindowRetries = 3,
         )
-        val bytes = ByteArray(200 * 32) { 1 }
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 32) { 1 }
         manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -125,7 +125,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m3").toFile()),
             scope = backgroundScope, windowTimeoutMs = 50, maxWindowRetries = 2,
         )
-        val bytes = ByteArray(200 * 8) { 2 }
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 8) { 2 }
         manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -143,7 +143,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m4").toFile()),
             scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 2,
         )
-        val bytes = ByteArray(200 * 4) { 3 }
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 4) { 3 }
         val id1 = manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -169,12 +169,14 @@ class FileTransferManagerTest {
             transport = transport, shortId = "B", saver = FakeSaver(dir),
             scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
         )
-        val source = ByteArray(200 * 10) { (it % 251).toByte() }
+        val source = ByteArray(FileTransferManager.CHUNK_BYTES * 10) { (it % 251).toByte() }
         val fileId = "recv-1"
         fun chunk(index: Int) = FileBody(
             fileId = fileId, fileName = "recv.bin", mime = "application/octet-stream",
             size = source.size.toLong(), totalChunks = 10, chunkIndex = index,
-            chunkData = Base64.getEncoder().encodeToString(source.copyOfRange(index * 200, (index + 1) * 200)),
+            chunkData = Base64.getEncoder().encodeToString(
+                source.copyOfRange(index * FileTransferManager.CHUNK_BYTES, (index + 1) * FileTransferManager.CHUNK_BYTES),
+            ),
         )
         // 乱序 + 重复投递
         for (i in listOf(5, 3, 9, 3, 0, 7, 2, 6, 8, 1, 4)) {
@@ -187,6 +189,25 @@ class FileTransferManagerTest {
         assertEquals(source.toList(), saved.readBytes().toList())
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
         assertEquals(source.size.toLong(), manager.progress.value?.transferredBytes)
+    }
+
+    @Test
+    fun `file chunk frame fits BLE single-frame budget`() {
+        // 帧必须 < MTU 512 的可用载荷（509B）并留余量：
+        // 生产路径已截断 fileName(16 字符)/mime(30 字符)，此处模拟截断后的最坏输入 + 60B 块
+        val body = FileBody(
+            fileId = "f-12345678-1234-1234-1234-123456789012", fileName = "项目周报-第三季度-终版.pdf",
+            mime = "application/vnd.openxmlformats-officedoc",
+            size = 100000, totalChunks = 1700, chunkIndex = 0,
+            chunkData = Base64.getEncoder().encodeToString(ByteArray(FileTransferManager.CHUNK_BYTES) { 1 }),
+        )
+        val env = MeshEnvelope(
+            id = "e-12345678-1234-1234-1234-123456789012", kind = "FILE",
+            srcId = "AB12", dstId = "CD34", convId = "conv-CD34", ttl = 8, ts = 1234567890, body = body,
+        )
+        val size = MeshJson.encodeEnvelope(env).toByteArray().size
+        println("DIAG frame bytes=$size budget=470")
+        assertTrue("帧 ${size}B 超 BLE 单帧预算 470B", size <= 470)
     }
 
     private fun envelope(fileId: String, body: FileBody) = MeshEnvelope(

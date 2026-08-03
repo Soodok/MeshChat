@@ -184,12 +184,15 @@ class MeshService(
     /** 发送文件：fileId 即消息 id（落库占位）；返回 null 表示传输中（串行约束）或目标为空。 */
     fun sendFile(convId: String, dstId: String, openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long): String? {
         if (dstId.isBlank()) return null
-        val fileId = transfer.sendFile(convId, dstId, openSource, fileName, mime, size) ?: return null
+        // BLE 帧预算：文件名/MIME 截断（长元数据会把整帧推超 MTU 512 的 509B 载荷，对端收不到）
+        val safeName = if (fileName.length <= 16) fileName else fileName.take(16)
+        val safeMime = if (mime.length <= 30) mime else mime.take(30)
+        val fileId = transfer.sendFile(convId, dstId, openSource, safeName, safeMime, size) ?: return null
         store.insertMessage(
             StoredMessage(
                 id = fileId, convId = convId, kind = "FILE", srcId = identity.shortId,
-                dstId = dstId, text = fileName,
-                fileMeta = fileMetaJson(fileName, mime, size, null),
+                dstId = dstId, text = safeName,
+                fileMeta = fileMetaJson(safeName, safeMime, size, null),
                 status = MessageStatus.SENDING, ts = System.currentTimeMillis(),
             ),
         )
