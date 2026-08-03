@@ -47,5 +47,7 @@ class InMemoryMeshStore : MeshStore {
         peers[shortId] = PeerEntity(shortId, displayName, lastSeen, hops)
     }
 
+    override fun loadPeers(): List<PeerEntity> = peers.values.toList()
+
     fun observePeers(): Flow<List<PeerEntity>> = flowOf(peers.values.toList())
 }

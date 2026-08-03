@@ -22,6 +22,7 @@ import com.meshchat.app.mesh.transfer.FileTransferManager
 import com.meshchat.app.mesh.transfer.TransferStatus
 import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.MeshTransport
+import com.meshchat.app.mesh.transport.PeerPresence
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -44,7 +45,7 @@ private const val OUTBOX_TTL_MS = 60_000L
 private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
 private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校准一次
 private const val LOST_HEARTBEAT_MS = 3_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1-2 帧丢失）
-private const val LOST_REMOVE_MS = 5_000L         // 失联超过该时长 → 从列表移除
+private const val OFFLINE_THRESHOLD_MS = 30_000L  // 无心跳超过该时长 → 离线（保留显示置黑）
 private const val RECEIPT_TIMEOUT_MS = 5_000L     // 消息发出后未收到送达回执的等待时间，超时重发
 private const val MAX_RECEIPT_RETRIES = 3         // 重发上限：超过标记 FAILED（不再无限卡 SENDING）
 
@@ -154,6 +155,7 @@ class MeshService(
         if (started) return // 幂等：防止「开始附近发现」被重复点击导致重复启动
         started = true
         _sessions.value = sessionStore.load()   // 重启恢复已建立的会话关系
+        restoreKnownPeers()                     // 重启恢复已知节点（寻找中状态，心跳/扫描补在线）
         transport.start()
         rfcomm?.start()
         receiveJob = scope.launch {
@@ -311,8 +313,28 @@ class MeshService(
     }
 
     /**
+     * 启动时从 peers 表恢复已知节点（寻找中状态）：主界面不再空，心跳/扫描到达即转在线。
+     */
+    private fun restoreKnownPeers() {
+        val known = store.loadPeers()
+        for (p in known) {
+            peerEntries.putIfAbsent(
+                p.shortId,
+                PeerEntry(
+                    MeshPeerInfo(
+                        shortId = p.shortId, deviceAddress = "", rssi = 0, hops = p.hops,
+                        displayName = p.displayName, lost = true, presence = PeerPresence.SEARCHING,
+                    ),
+                    lastSeen = 0L, lost = true,
+                ),
+            )
+        }
+        _peers.value = peerEntries.values.map { it.info }
+    }
+
+    /**
      * 心跳 tick（tick 循环每 200ms 调用）：
-     * 每 1s 广播 PING（带本机昵称）；按 3s 超时更新各节点在线状态。
+     * 每 1s 广播 PING（带本机昵称）；按三色状态机更新各节点：在线绿 / 断线重连黄 / 离线黑（保留不删除）。
      */
     internal fun heartbeatTick(now: Long) {
         if (now - lastPingAt >= HEARTBEAT_INTERVAL_MS) {
@@ -322,10 +344,17 @@ class MeshService(
         val iterator = peerEntries.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next().value
-            entry.lost = now - entry.lastSeen > LOST_HEARTBEAT_MS
-            if (now - entry.lastSeen > LOST_REMOVE_MS) iterator.remove()
+            val age = now - entry.lastSeen
+            val presence = when {
+                entry.lastSeen == 0L -> PeerPresence.SEARCHING            // 持久化恢复，从未在本会话见过
+                age < LOST_HEARTBEAT_MS -> PeerPresence.ONLINE            // 有心跳 → 在线
+                age < OFFLINE_THRESHOLD_MS -> PeerPresence.RECONNECTING   // 短暂失联 → 断线重连中
+                else -> PeerPresence.OFFLINE                              // 长时间无响应 → 离线（保留）
+            }
+            entry.lost = age > LOST_HEARTBEAT_MS
+            entry.info = entry.info.copy(lost = entry.lost, presence = presence)
         }
-        _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+        _peers.value = peerEntries.values.map { it.info }
     }
 
     /**
@@ -378,7 +407,7 @@ class MeshService(
         }
         if (displayName.isNotBlank()) store.upsertPeer(peerId, displayName, now, 1)
         // 同步刷新 peers 流：UI/通知实时可见，无需等下一轮 tick
-        _peers.value = peerEntries.values.map { it.info.copy(lost = it.lost) }
+        _peers.value = peerEntries.values.map { it.info.copy(lost = false, presence = PeerPresence.ONLINE) }
     }
 
     /**

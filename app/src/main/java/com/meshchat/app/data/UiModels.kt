@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.PersonOutline
+import com.meshchat.app.mesh.transport.PeerPresence
 
 enum class Reachability { REACHABLE, QUEUED }
 
@@ -42,6 +43,7 @@ data class MeshPeer(
     val rssi: Int = 0,
     val lost: Boolean = false,
     val reachable: Boolean = true,
+    val presence: PeerPresence = PeerPresence.ONLINE,  // 三色状态：在线绿/寻找中·重连黄/离线黑
 )
 
 enum class MainDestination(val label: String, val icon: ImageVector) {

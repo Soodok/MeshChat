@@ -14,6 +14,7 @@ import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transport.InMemoryTransport
 import com.meshchat.app.mesh.transport.MeshTransport
+import com.meshchat.app.mesh.transport.PeerPresence
 import java.io.File
 import java.util.Base64
 import java.util.UUID
@@ -412,6 +413,42 @@ class MeshServiceTest {
         assertEquals(1, dataKinds(transport.frames).count { it == "PING" })
         service.heartbeatTick(t0 + 1_000)            // 满 1s → 第二帧
         assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
+    }
+
+    @Test
+    fun `peers loaded from store start as searching`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        store.upsertPeer("OTHER", "老王", System.currentTimeMillis(), 1)
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        val peer = service.peers.value.firstOrNull { it.shortId == "OTHER" }
+        assertTrue("持久化节点应加载", peer != null)
+        assertEquals("老王", peer?.displayName)
+        assertEquals("从未在本会话见过应标记寻找中", PeerPresence.SEARCHING, peer?.presence)
+        service.stop()
+    }
+
+    @Test
+    fun `presence transitions online then reconnecting then offline without removal`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertEquals("有心跳应在线", PeerPresence.ONLINE, service.peers.value.first().presence)
+
+        val t1 = System.currentTimeMillis()
+        service.heartbeatTick(t1 + 3_100)          // 3.1s 无心跳 → 断线重连中
+        assertEquals("短暂失联应标记重连中", PeerPresence.RECONNECTING, service.peers.value.first().presence)
+
+        val t2 = System.currentTimeMillis()
+        service.heartbeatTick(t2 + 31_000)         // 30s+ 无心跳 → 离线（保留不删除）
+        assertEquals("长时间离线应标记离线", PeerPresence.OFFLINE, service.peers.value.first().presence)
+        assertTrue("离线节点应保留不删除", service.peers.value.any { it.shortId == "OTHER" })
     }
 
     private fun textFrame(id: String, srcId: String, dstId: String, text: String) = MeshFrame(

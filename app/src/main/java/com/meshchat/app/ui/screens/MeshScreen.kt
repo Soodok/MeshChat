@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.MeshPeer
 import com.meshchat.app.mesh.quality.BluetoothQuality
+import com.meshchat.app.mesh.transport.PeerPresence
 import com.meshchat.app.ui.components.SignalBars
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider as MeshDivider
@@ -159,23 +160,28 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                 Text(
                     text = "${peer.rssi} dBm · 等级${BluetoothQuality.grade(peer.rssi).label}",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = if (peer.lost) MeshRed else TextSecondary,
+                    color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
                 )
             }
-            Text(
-                text = when {
-                    peer.lost -> "失去连接 · 正在重连…"
+            val statusText = when (peer.presence) {
+                PeerPresence.ONLINE -> when {
                     connected -> "已连接 · 点击进入会话"
                     pending -> "等待对方接受"
                     else -> "点击发起对话"
-                },
+                }
+                PeerPresence.SEARCHING -> "寻找中…"
+                PeerPresence.RECONNECTING -> "断线重连中…"
+                PeerPresence.OFFLINE -> "离线"
+            }
+            val statusColor = when (peer.presence) {
+                PeerPresence.ONLINE -> if (connected) MeshGreen else TextSecondary
+                PeerPresence.SEARCHING, PeerPresence.RECONNECTING -> MeshAmber
+                PeerPresence.OFFLINE -> TextSecondary
+            }
+            Text(
+                text = statusText,
                 style = MaterialTheme.typography.bodySmall,
-                color = when {
-                    peer.lost -> MeshRed
-                    connected -> MeshGreen
-                    pending -> MeshAmber
-                    else -> TextSecondary
-                },
+                color = statusColor,
             )
         }
     }

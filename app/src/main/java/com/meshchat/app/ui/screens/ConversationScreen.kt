@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
@@ -29,6 +30,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +64,21 @@ fun ConversationScreen(
     onOpenFile: (ChatMessage) -> Unit = {},
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
+    // 消息列表滚动：进入会话滚到底；新消息到达且用户已在底部附近时跟随滚动（上滑看历史不被打断）
+    val listState = rememberLazyListState()
+    val isNearBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible >= info.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(Unit) {
+        if (messages.isNotEmpty()) listState.scrollToItem(messages.size - 1)
+    }
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty() && isNearBottom) listState.animateScrollToItem(messages.size - 1)
+    }
     val today = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA).format(java.util.Date())
     }
@@ -87,6 +105,7 @@ fun ConversationScreen(
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
         )
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),

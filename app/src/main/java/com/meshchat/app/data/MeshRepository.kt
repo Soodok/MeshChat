@@ -6,6 +6,7 @@ import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
 import com.meshchat.app.mesh.transport.MeshPeerInfo
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import java.text.SimpleDateFormat
@@ -35,10 +36,11 @@ class MeshRepositoryImpl(
 ) : MeshRepository {
 
     override fun observeConversations(): Flow<List<ChatPreview>> =
-        service.sessions.map { ids ->
+        service.sessions.combine(service.peers) { ids, peers ->
             ids.map { id ->
+                val name = peers.firstOrNull { it.shortId == id }?.displayName?.ifBlank { id } ?: id
                 ChatPreview(
-                    id = id, name = id, snippet = "已建立对话", time = "",
+                    id = id, name = name, snippet = "已建立对话", time = "",
                     reachability = Reachability.REACHABLE,
                 )
             }
@@ -84,7 +86,7 @@ class MeshRepositoryImpl(
         val strength = BluetoothQuality.bars(rssi)
         return MeshPeer(
             name = displayName.ifBlank { shortId }, shortId = shortId, hops = hops, strength = strength,
-            rssi = rssi, lost = lost, reachable = !lost,
+            rssi = rssi, lost = lost, reachable = !lost, presence = presence,
         )
     }
 

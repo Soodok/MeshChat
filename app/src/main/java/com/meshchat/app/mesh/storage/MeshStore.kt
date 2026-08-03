@@ -35,4 +35,5 @@ interface MeshStore {
     fun nextOutbox(now: Long): List<OutboxEntry>
     fun removeOutbox(id: String)
     fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int)
+    fun loadPeers(): List<PeerEntity>
 }
