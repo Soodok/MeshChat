@@ -15,6 +15,7 @@ import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,9 +44,11 @@ class FileTransferManager(
         const val CHUNK_BYTES = 50
         // 窗口 8 块（~4KB/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
         const val WINDOW = 8
-        const val WINDOW_TIMEOUT_MS = 15_000L
+        const val WINDOW_TIMEOUT_MS = 8_000L   // ACK 丢失后的等待上限：15s 太长（丢一次 ACK 白等 15s），8s 平衡慢速链路与重发
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
+        /** 窗口内逐块广播的间隔：BLE notify 连发会触发系统丢弃，30ms 节流显著降丢帧。 */
+        const val BROADCAST_INTERVAL_MS = 30L
         /**
          * ACK 缺失列表截断上限：全文件缺失列表随文件膨胀（1000 块缺失 ~4KB 帧）会超 MTU，
          * 发送端只关心当前窗口内缺失——更早窗口已收齐（ACK 推进前提），
@@ -86,13 +89,15 @@ class FileTransferManager(
         var lastActivity: Long,
         var ackCounter: Int = 0,
     ) {
-        fun writeChunk(chunkIndex: Int, data: ByteArray) {
-            if (chunkIndex in received) return
+        /** 写块；返回是否为新块（重复块幂等跳过并返回 false，用于触发立即回 ACK）。 */
+        fun writeChunk(chunkIndex: Int, data: ByteArray): Boolean {
+            if (chunkIndex in received) return false
             java.io.RandomAccessFile(tmpFile, "rw").use { raf ->
                 raf.seek(chunkIndex * CHUNK_BYTES.toLong())
                 raf.write(data)
             }
             received += chunkIndex
+            return true
         }
 
         val missing: List<Int> get() = (0 until totalChunks).filter { it !in received }
@@ -104,6 +109,9 @@ class FileTransferManager(
 
     /** 当前等待 ACK 的 waiter（每轮等待窗口前重建，避免旧引用 complete 丢失）。 */
     private var ackWaiter: CompletableDeferred<FileAckBody?>? = null
+
+    /** 广播窗口期间到达的 ACK（此时 ackWaiter 为 null）：缓存下来，下轮等待立即消费，防止丢失后超时重发。 */
+    private var pendingAck: FileAckBody? = null
 
     /** 发送文件；正在传输时返回 null（串行约束）。fileId 同时用作消息 id。 */
     fun sendFile(
@@ -146,6 +154,8 @@ class FileTransferManager(
                 while (true) {
                     val waiter = CompletableDeferred<FileAckBody?>()
                     ackWaiter = waiter
+                    // 广播期间到达的 ACK 缓存在 pendingAck：立即消费，避免等待满窗口超时
+                    pendingAck?.let { waiter.complete(it); pendingAck = null }
                     val ack = try { withTimeout(windowTimeoutMs) { waiter.await() } }
                     catch (e: TimeoutCancellationException) { null }
                     ackWaiter = null
@@ -197,9 +207,15 @@ class FileTransferManager(
         cache
     }.getOrNull()
 
-    private fun broadcastWindow(s: SendSession, cache: Map<Int, String>) {
+    /** 广播窗口全部块：块间 30ms 节流，避免 BLE notify 连发触发系统丢弃（runTest 虚拟时间下 delay 跳过）。 */
+    private suspend fun broadcastWindow(s: SendSession, cache: Map<Int, String>) {
         val total = ((s.size + CHUNK_BYTES - 1) / CHUNK_BYTES).toInt()
-        for ((index, data) in cache) broadcastChunk(s, index, data, total, s.fileName, s.mime, s.size)
+        var first = true
+        for ((index, data) in cache) {
+            if (!first) delay(BROADCAST_INTERVAL_MS)
+            first = false
+            broadcastChunk(s, index, data, total, s.fileName, s.mime, s.size)
+        }
     }
 
     private fun broadcastChunk(s: SendSession, index: Int, data: String, totalChunks: Int, name: String, mime: String, size: Long) {
@@ -250,13 +266,14 @@ class FileTransferManager(
         }
         session.lastActivity = System.currentTimeMillis()
         val data = runCatching { Base64.getDecoder().decode(body.chunkData) }.getOrNull() ?: return
-        session.writeChunk(body.chunkIndex, data)
+        val isNew = session.writeChunk(body.chunkIndex, data)
         updateReceiveProgress(session, TransferStatus.RUNNING)
 
         session.ackCounter++
         if (session.isComplete) {
             completeReceive(session)
-        } else if (session.ackCounter % WINDOW == 0) {
+        } else if (!isNew || session.ackCounter % WINDOW == 0) {
+            // 重复块（发送端超时整窗重发）立即回 ACK，让发送端尽快推进，避免 15s 干等
             sendAck(session)
         }
     }
@@ -266,7 +283,8 @@ class FileTransferManager(
         val s = sending ?: return
         if (body.fileId == s.fileId) {
             Log.d(TAG, "recv FILE_ACK ${body.fileId} missing=${body.missing.size}")
-            ackWaiter?.complete(body)
+            val waiter = ackWaiter
+            if (waiter != null) waiter.complete(body) else pendingAck = body
         }
     }
 
