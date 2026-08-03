@@ -39,7 +39,9 @@ app/src/main/java/com/meshchat/app/
 
 ### 当前进度
 - 后端框架 11 个任务全部实现并提交：构建环境、帧协议、消息信封、去重表、转发决策、身份层、Room 存储、传输抽象、MeshService 编排、Repository 前端接入、BLE 传输。
-- 前端已改为消费 `MeshRepository`（ViewModel 注入 factory），不再直接读演示数据。
+- 真机联调修复：Manifest 补 `BLUETOOTH_ADVERTISE`（BLE 广播必需，缺它导致授权后崩溃）；`BleTransport.start()` 三段 runCatching 降级防崩；「开始附近发现」按钮已绑定 `MeshService.start()`（原为占位空操作）。
+- 演示数据已全部移除（`UiModels.kt` 的 nearbyChats/queuedChats/meshPeers/linMessages）；Chats/Mesh/Conversation 页面改为参数化数据源（当前为空列表，显示「暂无对话/暂无邻近节点」）；会话标题参数化（原硬编码「林宇航」）。
+- 前端已改为消费 `MeshRepository`（ViewModel 注入 factory）。
 - git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）。
 
 ### 已验证内容
@@ -52,9 +54,9 @@ app/src/main/java/com/meshchat/app/
 - **GitHub 推送**：链路偶发 `Connection was reset`（间歇性），本地提交安全；重试即成功，最近一次已全部同步。
 
 ### 下一步首要任务
-1. BLE 真机联调：双机安装 APK，验证广播/扫描/连接/帧接力。运行时权限已由 MainActivity 申请，授权后自动启动 MeshService（BLE 广播/扫描/GATT）。
-2. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输的上层应用逻辑（协议载荷已就绪）。
-3. 前端会话映射：`MeshRepositoryImpl.sendText` 现以 `convId.substringAfterLast("-")` 推导目标，多会话需改为按会话表寻址。
+1. BLE 真机双机联调（权限已补齐含 ADVERTISE）：验证广播/扫描/连接/帧接力；当前会话寻址仍是 `conv-ME` 单会话演示，多会话需按会话表寻址。
+2. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、WiFi Direct 载体（复用 MeshTransport 抽象）、群聊/文件传输上层逻辑（协议载荷已就绪）。
+3. 后端数据源接入前端：`MeshRepository.observeConversations()/observePeers()` 现返回空流（flowOf(emptyList())），待接入 Room 的 conversations/peers 表驱动真实列表。
 
 ### 本次涉及的关键文件
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）
