@@ -11,6 +11,7 @@ import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
 import com.meshchat.app.mesh.transfer.AndroidFileSaver
 import com.meshchat.app.mesh.transport.BleTransport
+import com.meshchat.app.mesh.transport.RfcommTransport
 import java.io.File
 
 class MeshChatApplication : Application() {
@@ -30,11 +31,14 @@ class MeshChatApplication : Application() {
         LocalIdentity(shortId = id)
     }
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
+    /** 经典蓝牙 RFCOMM 高吞吐通道：文件数据走它（会话建立后自动连接），BLE 保留发现/握手/聊天。 */
+    val rfcomm by lazy { RfcommTransport(this) }
     val service by lazy {
         MeshService(
             transport, store, identity, DedupCache(),
             fileSaver = AndroidFileSaver(this),
             tmpDir = { File(filesDir, "transfers") },
+            rfcomm = rfcomm,
         )
     }
 
