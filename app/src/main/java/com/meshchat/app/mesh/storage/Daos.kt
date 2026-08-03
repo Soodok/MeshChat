@@ -14,6 +14,9 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
 
+    @Query("UPDATE messages SET fileMeta = :fileMeta WHERE id = :id")
+    suspend fun updateFileMeta(id: String, fileMeta: String?)
+
     @Query("SELECT * FROM messages WHERE convId = :convId ORDER BY ts ASC")
     fun observeByConv(convId: String): Flow<List<MessageEntity>>
 }

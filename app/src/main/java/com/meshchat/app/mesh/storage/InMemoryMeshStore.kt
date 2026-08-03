@@ -18,6 +18,11 @@ class InMemoryMeshStore : MeshStore {
         if (index >= 0) messages[index] = messages[index].copy(status = status)
     }
 
+    override fun updateFileMeta(id: String, fileMeta: String?) {
+        val index = messages.indexOfFirst { it.id == id }
+        if (index >= 0) messages[index] = messages[index].copy(fileMeta = fileMeta)
+    }
+
     override fun queryMessages(convId: String): List<StoredMessage> =
         messages.filter { it.convId == convId }.sortedBy { it.ts }
 

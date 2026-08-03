@@ -34,6 +34,10 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
         db.messageDao().updateStatus(id, status.name)
     }
 
+    override fun updateFileMeta(id: String, fileMeta: String?) = runBlocking {
+        db.messageDao().updateFileMeta(id, fileMeta)
+    }
+
     override fun queryMessages(convId: String): List<StoredMessage> = runBlocking {
         db.messageDao().observeByConv(convId).first().map { it.toDomain() }
     }

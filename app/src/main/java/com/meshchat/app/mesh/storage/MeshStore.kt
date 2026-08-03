@@ -28,6 +28,7 @@ data class OutboxEntry(
 interface MeshStore {
     fun insertMessage(message: StoredMessage)
     fun updateMessageStatus(id: String, status: MessageStatus)
+    fun updateFileMeta(id: String, fileMeta: String?)
     fun queryMessages(convId: String): List<StoredMessage>
     fun observeMessages(convId: String): Flow<List<StoredMessage>>
     fun enqueueOutbox(entry: OutboxEntry)
