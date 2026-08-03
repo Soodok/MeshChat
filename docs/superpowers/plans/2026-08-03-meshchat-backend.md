@@ -63,7 +63,7 @@ plugins {
     id("com.android.application") version "9.0.0" apply false
     id("org.jetbrains.kotlin.plugin.compose") version "2.2.10" apply false
     id("org.jetbrains.kotlin.plugin.serialization") version "2.2.10" apply false
-    id("com.google.devtools.ksp") version "2.2.10-1.0.31" apply false
+    id("com.google.devtools.ksp") version "2.2.10-2.0.2" apply false
 }
 ```
 
@@ -681,6 +681,7 @@ git commit -m "feat(mesh): 身份层短 ID 生成与节点注册表"
 package com.meshchat.app.mesh.storage
 
 import com.meshchat.app.mesh.protocol.MeshEnvelope
+import kotlinx.coroutines.flow.Flow
 
 enum class MessageStatus { SENDING, DELIVERED, FAILED }
 
@@ -708,6 +709,7 @@ interface MeshStore {
     fun insertMessage(message: StoredMessage)
     fun updateMessageStatus(id: String, status: MessageStatus)
     fun queryMessages(convId: String): List<StoredMessage>
+    fun observeMessages(convId: String): Flow<List<StoredMessage>>
     fun enqueueOutbox(entry: OutboxEntry)
     fun nextOutbox(now: Long): List<OutboxEntry>
     fun removeOutbox(id: String)
@@ -922,9 +924,9 @@ import com.meshchat.app.mesh.protocol.MeshFrame
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
-/** 测试替身：broadcast 回环到自身 incoming，用于单机自环验证。 */
+/** 测试替身：broadcast 回环到自身 incoming（replay 保留帧供断言），用于单机自环验证。 */
 class InMemoryTransport : MeshTransport {
-    private val _incoming = MutableSharedFlow<MeshFrame>(extraBufferCapacity = 64)
+    private val _incoming = MutableSharedFlow<MeshFrame>(replay = 32, extraBufferCapacity = 64)
     override val incoming: SharedFlow<MeshFrame> = _incoming
 
     override fun start() = Unit
@@ -972,6 +974,7 @@ import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.storage.InMemoryMeshStore
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.transport.InMemoryTransport
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -992,7 +995,7 @@ class MeshServiceTest {
 
         service.sendText(convId = "c1", dstId = "ME", text = "你好")
 
-        val stored = store.queryMessages("c1").first()
+        val stored = store.observeMessages("c1").first().first()
         assertEquals("你好", stored.text)
         assertEquals(MessageStatus.DELIVERED, stored.status)
 
@@ -1032,6 +1035,9 @@ class MeshServiceTest {
 ```kotlin
 package com.meshchat.app.mesh.storage
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+
 /** 服务层 JVM 测试用内存存储实现。 */
 class InMemoryMeshStore : MeshStore {
     private val messages = mutableListOf<StoredMessage>()
@@ -1049,6 +1055,9 @@ class InMemoryMeshStore : MeshStore {
 
     override fun queryMessages(convId: String): List<StoredMessage> =
         messages.filter { it.convId == convId }.sortedBy { it.ts }
+
+    override fun observeMessages(convId: String): Flow<List<StoredMessage>> =
+        flowOf(queryMessages(convId))
 
     override fun enqueueOutbox(entry: OutboxEntry) {
         outbox.removeAll { it.id == entry.id }
@@ -1417,11 +1426,11 @@ class BleTransport(
             characteristic: BluetoothGattCharacteristic,
             preparedWrite: Boolean,
             responseNeeded: Boolean,
-            value: ByteArray,
+            value: ByteArray?,
             offset: Int,
         ) {
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
-            runCatching { MeshFrame.decode(value) }.onSuccess { _incoming.tryEmit(it) }
+            if (value != null) runCatching { MeshFrame.decode(value) }.onSuccess { _incoming.tryEmit(it) }
         }
     }
 
