@@ -100,7 +100,7 @@ class FileTransferManagerTest {
         val transport = CountingTransport()
         val manager = FileTransferManager(
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m2").toFile()),
-            scope = backgroundScope, windowTimeoutMs = 100, maxWindowRetries = 3,
+            scope = backgroundScope, windowTimeoutMs = 500, maxWindowRetries = 3,
         )
         val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 32) { 1 }
         manager.sendFile(
@@ -273,6 +273,30 @@ class FileTransferManagerTest {
         val saved = File(dirB, "big.bin")
         assertTrue("B 应落盘完整文件", saved.exists())
         assertEquals("文件字节一致", bytes.toList(), saved.readBytes().toList())
+    }
+
+    @Test
+    fun `chunks are sent through injected sendFrame instead of broadcast`() = runTest {
+        val transport = CountingTransport()
+        val sentVia = mutableListOf<Pair<String, MeshFrame>>()
+        val manager = FileTransferManager(
+            transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("sf").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
+            sendFrame = { dst, frame -> sentVia.add(dst to frame) },
+        )
+        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 8) { 5 }
+        val fileId = manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "f.bin", "application/octet-stream", bytes.size.toLong())!!
+        var guard = 0
+        while (sentVia.size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
+        assertTrue("sendFrame 应被调用 8 次（首窗 8 块）", sentVia.size >= 8)
+        assertTrue("目标应全部为 B", sentVia.all { it.first == "B" })
+        assertTrue("注入 sendFrame 后不应走 broadcast", transport.frames.isEmpty())
+        // 全部窗口完成后停发
+        while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 200) {
+            manager.onFileAck(ack(fileId, 8, emptyList()))
+            kotlinx.coroutines.delay(20)
+        }
+        assertEquals(TransferStatus.DONE, manager.progress.value?.status)
     }
 
     private fun envelope(fileId: String, body: FileBody) = MeshEnvelope(

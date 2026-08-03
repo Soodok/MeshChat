@@ -37,6 +37,8 @@ class FileTransferManager(
     private val tmpDirProvider: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
     private val onProgress: (FileProgress) -> Unit = {},
     private val onSaved: (convId: String, fileId: String, fileName: String, mime: String, size: Long, uri: String?) -> Unit = { _, _, _, _, _, _ -> },
+    /** 文件帧发送通道：RFCOMM 连接时走 sendTo，否则回退 broadcast（由 MeshService 注入）。 */
+    private val sendFrame: (dstId: String, frame: MeshFrame) -> Unit = { _, frame -> transport.broadcast(frame) },
 ) {
     companion object {
         private const val TAG = "MeshFile"
@@ -230,7 +232,7 @@ class FileTransferManager(
             body = FileBody(fileId = s.fileId, fileName = name, mime = mime, size = size,
                 totalChunks = totalChunks, chunkIndex = index, chunkData = data),
         )
-        transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray()))
+        sendFrame(s.dstId, MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray()))
     }
 
     private fun updateProgress(s: SendSession, status: TransferStatus) {
@@ -330,7 +332,7 @@ class FileTransferManager(
             body = FileAckBody(fileId = s.fileId, totalChunks = s.totalChunks,
                 missing = if (final) emptyList() else s.missing.take(MAX_ACK_MISSING)),
         )
-        transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray()))
+        sendFrame(s.senderId, MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray()))
     }
 
     private fun updateReceiveProgress(s: ReceiveSession, status: TransferStatus) {
