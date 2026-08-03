@@ -47,10 +47,10 @@ private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
 private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校准一次
 private const val LOST_HEARTBEAT_MS = 2_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1 帧丢失，更灵敏）
 private const val OFFLINE_THRESHOLD_MS = 15_000L  // 无心跳超过该时长 → 离线（保留显示置黑，更快反映失联）
-private const val RECEIPT_TIMEOUT_MS = 5_000L     // 消息发出后未收到送达回执的等待时间，超时重发
-private const val MAX_RESEND_INTERVAL_MS = 60_000L // 重发退避封顶：5s→10s→20s→40s→60s，永不 FAILED（零容错）
+private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送达回执的等待时间，超时重发（更快确认）
+private const val MAX_RESEND_INTERVAL_MS = 30_000L // 重发退避封顶：3s→6s→12s→24s→30s，永不 FAILED（零容错，持续确认）
 private const val RECEIPT_REPEAT_INTERVAL_MS = 3_000L    // 接收方重复回执周期（近期消息周期性补发）
-private const val RECEIPT_REPEAT_WINDOW_MS = 60_000L     // 重复回执窗口：收到消息后 60s 内周期性补发
+private const val RECEIPT_REPEAT_WINDOW_MS = 180_000L    // 重复回执窗口：收到消息后 3min 内周期性补发（覆盖长时间后台空窗）
 
 private const val TAG = "MeshSvc"
 
@@ -429,6 +429,12 @@ class MeshService(
         }
     }
 
+    /** UI 回到前台（onResume）时调用：立即按 ping-triggered 语义扫一遍未确认消息，不等退避计时。 */
+    fun resendPendingNow() {
+        if (!started) return
+        resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
+    }
+
     /** 广播 PING（带本机昵称），对端收到回 PONG。 */
     private fun sendPing() {
         val env = MeshEnvelope(
@@ -546,6 +552,8 @@ class MeshService(
             "PONG" -> {
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
+                // 对方确认本机心跳 → 也立即重发未确认消息（PING/PONG 双触发，确认机会翻倍）
+                resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
             }
             "FILE" -> {
                 // 一跳帧（同握手帧）：仅处理发往本机；非本机忽略（ACK 一跳语义下多跳无法回传）

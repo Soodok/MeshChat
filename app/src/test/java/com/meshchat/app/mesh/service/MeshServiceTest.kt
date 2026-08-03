@@ -462,12 +462,28 @@ class MeshServiceTest {
         service.sendText("conv-OTHER", "OTHER", "hi")
         assertEquals(1, transport.broadcastCount)
 
-        // 对方心跳在线 → 立即重发未确认消息（不等 5s 定时）+ 回 PONG，后台恢复场景秒级收敛
+        // 对方心跳在线 → 立即重发未确认消息（不等 3s 定时）+ 回 PONG，后台恢复场景秒级收敛
         service.handleFrame(pingFrame("OTHER", "老王"))
         assertEquals("PING 应触发重发(TEXT) + 回 PONG", 3, transport.broadcastCount)
         assertEquals("消息应被重发一次", 2, dataKinds(transport.frames).count { it == "TEXT" })
         service.handleFrame(pingFrame("OTHER", "老王"))
         assertEquals(5, transport.broadcastCount)
+    }
+
+    @Test
+    fun `pong also triggers immediate resend of pending text`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.sendText("conv-OTHER", "OTHER", "hi")
+        assertEquals(1, transport.broadcastCount)
+
+        // 对方回 PONG（应答本机 PING）→ 同样立即重发未确认消息（PING/PONG 双触发，确认机会翻倍）
+        service.handleFrame(pongFrame("OTHER", "老王", "ME"))
+        assertEquals("PONG 应触发重发", 2, transport.broadcastCount)
+        assertEquals("消息应被重发一次", 2, dataKinds(transport.frames).count { it == "TEXT" })
     }
 
     @Test
@@ -504,13 +520,13 @@ class MeshServiceTest {
         assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
         assertEquals(1, transport.broadcastCount)   // 首次广播
 
-        service.resendPendingReceipts(t0 + 6_000)      // 退避 5s → retry 1
-        assertEquals("5s 未确认应重发", 2, transport.broadcastCount)
-        service.resendPendingReceipts(t0 + 17_000)     // 退避 10s（距上次 11s）→ retry 2
+        service.resendPendingReceipts(t0 + 4_000)      // 退避 3s → retry 1
+        assertEquals("3s 未确认应重发", 2, transport.broadcastCount)
+        service.resendPendingReceipts(t0 + 10_000)     // 退避 6s（距上次 6s）→ retry 2
         assertEquals(3, transport.broadcastCount)
         // 超上限不 FAILED 不清除：零容错，继续退避重发直到收到回执
-        service.resendPendingReceipts(t0 + 38_000)     // 退避 20s → retry 3
-        service.resendPendingReceipts(t0 + 79_000)     // 退避 40s → retry 4
+        service.resendPendingReceipts(t0 + 22_000)     // 退避 12s → retry 3
+        service.resendPendingReceipts(t0 + 46_000)     // 退避 24s → retry 4
         assertEquals("退避重发应继续", 5, transport.broadcastCount)
         assertEquals("不得标记 FAILED，保持 SENDING 等待收敛", MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
 

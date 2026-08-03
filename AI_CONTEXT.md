@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v0.16.0（versionCode 31，构建时间 2026-08-03）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v0.17.0（versionCode 32，构建时间 2026-08-03 21:34）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -99,25 +99,30 @@ app/src/main/java/com/meshchat/app/
   - **状态更灵敏**：`LOST_HEARTBEAT_MS` 3s→**2s**（容忍 1 帧丢失）、`OFFLINE_THRESHOLD_MS` 30s→**15s**——失联/离线反映快一倍，双端状态更快对称收敛。
   - **滚动彻底修复**：滚底改为「轮询确认」——每 40ms 滚一次并校验 `lastVisible >= totalItemsCount-1`，被重组拉回顶立即重滚，连续 2 次停底才算稳定（最多 1.6s）——根治"性能太好、一进就在顶部/弹回顶"。
   - **最近对话三色 + 持久化兜底**：`ChatPreview` 新增 `presence`（与节点列表同款绿/黄/灰）；`observeConversations` 改为 `sessions ∪ 消息历史反推的对话`（`MeshStore.observeConversationIds`，Room Flow 流式响应）——即使会话关系持久化丢失/重装，最近对话列表也不空；`PresenceAvatar` 改收 `PeerPresence` 三色渲染；REACHABLE/QUEUED 分区随状态实时切换（在线绿进「最近对话」，寻找中/重连/离线黄灰进「等待路由」）。
+- **v0.17.0 四连修**（用户反馈：发送状态仍有 bug 要再提容错、等待路由不显示昵称、进软件要自动寻找、滚动"进的一瞬间到底又弹回顶"依旧）：
+  - **送达确认再强化（"只要在发送就不断确认"）**：重发退避 5s→**3s** 起步、封顶 60s→**30s**（确认频率翻倍）；接收方重复回执窗口 60s→**3min**（覆盖长时间后台空窗）；**PONG 也触发即时重发**（原仅 PING，确认机会翻倍）；新增 `MeshService.resendPendingNow()`——**MainActivity.onResume 回前台立即扫一遍未确认消息**（重进软件马上确认，不等退避计时）。
+  - **进入软件自动开始寻找**：根因——服务启动已装配（onCreate→前台服务→service.start()），但**服务被系统回收后回前台不重启**（onResume 未调）。修复：onResume 调 `startMesh()`（幂等）+ `resendPendingNow()`；Mesh 页空态文案改「正在扫描邻近节点…」（进入即自动扫描，无需手动点按钮）。
+  - **滚动弹回顶根治**：根因——ViewModel `messages` 流在目标会话为 null 时 fallback `conv-ME`，进入会话瞬间短暂渲染上个会话/自环消息，列表 size 突变使 LaunchedEffect 反复重启。修复：**目标为 null 时发射空列表**（`flowOf(emptyList())`），进入会话只出现该会话消息；滚动循环改「先滚（suspend 等完成）→ 等一帧校验 → 被拉走立即重滚，连续 4 次稳定停底才算完成（上限 5s）」。
+  - **等待路由昵称**：名字缺失的根因是"从未被 PING/扫描记录昵称"（扫描帧不带名、协议限制）；自动扫描 + 1s 心跳上线后昵称 1s 内补上（随 B 自动寻找一并解决）。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-presence-background-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-presence-background.md`。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-rfcomm-transport-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-rfcomm-transport.md`。
-- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → **v0.16.0 灵敏度/滚动轮询/最近对话三色持久化（待提交）**。
+- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → v0.16.0 灵敏度/滚动轮询/最近对话三色持久化 `3608afb` → **v0.17.0 确认强化/自动寻找/滚动根治（待提交）**。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**57/57 测试通过，0 失败**（含 v0.16.0 新增 2 个 MeshRepositoryTest：会话历史反推兜底、对话 presence 反映对端在线状态与昵称；v0.15.2 新增退避重发/重复回执等；原 FAILED 测试改为永不失败语义）。既有回归全部保留通过。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.16.0-debug.apk`。
+- `gradlew testDebugUnitTest`：**58/58 测试通过，0 失败**（含 v0.17.0 新增 PONG 触发即时重发；v0.16.0 新增 2 个 MeshRepositoryTest；v0.15.2 退避重发/重复回执等；退避时间点随 3s 起步更新为 4s/10s/22s/46s）。既有回归全部保留通过。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v0.17.0-debug.apk`（19,159,658 B）。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.15.2（`84fbcd7`），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0+）。
+- **GitHub 推送（用户决定暂缓）**：本地已提交至 v0.16.0（`3608afb`），领先 `origin/main`；推送被网络重置（梯子不稳定）。**用户明确"先不提交"**——下次 push 前先确认。备用源 `git clone https://soodok.online/meshchat_bare.git`（未同步 v0.11.0+）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 - **RFCOMM 已停用（用户决策）**：配对弹窗在华为/GSI 不弹出 + 配对模型对多设备中心拓扑不友好；代码保留未启用。后续提速方向改为 **WiFi Direct**（免配对、中心外设模型天然、吞吐百 MB/s 级，复用 MeshTransport 抽象即可）。
 
 ### 下一步首要任务
-1. **真机验收 v0.16.0（当前版本）**：**两台设备都必须升级**安装 `MeshChat-v0.16.0-debug.apk` → ①进会话瞬间停在底部不弹回顶（重点验证）→ ②主界面「最近对话」重启后不空 + 头像三色随对端在线/失联/离线切换（黄灰条目在「等待路由」分组）→ ③对端关蓝牙/断连后 2s 内变黄、15s 内变黑（灵敏度）→ ④回归发送状态不卡（永不 FAILED + 1s 心跳秒级收敛）。日志 `adb logcat -s MeshSvc`。
-2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.13.1~v0.16.0），并同步备用源 `soodok.online/meshchat_bare.git`。
+1. **真机验收 v0.17.0（当前版本）**：**两台设备都必须升级**安装 `MeshChat-v0.17.0-debug.apk` → ①进入 App 即自动扫描（Mesh 页直接显示"正在扫描邻近节点…"，无需点按钮）；服务被系统回收后回前台自动重启 ②发消息后**回前台/切后台再进，立即触发确认**（日志 `adb logcat -s MeshSvc` 看 `resend text`）；退避 3s 起步比之前明显更快收敛 ③进入会话稳定停在底部不弹回顶（重点：先回列表再进、切会话再进也验证）④等待路由条目在对端上线后 1s 内补上昵称。
+2. 推送暂缓（用户已确认"先不提交"）；网络恢复后 `git push origin main` 同步本地领先提交（含 v0.13.1~v0.17.0），并同步备用源 `soodok.online/meshchat_bare.git`。
 3. 三机全链路回归：握手→会话→双向消息→文件传输→心跳状态对称→失联重连→多跳转发（TTL 8）。
 4. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、**WiFi Direct 载体（复用 MeshTransport 抽象）**、群聊上层逻辑（协议载荷已就绪）。
 

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -69,9 +70,13 @@ class MeshChatViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
-    /** 消息随当前会话切换：打开哪个会话就观察哪个会话的消息；文件消息叠加实时进度。 */
+    /** 消息随当前会话切换：打开哪个会话就观察哪个会话的消息；文件消息叠加实时进度。
+     *  未打开会话时发射空列表——否则 flatMapLatest 会 fallback 到 conv-ME，进入会话瞬间短暂显示上个会话/自环消息，
+     *  列表 size 突变导致自动滚动被反复打断（视觉上"滚到底又弹回顶"）。 */
     val messages: StateFlow<List<ChatMessage>> = combine(
-        conversationTarget.flatMapLatest { target -> repository.observeMessages("conv-${target ?: "ME"}") },
+        conversationTarget.flatMapLatest { target ->
+            if (target == null) flowOf(emptyList()) else repository.observeMessages("conv-$target")
+        },
         fileProgressMap,
     ) { list, progressMap ->
         list.map { m -> if (m.file != null && m.id in progressMap) m.copy(file = progressMap[m.id]) else m }

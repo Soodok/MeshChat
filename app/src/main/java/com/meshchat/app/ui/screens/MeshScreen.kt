@@ -61,7 +61,7 @@ fun MeshScreen(
     onStartDiscovery: () -> Unit,
     onPeerSelected: (String) -> Unit,
 ) {
-    var discovering by remember { mutableStateOf(false) }
+    var discovering by remember { mutableStateOf(true) }   // 进入即自动开始寻找（服务随 App 启动）
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peersCount = peers.size) }
         item {
@@ -70,7 +70,7 @@ fun MeshScreen(
         if (peers.isEmpty()) {
             item {
                 Text(
-                    text = if (discovering) "正在扫描邻近节点…" else "暂无邻近节点，请开始附近发现",
+                    text = if (discovering) "正在扫描邻近节点…" else "暂无邻近节点，请点击重新发现",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),

@@ -62,6 +62,16 @@ class MainActivity : ComponentActivity() {
         (application as MeshChatApplication).startMesh()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 回前台/重进：服务若被系统回收则自动重启（进入即开始寻找），并立即确认所有未送达消息
+        val adapter = runCatching { getSystemService(BluetoothManager::class.java).adapter }.getOrNull()
+        if (adapter != null && adapter.isEnabled) {
+            (application as MeshChatApplication).startMesh()
+            (application as MeshChatApplication).service.resendPendingNow()
+        }
+    }
+
     private fun hasAllPermissions(): Boolean =
         requiredPermissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED

@@ -78,18 +78,23 @@ fun ConversationScreen(
     LaunchedEffect(messages.size) {
         if (messages.isEmpty()) return@LaunchedEffect
         if (!scrollInitialized) {
-            // 首次有消息：强制滚底并轮询确认——性能好的机器布局瞬间完成，纯 delay 滚一次会被后续重组覆盖（先到底又被拉回顶）。
-            // 方案：每 40ms 滚一次并校验是否真的停在底部，被覆盖就立刻再滚，连续 2 次到底才算稳定。
+            // 首次有消息：持续滚底确认——先滚（suspend 等滚动真正完成），再等一帧校验，
+            // 只要被任何重组/布局/回顶拉走就立即再滚，连续 4 次稳定停在底部才算完成（最长 5s）。
             scrollInitialized = true
-            var stable = 0
-            var attempts = 0
-            while (attempts++ < 40 && stable < 2) {
-                kotlinx.coroutines.delay(40)
+            var steady = 0
+            val startMs = System.currentTimeMillis()
+            while (System.currentTimeMillis() - startMs < 5_000) {
+                if (listState.layoutInfo.totalItemsCount >= messages.size) {
+                    listState.scrollToItem(messages.size - 1)   // suspend：等待滚动完成
+                }
+                kotlinx.coroutines.delay(60)
                 val info = listState.layoutInfo
-                if (info.totalItemsCount < messages.size) continue   // 布局未就绪，等待
-                listState.scrollToItem(messages.size - 1)
                 val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                if (lastVisible >= info.totalItemsCount - 1) stable++ else stable = 0
+                if (info.totalItemsCount >= messages.size && lastVisible >= info.totalItemsCount - 1) {
+                    if (++steady >= 4) break
+                } else {
+                    steady = 0
+                }
             }
         } else if (isNearBottom) {
             listState.animateScrollToItem(messages.size - 1)
