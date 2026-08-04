@@ -39,7 +39,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -128,8 +127,6 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
     var canvasH by remember { mutableFloatStateOf(0f) }
     val nodes = remember { mutableStateListOf<TopoNode>() }
     val edges = remember { mutableStateListOf<TopoEdge>() }
-    // STALE 起始时刻跨同步持久化：节点从 nodes 移除后，下次同步仍能判断已超时，避免 15s 重计时
-    val staleAtMap = remember { mutableStateMapOf<String, Long>() }
     var draggingNode by remember { mutableStateOf<TopoNode?>(null) }
     // 帧计数器：触发 Canvas 重绘（节点内部 var 改动不触发重组，靠此驱动）
     var frame by remember { mutableIntStateOf(0) }
@@ -141,7 +138,6 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         val existing = nodes.associateBy { it.id }
         val cx = canvasW / 2f
         val cy = canvasH / 2f
-        val now = System.currentTimeMillis()
         nodes.clear()
         // 本机（保留物理状态）
         val oldMe = existing["ME"]
@@ -150,23 +146,15 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
             x = oldMe?.x ?: cx, y = oldMe?.y ?: cy,
             vx = oldMe?.vx ?: 0f, vy = oldMe?.vy ?: 0f,
         ))
-        // 一跳节点
+        // 一跳节点（失联节点直接不显示）
         peers.forEach { peer ->
+            if (peer.presence == PeerPresence.OFFLINE) return@forEach
             val actualKind = when {
-                peer.presence == PeerPresence.OFFLINE -> TopoKind.STALE
                 peer.presence == PeerPresence.SEARCHING || peer.presence == PeerPresence.RECONNECTING -> TopoKind.SEARCHING
                 peer.shortId in sessions -> TopoKind.DIRECT
                 else -> TopoKind.REACHABLE
             }
             val old = existing[peer.shortId]
-            // STALE 起始时刻用独立 map 持久化（不依赖 nodes 是否还包含该节点）
-            // 非 STALE 清除记录；STALE 首次记录 now，后续保持；超时 15s 不加入 nodes（从图上消失）
-            if (actualKind != TopoKind.STALE) {
-                staleAtMap.remove(peer.shortId)
-            } else {
-                if (peer.shortId !in staleAtMap) staleAtMap[peer.shortId] = now
-                if (now - (staleAtMap[peer.shortId] ?: now) > STALE_TTL_MS) return@forEach
-            }
             val r = (if (peer.hops <= 1) 27f else if (peer.hops == 2) 22f else 19f) * scale
             nodes.add(TopoNode(
                 id = peer.shortId, name = peer.name, short = peer.shortId.take(2),
@@ -203,7 +191,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.85f)
+                .aspectRatio(0.425f)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                 .background(InkSoft.copy(alpha = 0.4f))
                 .onSizeChanged {
@@ -350,8 +338,6 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
 
 /** 基准画布尺寸（典型手机宽度），所有尺寸相对此缩放，适配不同分辨率/屏幕大小 */
 private const val BASE_CANVAS = 360f
-/** 失联节点在拓扑图保留时长：超过则从图上移除（PeerRow 列表仍保留显示） */
-private const val STALE_TTL_MS = 15_000L
 
 /** 拓扑节点分类（四色制：本机/直连绿/多跳蓝/寻找中黄虚线/失联灰）*/
 private enum class TopoKind { ME, DIRECT, REACHABLE, SEARCHING, STALE }
