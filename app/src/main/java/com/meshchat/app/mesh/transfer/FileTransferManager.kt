@@ -107,6 +107,7 @@ class FileTransferManager(
     }
 
     private var sending: SendSession? = null
+    private var senderJob: kotlinx.coroutines.Job? = null
     private val receivers = mutableMapOf<String, ReceiveSession>()
 
     /** 当前等待 ACK 的 waiter（每轮等待窗口前重建，避免旧引用 complete 丢失）。 */
@@ -114,6 +115,43 @@ class FileTransferManager(
 
     /** 广播窗口期间到达的 ACK（此时 ackWaiter 为 null）：缓存下来，下轮等待立即消费，防止丢失后超时重发。 */
     private var pendingAck: FileAckBody? = null
+
+    init {
+        // 启动清理孤儿 .part 临时文件（移植队友 v1.0.12）：进程中断后残留的 .part 无法续传，占空间
+        cleanupOrphanedTemporaryFiles()
+    }
+
+    /** 停止活动传输（供 MeshService.stop 调用）；不 cancel 共享 scope，服务可重启。 */
+    fun cancel() {
+        senderJob?.cancel()
+        senderJob = null
+        sending = null
+        ackWaiter?.cancel()
+        ackWaiter = null
+        pendingAck = null
+        receivers.values.forEach { it.tmpFile.delete() }
+        receivers.clear()
+        _progress.value = null
+    }
+
+    /** 对已保存文件回发完成 ACK（重启后对端重传场景），不重复落盘。 */
+    fun acknowledgeCompletedFile(fileId: String, convId: String, senderId: String, totalChunks: Int) {
+        val ack = MeshEnvelope(
+            id = UUID.randomUUID().toString(), kind = "FILE_ACK",
+            srcId = shortId, dstId = senderId, convId = convId,
+            ttl = 8, ts = System.currentTimeMillis(),
+            body = FileAckBody(fileId = fileId, totalChunks = totalChunks, missing = emptyList()),
+        )
+        sendFrame(senderId, MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray()))
+    }
+
+    /** 孤儿 .part 临时文件：进程重启后无法续传，立即删除。 */
+    private fun cleanupOrphanedTemporaryFiles() {
+        runCatching {
+            tmpDirProvider().apply { mkdirs() }.listFiles { file -> file.isFile && file.name.endsWith(".part") }
+                ?.forEach { it.delete() }
+        }
+    }
 
     /** 发送文件；正在传输时返回 null（串行约束）。fileId 同时用作消息 id。 */
     fun sendFile(
@@ -132,7 +170,7 @@ class FileTransferManager(
         )
         Log.d(TAG, "sendFile start fileId=${session.fileId} size=$size chunks=${(size + CHUNK_BYTES - 1) / CHUNK_BYTES} name=$fileName")
         sending = session
-        scope.launch { runSender(session) }
+        senderJob = scope.launch { runSender(session) }
         return session.fileId
     }
 
@@ -248,7 +286,10 @@ class FileTransferManager(
     }
 
     private fun finish(s: SendSession, status: TransferStatus) {
-        if (sending === s) sending = null
+        if (sending === s) {
+            sending = null
+            senderJob = null
+        }
         updateProgress(s, status)
     }
 

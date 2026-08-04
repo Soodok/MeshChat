@@ -381,13 +381,13 @@ class MeshServiceTest {
     fun `markSeen does not override other peers presence`() {
         val transport = CountingTransport()
         val store = InMemoryMeshStore()
-        store.upsertPeer("B", "Bob", 0L, 1)
-        store.upsertPeer("C", "Carol", 0L, 1)
+        store.upsertPeer("B", "Bob", System.currentTimeMillis(), 1)
+        store.upsertPeer("C", "Carol", System.currentTimeMillis(), 1)
         val service = MeshService(
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         service.start()
-        // B、C 均为启动恢复的 SEARCHING（lastSeen=0）
+        // B、C 均为启动恢复的 SEARCHING（lastSeen 距今不久，不会被启动时的缓存清理（30 天未见）剪除）
         assertEquals(PeerPresence.SEARCHING, service.peers.value.firstOrNull { it.shortId == "B" }?.presence)
         // B 心跳在线 → markSeen(B)
         service.handleFrame(pingFrame("B", "Bob"))

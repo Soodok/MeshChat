@@ -37,7 +37,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -53,6 +52,10 @@ private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送
 private const val MAX_RESEND_INTERVAL_MS = 30_000L // 重发退避封顶：3s→6s→12s→24s→30s，永不 FAILED（零容错，持续确认）
 private const val RECEIPT_REPEAT_INTERVAL_MS = 3_000L    // 接收方重复回执周期（近期消息周期性补发）
 private const val RECEIPT_REPEAT_WINDOW_MS = 180_000L    // 重复回执窗口：收到消息后 3min 内周期性补发（覆盖长时间后台空窗）
+
+// ===== 缓存维护（移植队友 v1.0.11）：长期运行清理过期投递记录与长期未见节点 =====
+private const val CACHE_MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1_000L  // 缓存维护周期：每 6h 一次（tick 节流）
+private const val PEER_CACHE_RETENTION_MS = 30L * 24 * 60 * 60 * 1_000L // 节点缓存保留：30 天未见即清除（不删聊天记录/已存文件）
 
 // ===== v1.1.0 多跳中继 =====
 private const val OUTBOX_RESEND_INTERVAL_MS = 1_000L  // 中继转发 outbox 重发节流：每条目每 1s 最多重发一次
@@ -104,6 +107,8 @@ class MeshService(
     private var receiveJob: Job? = null
     private var peerJob: Job? = null
     private var tickJob: Job? = null
+    /** 上次缓存维护时刻：tick 节流（6h 一次），启动时 force 一次。 */
+    private var lastCacheMaintenanceAt = 0L
 
     /** 文件传输引擎：发送状态机 + 接收重组 + 窗口批量 bitmap 确认。 */
     private val transfer = FileTransferManager(
@@ -185,34 +190,46 @@ class MeshService(
     fun start() {
         if (started) return // 幂等：防止「开始附近发现」被重复点击导致重复启动
         started = true
+        prunePersistentCaches(System.currentTimeMillis(), force = true)
         _sessions.value = sessionStore.load()   // 重启恢复已建立的会话关系
         restoreKnownPeers()                     // 重启恢复已知节点（寻找中状态，心跳/扫描补在线）
         restorePendingReceipts()                // 重启恢复未确认消息（进程被杀后重发不丢失）
         transport.start()
         rfcomm?.start()
         receiveJob = scope.launch {
-            transport.incoming.catch { }.collect { frame -> handleFrame(frame) }
+            // 逐帧隔离异常（移植队友 v1.0.12）：单帧处理异常不终止整个接收流
+            transport.incoming.collect { frame ->
+                runCatching { handleFrame(frame) }
+                    .onFailure { Log.w(TAG, "incoming frame handling failed", it) }
+            }
         }
         // RFCOMM 通道合流：文件帧经高速通道到达时同样走 handleFrame
         rfcomm?.incoming?.let { flow ->
-            scope.launch { flow.catch { }.collect { frame -> handleFrame(frame) } }
+            scope.launch {
+                flow.collect { frame ->
+                    runCatching { handleFrame(frame) }
+                        .onFailure { Log.w(TAG, "RFCOMM frame handling failed", it) }
+                }
+            }
         }
         peerJob = scope.launch {
-            transport.foundPeers.catch { }.collect { info ->
-                // 广播确认（第三通道）：对端随扫描响应广播"已收到的消息确认键"——
-                // 无需任何 GATT 连接，双方在无线电范围内且都在扫描即可交换确认（彻底绕开连接状态问题）
-                info.ackKeys.forEach { key -> confirmByAckKey(key) }
-                val now = System.currentTimeMillis()
-                val existing = peerEntries[info.shortId]
-                // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖；
-                // lastSeenAt 每次扫描帧到达都刷新 → info 必变 → _peers 流必 emit
-                val displayName = existing?.info?.displayName ?: ""
-                peerEntries[info.shortId] = PeerEntry(
-                    if (existing != null) info.copy(displayName = displayName, lastSeenAt = now) else info.copy(lastSeenAt = now),
-                    lastSeen = now, lost = false,
-                )
-                // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
-                store.upsertPeer(info.shortId, displayName.ifBlank { info.displayName }, now, info.hops)
+            transport.foundPeers.collect { info ->
+                runCatching {
+                    // 广播确认（第三通道）：对端随扫描响应广播"已收到的消息确认键"——
+                    // 无需任何 GATT 连接，双方在无线电范围内且都在扫描即可交换确认（彻底绕开连接状态问题）
+                    info.ackKeys.forEach { key -> confirmByAckKey(key) }
+                    val now = System.currentTimeMillis()
+                    val existing = peerEntries[info.shortId]
+                    // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖；
+                    // lastSeenAt 每次扫描帧到达都刷新 → info 必变 → _peers 流必 emit
+                    val displayName = existing?.info?.displayName ?: ""
+                    peerEntries[info.shortId] = PeerEntry(
+                        if (existing != null) info.copy(displayName = displayName, lastSeenAt = now) else info.copy(lastSeenAt = now),
+                        lastSeen = now, lost = false,
+                    )
+                    // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
+                    store.upsertPeer(info.shortId, displayName.ifBlank { info.displayName }, now, info.hops)
+                }.onFailure { Log.w(TAG, "peer update handling failed", it) }
             }
         }
         tickJob = scope.launch {
@@ -221,6 +238,8 @@ class MeshService(
                 val now = System.currentTimeMillis()
                 heartbeatTick(now)
                 resendPendingReceipts(now)
+                // 缓存维护：启动 force + 每 6h 节流（清过期 outbox/30 天未见节点）
+                prunePersistentCaches(now)
                 // 中继转发 outbox 重发（每 1s 节流，≤3 次）：转发丢帧兜底，尽力而为
                 resendOutbox(now)
                 // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
@@ -229,6 +248,16 @@ class MeshService(
                 transfer.tick(now)
             }
         }
+    }
+
+    /** 移除可再生的持久化缓存（过期 outbox、长期未见节点）；聊天记录与已存文件保留。 */
+    private fun prunePersistentCaches(now: Long, force: Boolean = false) {
+        if (!force && now - lastCacheMaintenanceAt < CACHE_MAINTENANCE_INTERVAL_MS) return
+        lastCacheMaintenanceAt = now
+        runCatching {
+            store.pruneExpiredOutbox(now)
+            store.prunePeersNotSeenSince(now - PEER_CACHE_RETENTION_MS)
+        }.onFailure { Log.w(TAG, "cache maintenance failed", it) }
     }
 
     /**
@@ -250,9 +279,10 @@ class MeshService(
         receiveJob?.cancel()
         peerJob?.cancel()
         tickJob?.cancel()
+        transfer.cancel()
         transport.stop()
         rfcomm?.stop()
-        scope.cancel()
+        // 注意：不 cancel scope——stop 后 start() 需能再次 launch（修复"服务停止后无法再次启动"）
     }
 
     fun sendText(convId: String, dstId: String, text: String) {
@@ -766,6 +796,19 @@ class MeshService(
                 val body = envelope.body as? FileBody ?: return
                 // 先落库占位（按 fileId 去重；upsert 幂等），再收块——收齐回调会置 DELIVERED，顺序不能反
                 if (receivedFiles.add(body.fileId)) {
+                    // 重启后对端重传已保存文件：不重复落盘，仅回发完成 ACK（移植队友 v1.0.12）
+                    val alreadySaved = store.queryMessages("conv-${envelope.srcId}").any {
+                        it.id == body.fileId && it.status == MessageStatus.DELIVERED
+                    }
+                    if (alreadySaved) {
+                        transfer.acknowledgeCompletedFile(
+                            fileId = body.fileId,
+                            convId = "conv-${envelope.srcId}",
+                            senderId = envelope.srcId,
+                            totalChunks = body.totalChunks,
+                        )
+                        return
+                    }
                     store.insertMessage(
                         StoredMessage(
                             id = body.fileId, convId = "conv-${envelope.srcId}", kind = "FILE",

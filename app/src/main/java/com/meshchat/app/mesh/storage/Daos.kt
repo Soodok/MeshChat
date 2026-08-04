@@ -40,6 +40,9 @@ interface OutboxDao {
 
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun remove(id: String)
+
+    @Query("DELETE FROM outbox WHERE expireAt <= :now")
+    suspend fun removeExpired(now: Long)
 }
 
 @Dao
@@ -52,4 +55,7 @@ interface PeerDao {
 
     @Query("SELECT * FROM peers")
     fun observeAll(): Flow<List<PeerEntity>>
+
+    @Query("DELETE FROM peers WHERE lastSeen < :cutoff")
+    suspend fun removeNotSeenSince(cutoff: Long)
 }

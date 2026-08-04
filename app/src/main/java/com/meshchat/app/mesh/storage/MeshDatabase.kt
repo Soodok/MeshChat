@@ -2,8 +2,10 @@ package com.meshchat.app.mesh.storage
 
 import android.content.Context
 import androidx.room.Database
+import androidx.room.migration.Migration
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -11,7 +13,7 @@ import kotlinx.coroutines.runBlocking
 
 @Database(
     entities = [MessageEntity::class, OutboxEntity::class, PeerEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -20,8 +22,20 @@ abstract class MeshDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
 
     companion object {
+        /** v1 → v2 无损迁移（移植队友 v1.0.12）：仅加查询索引，不动表结构，历史数据完整保留。 */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messages_convId_ts ON messages (convId, ts)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messages_status_kind ON messages (status, kind)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_outbox_expireAt ON outbox (expireAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_peers_lastSeen ON peers (lastSeen)")
+            }
+        }
+
         fun build(context: Context): MeshDatabase =
-            Room.databaseBuilder(context, MeshDatabase::class.java, "meshchat.db").build()
+            Room.databaseBuilder(context, MeshDatabase::class.java, "meshchat.db")
+                .addMigrations(MIGRATION_1_2)
+                .build()
     }
 }
 
@@ -57,8 +71,16 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
         db.outboxDao().remove(id)
     }
 
+    override fun pruneExpiredOutbox(now: Long) = runBlocking {
+        db.outboxDao().removeExpired(now)
+    }
+
     override fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int) = runBlocking {
         db.peerDao().upsert(PeerEntity(shortId = shortId, displayName = displayName, lastSeen = lastSeen, hops = hops))
+    }
+
+    override fun prunePeersNotSeenSince(cutoff: Long) = runBlocking {
+        db.peerDao().removeNotSeenSince(cutoff)
     }
 
     override fun loadPeers(): List<PeerEntity> = runBlocking {

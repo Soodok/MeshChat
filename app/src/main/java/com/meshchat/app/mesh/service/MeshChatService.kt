@@ -8,13 +8,16 @@ import android.os.IBinder
 import com.meshchat.app.MeshChatApplication
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /** 前台服务宿主：后台/息屏常驻，BLE 持续收发，收到消息弹通知。 */
 class MeshChatService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var peerNotificationJob: Job? = null
     private lateinit var notifications: NotificationHelper
     private val app: MeshChatApplication get() = application as MeshChatApplication
 
@@ -34,8 +37,11 @@ class MeshChatService : Service() {
         }
         startForegroundCompat()
         app.service.start()
-        scope.launch {
-            app.service.peers.collect { notifications.updatePersistent(it.size) }
+        // 订阅单例（移植队友 v1.0.11）：频繁回前台/重复 onStartCommand 不累积 peers 订阅
+        if (peerNotificationJob?.isActive != true) {
+            peerNotificationJob = scope.launch {
+                app.service.peers.collect { notifications.updatePersistent(it.size) }
+            }
         }
         return START_STICKY   // 系统回收后自动重启（状态从 SharedPreferences 恢复）
     }
@@ -53,6 +59,7 @@ class MeshChatService : Service() {
     }
 
     override fun onDestroy() {
+        peerNotificationJob?.cancel()
         scope.cancel()
         app.service.stop()
         super.onDestroy()

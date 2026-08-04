@@ -34,7 +34,11 @@ interface MeshStore {
     fun enqueueOutbox(entry: OutboxEntry)
     fun nextOutbox(now: Long): List<OutboxEntry>
     fun removeOutbox(id: String)
+    /** 删除已过期（expireAt ≤ now）的投递记录（缓存维护，不删聊天记录）。 */
+    fun pruneExpiredOutbox(now: Long)
     fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int)
+    /** 删除 lastSeen 早于 cutoff 的节点缓存（缓存维护，不删聊天记录/已存文件）。 */
+    fun prunePeersNotSeenSince(cutoff: Long)
     fun loadPeers(): List<PeerEntity>
     /** 进程重启后恢复未确认（SENDING）的 TEXT，重建重发队列。 */
     fun loadUndeliveredTexts(): List<StoredMessage>

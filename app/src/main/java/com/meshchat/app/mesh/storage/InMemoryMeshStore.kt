@@ -41,10 +41,18 @@ class InMemoryMeshStore : MeshStore {
         outbox.removeAll { it.id == id }
     }
 
+    override fun pruneExpiredOutbox(now: Long) {
+        outbox.removeAll { it.expireAt <= now }
+    }
+
     private val peers = mutableMapOf<String, PeerEntity>()
 
     override fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int) {
         peers[shortId] = PeerEntity(shortId, displayName, lastSeen, hops)
+    }
+
+    override fun prunePeersNotSeenSince(cutoff: Long) {
+        peers.entries.removeAll { it.value.lastSeen < cutoff }
     }
 
     override fun loadPeers(): List<PeerEntity> = peers.values.toList()

@@ -131,6 +131,24 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
     // 帧计数器：触发 Canvas 重绘（节点内部 var 改动不触发重组，靠此驱动）
     var frame by remember { mutableIntStateOf(0) }
 
+    // 绘制上限：优先保留已会话/在线节点（仅截断绘制数，位置由 existing 保留，渲染效果不变）
+    val topologyPeers = peers
+        .sortedWith(
+            compareBy<MeshPeer>(
+                { if (it.shortId in sessions) 0 else 1 },
+                {
+                    when (it.presence) {
+                        PeerPresence.ONLINE -> 0
+                        PeerPresence.RECONNECTING -> 1
+                        PeerPresence.SEARCHING -> 2
+                        PeerPresence.OFFLINE -> 3
+                    }
+                },
+                { it.shortId },
+            ),
+        )
+        .take(MAX_TOPOLOGY_PEERS)
+
     // 同步 peers → nodes + edges（保留已有节点位置，避免重组时跳变）
     LaunchedEffect(peers, sessions, canvasW, canvasH) {
         if (canvasW <= 0f || canvasH <= 0f) return@LaunchedEffect
@@ -147,7 +165,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
             vx = oldMe?.vx ?: 0f, vy = oldMe?.vy ?: 0f,
         ))
         // 一跳节点（失联节点直接不显示）
-        peers.forEach { peer ->
+        topologyPeers.forEach { peer ->
             if (peer.presence == PeerPresence.OFFLINE) return@forEach
             val actualKind = when {
                 peer.presence == PeerPresence.SEARCHING || peer.presence == PeerPresence.RECONNECTING -> TopoKind.SEARCHING
@@ -353,6 +371,9 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
 
 /** 基准画布尺寸（典型手机宽度），所有尺寸相对此缩放，适配不同分辨率/屏幕大小 */
 private const val BASE_CANVAS = 360f
+
+/** 拓扑图节点绘制上限（移植队友 v1.0.12）：力导向为 O(n²)，超过则物理循环卡顿；仅截断绘制节点数，不改渲染效果 */
+private const val MAX_TOPOLOGY_PEERS = 48
 
 /** 拓扑节点分类（四色制：本机/直连绿/多跳蓝/寻找中黄虚线/失联灰）*/
 private enum class TopoKind { ME, DIRECT, REACHABLE, SEARCHING, STALE }

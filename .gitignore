@@ -26,3 +26,7 @@ Thumbs.db
 # 签名（禁止入库！keystore + 密码丢失将无法更新上架版本）
 *.keystore
 keystore.properties
+
+# 外部导入/备份产物（队友包、git bundle 等，不入库）
+*.zip
+*.bundle
