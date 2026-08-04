@@ -126,11 +126,12 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
     var canvasW by remember { mutableFloatStateOf(0f) }
     var canvasH by remember { mutableFloatStateOf(0f) }
     val nodes = remember { mutableStateListOf<TopoNode>() }
+    val edges = remember { mutableStateListOf<TopoEdge>() }
     var draggingNode by remember { mutableStateOf<TopoNode?>(null) }
     // 帧计数器：触发 Canvas 重绘（节点内部 var 改动不触发重组，靠此驱动）
     var frame by remember { mutableIntStateOf(0) }
 
-    // 同步 peers → nodes（保留已有节点位置，避免重组时跳变）
+    // 同步 peers → nodes + edges（保留已有节点位置，避免重组时跳变）
     LaunchedEffect(peers, sessions, canvasW, canvasH) {
         if (canvasW <= 0f || canvasH <= 0f) return@LaunchedEffect
         val existing = nodes.associateBy { it.id }
@@ -144,12 +145,12 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
             x = oldMe?.x ?: cx, y = oldMe?.y ?: cy,
             vx = oldMe?.vx ?: 0f, vy = oldMe?.vy ?: 0f,
         ))
-        // 一跳节点（v1.0.x 全部为直连；多跳中继 v1.1.0 实装后会有真正的 REACHABLE）
+        // 一跳节点
         peers.forEach { peer ->
-            // v1.0.x 三色映射：已会话=绿(DIRECT)，在线未会话=蓝(REACHABLE)，离线=灰(STALE)
             val actualKind = when {
-                peer.shortId in sessions -> TopoKind.DIRECT
                 peer.presence == PeerPresence.OFFLINE -> TopoKind.STALE
+                peer.presence == PeerPresence.SEARCHING || peer.presence == PeerPresence.RECONNECTING -> TopoKind.SEARCHING
+                peer.shortId in sessions -> TopoKind.DIRECT
                 else -> TopoKind.REACHABLE
             }
             val r = if (peer.hops <= 1) 27f else if (peer.hops == 2) 22f else 19f
@@ -162,6 +163,14 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 vx = old?.vx ?: 0f, vy = old?.vy ?: 0f,
             ))
         }
+        // 生成 peer-peer mesh 骨干边（非失联 peer 之间互连）
+        edges.clear()
+        val activePeers = nodes.filter { it.id != "ME" && it.kind != TopoKind.STALE }
+        for (i in activePeers.indices) {
+            for (j in i + 1 until activePeers.size) {
+                edges.add(TopoEdge(activePeers[i].id, activePeers[j].id))
+            }
+        }
     }
 
     // 物理循环（~60fps，被拖节点跳过物理，位置由手指直接控制）
@@ -169,7 +178,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         if (canvasW <= 0f || canvasH <= 0f) return@LaunchedEffect
         while (true) {
             delay(16)
-            topologyPhysicsStep(nodes, canvasW, canvasH, draggingNode?.id)
+            topologyPhysicsStep(nodes, edges, canvasW, canvasH, draggingNode?.id)
             frame++
         }
     }
@@ -235,6 +244,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 // 读 frame 建立重绘依赖（节点内部 var 改动靠此驱动重绘）
                 @Suppress("UNUSED_VARIABLE") val redrawTrigger = frame
                 drawDotGrid()
+                drawMeshEdges(nodes, edges)
                 drawTopologyEdges(nodes)
                 drawTopologyNodes(nodes)
             }
@@ -315,8 +325,8 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
 
 // ===== 拓扑图数据模型 + 物理引擎 + 绘制（力导向 mesh 拓扑）=====
 
-/** 拓扑节点分类（三色制：本机/直连绿/多跳蓝/失联灰）*/
-private enum class TopoKind { ME, DIRECT, REACHABLE, STALE }
+/** 拓扑节点分类（四色制：本机/直连绿/多跳蓝/寻找中黄虚线/失联灰）*/
+private enum class TopoKind { ME, DIRECT, REACHABLE, SEARCHING, STALE }
 
 /** 拓扑节点（UI 运行时物理状态，var 字段不触发重组，靠 frame 计数器驱动重绘）*/
 private class TopoNode(
@@ -332,19 +342,25 @@ private class TopoNode(
     var vy: Float = 0f,
 )
 
-/** 物理引擎：库仑斥力 + 边弹簧 + 阻尼 + 微扰 + 边界反弹（无中心引力，自然分布）
- *  pinnedId 节点跳过力计算与位置更新（拖拽中由手指直接控制位置）*/
-private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float, pinnedId: String? = null) {
+/** 拓扑边（peer-peer mesh 骨干，v1.0.x 用虚拟边模拟网状结构；v1.1.0 多跳中继后由 routeEntries 驱动）*/
+private class TopoEdge(val a: String, val b: String)
+
+/** 物理引擎：库仑斥力 + 边弹簧(本机↔peer + peer↔peer mesh 骨干) + 阻尼 + 微扰 + 边界反弹
+ *  pinnedId 节点跳过力计算与位置更新（拖拽中由手指直接控制位置）
+ *  失联节点(STALE)无本机边弹簧力——线断开，仅受斥力自然漂走 */
+private fun topologyPhysicsStep(nodes: List<TopoNode>, edges: List<TopoEdge>, w: Float, h: Float, pinnedId: String? = null) {
     val repulsion = 6000f      // 库仑斥力系数（适配正方形小画布）
-    val springK = 0.008f       // 弹簧刚度
-    val springLen = 120f       // 弹簧自然长度（缩小适配正方形）
+    val springK = 0.008f       // 本机↔peer 弹簧刚度
+    val meshSpringK = 0.003f   // peer↔peer mesh 骨干弹簧刚度（弱，避免拉成直线）
+    val springLen = 120f       // 弹簧自然长度
     val damping = 0.9f         // 速度阻尼
     val jitter = 0.05f         // 微扰
     val maxSpeed = 6f          // 限速
     val margin = 80f           // 边界反弹区
     val me = nodes.firstOrNull { it.id == "ME" } ?: return
+    val byId = nodes.associateBy { it.id }
 
-    // 1. 库仑斥力（O(n²)，pinned 节点仍受其他节点斥力但自身不施力——保持稳定）
+    // 1. 库仑斥力（O(n²)，pinned 节点不接收力——位置由手指控制）
     for (i in nodes.indices) {
         for (j in i + 1 until nodes.size) {
             val a = nodes[i]; val b = nodes[j]
@@ -353,26 +369,37 @@ private fun topologyPhysicsStep(nodes: List<TopoNode>, w: Float, h: Float, pinne
             if (dist < 1f) { dist = 1f; dx = 1f; dy = 0f }
             val f = repulsion / (dist * dist)
             val fx = dx / dist * f; val fy = dy / dist * f
-            // pinned 节点不接收力（位置由手指控制）
             if (a.id != pinnedId) { a.vx -= fx; a.vy -= fy }
             if (b.id != pinnedId) { b.vx += fx; b.vy += fy }
         }
     }
-    // 2. 边弹簧力（本机 ↔ peer，对称）
+    // 2. 本机↔peer 弹簧力（失联节点无弹簧——线断开）
     nodes.forEach { n ->
         if (n.id == "ME") return@forEach
+        if (n.kind == TopoKind.STALE) return@forEach  // 失联：无弹簧，线断开
         var dx = n.x - me.x; var dy = n.y - me.y
         var dist = sqrt(dx * dx + dy * dy)
         if (dist < 1f) { dist = 1f; dx = 1f; dy = 0f }
-        // 失联节点弹簧更弱（残存链路）
-        val k = if (n.kind == TopoKind.STALE) springK * 0.2f else springK
+        // 寻找中节点弹簧更弱（残存链路）
+        val k = if (n.kind == TopoKind.SEARCHING) springK * 0.2f else springK
         val diff = dist - springLen
         val fx = dx / dist * diff * k; val fy = dy / dist * diff * k
-        // pinned 节点不接收力
         if (me.id != pinnedId) { me.vx += fx; me.vy += fy }
         if (n.id != pinnedId) { n.vx -= fx; n.vy -= fy }
     }
-    // 3. 阻尼 + 微扰 + 限速 + 位置更新 + 边界反弹（pinned 节点跳过）
+    // 3. peer↔peer mesh 骨干弹簧力（弱，让图有网状结构，不趋向直线）
+    edges.forEach { e ->
+        val a = byId[e.a] ?: return@forEach
+        val b = byId[e.b] ?: return@forEach
+        var dx = b.x - a.x; var dy = b.y - a.y
+        var dist = sqrt(dx * dx + dy * dy)
+        if (dist < 1f) { dist = 1f; dx = 1f; dy = 0f }
+        val diff = dist - springLen
+        val fx = dx / dist * diff * meshSpringK; val fy = dy / dist * diff * meshSpringK
+        if (a.id != pinnedId) { a.vx += fx; a.vy += fy }
+        if (b.id != pinnedId) { b.vx -= fx; b.vy -= fy }
+    }
+    // 4. 阻尼 + 微扰 + 限速 + 位置更新 + 边界反弹（pinned 节点跳过）
     nodes.forEach { n ->
         if (n.id == pinnedId) return@forEach
         n.vx *= damping; n.vy *= damping
@@ -403,20 +430,38 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDotGrid() {
     }
 }
 
-/** 绘制拓扑边（本机 ↔ peer，按节点状态着色）*/
+/** 绘制 peer-peer mesh 骨干边（淡色，非失联 peer 之间互连）*/
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMeshEdges(
+    nodes: List<TopoNode>, edges: List<TopoEdge>,
+) {
+    val byId = nodes.associateBy { it.id }
+    edges.forEach { e ->
+        val a = byId[e.a] ?: return@forEach
+        val b = byId[e.b] ?: return@forEach
+        drawLine(
+            color = Cyan.copy(alpha = 0.15f),
+            start = Offset(a.x, a.y), end = Offset(b.x, b.y),
+            strokeWidth = 2.5f,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/** 绘制本机↔peer 边（按节点状态着色，失联不画——线断开）*/
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
     nodes: List<TopoNode>,
 ) {
     val me = nodes.firstOrNull { it.id == "ME" } ?: return
     nodes.forEach { n ->
         if (n.id == "ME") return@forEach
+        if (n.kind == TopoKind.STALE) return@forEach  // 失联：不画边，线断开
         val start = Offset(me.x, me.y)
         val end = Offset(n.x, n.y)
         when (n.kind) {
-            TopoKind.STALE -> drawLine(
-                color = TextSecondary.copy(alpha = 0.3f),
-                start = start, end = end, strokeWidth = 4f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f, 15f), 0f),
+            TopoKind.SEARCHING -> drawLine(
+                color = MeshAmber.copy(alpha = 0.6f),
+                start = start, end = end, strokeWidth = 4.5f,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f),
             )
             TopoKind.DIRECT -> drawLine(
                 color = MeshGreen.copy(alpha = 0.8f),
@@ -428,7 +473,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
                 start = start, end = end, strokeWidth = 4f,
                 cap = StrokeCap.Round,
             )
-            TopoKind.ME -> { /* 不会到达 */ }
+            TopoKind.ME, TopoKind.STALE -> { /* 不会到达 */ }
         }
     }
 }
@@ -444,6 +489,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
             TopoKind.ME -> Triple(Cyan, Cyan, Color(0xFF081420))
             TopoKind.DIRECT -> Triple(MeshGreen, InkSoft, MeshGreen)
             TopoKind.REACHABLE -> Triple(Cyan, InkSoft, Cyan)
+            TopoKind.SEARCHING -> Triple(MeshAmber, InkSoft, MeshAmber)
             TopoKind.STALE -> Triple(TextSecondary, InkSoft, TextSecondary)
         }
         // 节点填充

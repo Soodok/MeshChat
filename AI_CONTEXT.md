@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.0.14（versionCode 50，构建时间 2026-08-04 08:23）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.0.15（versionCode 51，构建时间 2026-08-04 16:45）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -146,10 +146,10 @@ app/src/main/java/com/meshchat/app/
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
 - **RFCOMM 已停用（用户决策）**：配对弹窗在华为/GSI 不弹出 + 配对模型对多设备中心拓扑不友好；代码保留未启用。后续提速方向改为 **WiFi Direct**（免配对、中心外设模型天然、吞吐百 MB/s 级，复用 MeshTransport 抽象即可）。
-- **v1.0.14 修复 markSeen 批量乐观更新 bug（前端报告已采纳）**：`MeshService.markSeen` 原 525 行 `map { it.info.copy(lost=false, presence=ONLINE) }` 全员覆盖与 heartbeatTick 状态机打架 → 失联 peer 在"最近对话/等待路由"1Hz 抖动（前端 AI 产出完整报告 `docs/handoff/2026-08-04-markseen-flicker-bug.md`）。已按报告 8.1+8.2 修复：markSeen 仅显式更新当前 peer（`lost=false/presence=ONLINE`，空昵称保留已学名），`_peers.value = map { it.info }` 保留状态机裁决。单测 +1（markSeen does not override other peers presence）。
+- **v1.0.14 修复 markSeen 批量乐观更新 bug（前端报告已采纳）+ v1.0.15 前端恢复拓扑图设计**：后端按报告 8.1+8.2 修复 markSeen（仅显式更新当前 peer，`_peers.value = map { it.info }` 保留状态机裁决，单测 +1）。前端 v1.0.15 据此恢复此前因闪烁回退的设计：① mesh 骨干边（peer↔peer 互连，`TopoEdge` + `drawMeshEdges` 淡色 Cyan α0.15）② 四色制（新增 `TopoKind.SEARCHING` 黄虚线 + 残存弱弹簧 0.2x）③ 失联断线（STALE 不画边/无弹簧力，仅受斥力漂走）④ peer↔peer 弹簧力（`meshSpringK=0.003`，让图有网状结构不趋向直线）。后端修复后 peers 流稳定，clear+重建不再闪。
 
 ### 下一步首要任务
-0. **v1.0.14 真机回归 markSeen 修复**：三机场景（A 与 B/C 会话，C 离开）验证聊天列表失联项稳定停留"等待路由"不再 1Hz 抖动、拓扑图失联节点不闪；回归消息收发/持久化/三色状态机。
+0. **v1.0.15 真机回归（当前版本）**：安装 `MeshChat-v1.0.15-debug.apk`，三机场景（A 与 B/C 会话，C 离开）验证：① 聊天列表失联项稳定停留"等待路由"不再 1Hz 抖动 ② 拓扑图失联节点不闪、mesh 骨干边/四色制/失联断线显示正常 ③ 蓝牙重搜路径（关蓝牙进软件→开蓝牙→点重新发现→互相搜到）④ 回归消息收发/持久化/三色状态机/文件传输。
 1. **v1.0.13 蓝牙重搜验证**：安装 `MeshChat-v1.0.13-debug.apk`，重点复现蓝牙重搜路径：两机先关蓝牙进软件 → 开蓝牙 → 点"重新发现" → 应互相搜到（不再需要重进）。其余回归：Mesh 页拓扑图（力导向/拖拽/三色）、送达确认、滚动、文件传输。
 2. **v1.0.3 推送**：v1.0.3（拓扑图重构）本轮已提交推送 GitHub（v1.0.2 已于上轮推送 `1449bcd`）。
 3. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
