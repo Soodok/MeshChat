@@ -80,4 +80,4 @@ app/src/main/java/com/meshchat/app/
 
 ## 许可
 
-MIT License（待补充）。
+MIT License
