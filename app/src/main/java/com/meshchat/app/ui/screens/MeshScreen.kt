@@ -190,8 +190,8 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(0.425f)
+                .fillMaxWidth(0.6f)
+                .aspectRatio(1f)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                 .background(InkSoft.copy(alpha = 0.4f))
                 .onSizeChanged {
