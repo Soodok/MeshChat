@@ -30,6 +30,26 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+
+    signingConfigs {
+        create("release") {
+            // 个人项目：暂用 Android debug keystore 签名 release（保证可安装）；
+            // 正式分发前应替换为专用 keystore
+            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            // 首次 release：不开混淆（无 proguard-rules.pro，Room/Compose/序列化需 keep 规则，
+            // 混淆会导致运行时崩溃）；后续如需精简体积再补规则文件开启 R8
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
 }
 
 dependencies {
