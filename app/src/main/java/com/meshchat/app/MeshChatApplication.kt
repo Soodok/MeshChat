@@ -1,9 +1,16 @@
 package com.meshchat.app
 
 import android.app.Application
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import androidx.core.content.ContextCompat
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.identity.ShortIdGen
 import com.meshchat.app.mesh.routing.DedupCache
@@ -21,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 class MeshChatApplication : Application() {
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val bluetoothManager: BluetoothManager by lazy {
         getSystemService(BluetoothManager::class.java)
     }
@@ -100,9 +108,35 @@ class MeshChatApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        registerBluetoothStateReceiver()
         // 进程一启动即开始扫描/心跳（"删掉后台再进"也自动寻找）：
         // 此刻 MainActivity 尚未创建、Android 12+ 限制前台服务后台启动，故直接启动 Mesh 逻辑本体（幂等），
         // 前台服务由 MainActivity onCreate/onResume 的 startMesh() 补上（App 已在前台，无启动限制）。
         runCatching { service.start() }
+    }
+
+    /**
+     * 蓝牙关→开自动重建 BLE 传输层（v1.0.24）：
+     *
+     * Android 关闭蓝牙时会杀掉本 App 注册的广播/扫描/GATT 连接，且**蓝牙重开后不会自动恢复**；
+     * 此时 `service.started` 仍为 true，没有任何代码再调 startAdvertising/startScanning——本机
+     * "听不见"任何帧：对端显示在线/已送达（保留显示 + 无限重发）但消息实际收不到，本机也无法重连。
+     *
+     * 监听系统蓝牙状态广播，蓝牙重新开启后延迟 500ms 强制 `transport.stop()+start()` 重建
+     * （等蓝牙栈完全就绪，立即重建时 advertiser/scanner 可能尚未初始化完）。
+     */
+    private fun registerBluetoothStateReceiver() {
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                if (state == BluetoothAdapter.STATE_ON) {
+                    Log.i("MeshApp", "bluetooth ON -> rebuild BLE transport (restartDiscovery)")
+                    mainHandler.postDelayed({ runCatching { service.restartDiscovery() } }, 500L)
+                }
+            }
+        }
+        // 系统受保护广播可投递给 NOT_EXPORTED 动态接收器（不接收其他 App 的任意广播）
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 }
