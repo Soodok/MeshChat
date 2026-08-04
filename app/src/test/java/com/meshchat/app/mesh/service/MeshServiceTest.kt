@@ -378,6 +378,28 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `markSeen does not override other peers presence`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        store.upsertPeer("B", "Bob", 0L, 1)
+        store.upsertPeer("C", "Carol", 0L, 1)
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        // B、C 均为启动恢复的 SEARCHING（lastSeen=0）
+        assertEquals(PeerPresence.SEARCHING, service.peers.value.firstOrNull { it.shortId == "B" }?.presence)
+        // B 心跳在线 → markSeen(B)
+        service.handleFrame(pingFrame("B", "Bob"))
+        assertEquals("被 markSeen 的 peer 应在线", PeerPresence.ONLINE, service.peers.value.firstOrNull { it.shortId == "B" }?.presence)
+        assertEquals("其他 peer 不应被乐观覆盖为在线", PeerPresence.SEARCHING, service.peers.value.firstOrNull { it.shortId == "C" }?.presence)
+        // 昵称为空（扫描帧）不覆盖已学昵称
+        service.handleFrame(pingFrame("B", ""))
+        assertEquals("空昵称应保留已学名", "Bob", service.peers.value.firstOrNull { it.shortId == "B" }?.displayName)
+        service.stop()
+    }
+
+    @Test
     fun `ping replies pong and records peer name`() {
         val transport = CountingTransport()
         val service = MeshService(

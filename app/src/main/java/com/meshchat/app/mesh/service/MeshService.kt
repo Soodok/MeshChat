@@ -509,20 +509,29 @@ class MeshService(
         val existing = peerEntries[peerId]
         if (existing != null) {
             existing.lastSeen = now
-            if (displayName.isNotBlank() && displayName != existing.info.displayName) {
-                existing.info = existing.info.copy(displayName = displayName)
-            }
+            existing.lost = false
+            // 显式更新当前 peer 为在线；displayName 为空时保留已学昵称（不覆盖）
+            val updatedName = if (displayName.isNotBlank()) displayName else existing.info.displayName
+            existing.info = existing.info.copy(
+                displayName = updatedName,
+                lost = false,
+                presence = PeerPresence.ONLINE,
+            )
         } else {
             peerEntries[peerId] = PeerEntry(
-                MeshPeerInfo(shortId = peerId, deviceAddress = "", rssi = 0, hops = 1, displayName = displayName),
+                MeshPeerInfo(
+                    shortId = peerId, deviceAddress = "", rssi = 0, hops = 1,
+                    displayName = displayName, lost = false, presence = PeerPresence.ONLINE,
+                ),
                 lastSeen = now, lost = false,
             )
         }
         // 总是落库（昵称可能为空/扫描帧）：保证重启后节点持久化恢复，不再依赖 PING 交换
         val name = if (displayName.isNotBlank()) displayName else existing?.info?.displayName ?: ""
         runCatching { store.upsertPeer(peerId, name, now, existing?.info?.hops ?: 1) }
-        // 同步刷新 peers 流：UI/通知实时可见，无需等下一轮 tick
-        _peers.value = peerEntries.values.map { it.info.copy(lost = false, presence = PeerPresence.ONLINE) }
+        // 同步刷新 peers 流：仅当前 peer 被显式更新为 ONLINE，其他 peer 保留 heartbeatTick 状态机裁决的 presence
+        // （修复：原代码全员 copy(lost=false, presence=ONLINE) 覆盖所有 peer，与状态机打架 → 失联 peer 以 1Hz 抖动）
+        _peers.value = peerEntries.values.map { it.info }
     }
 
     /**
