@@ -270,10 +270,15 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
 
 @Composable
 private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClick: () -> Unit) {
-    // 每秒刷新"X 秒前信号"：帧到达 → lastSeenAt 更新 → 数字归零跳动；帧停止 → 数字持续增大 → 直观感知断连
+    // 100ms 刷新"信号时间"：帧到达 → lastSeenAt 更新 → 数字归零跳动（<1s 毫秒显示）；帧停止 → 数字持续增大 → 直观感知断连
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
-    val ageSec = if (peer.lastSeenAt > 0) ((now - peer.lastSeenAt) / 1000).coerceAtLeast(0) else -1
+    LaunchedEffect(Unit) { while (true) { delay(100); now = System.currentTimeMillis() } }
+    val ageMs = if (peer.lastSeenAt > 0) (now - peer.lastSeenAt).coerceAtLeast(0) else -1
+    val ageText = when {
+        ageMs < 0 -> ""
+        ageMs < 1_000 -> "${ageMs}ms前"
+        else -> "${ageMs / 1_000}s前"
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -298,8 +303,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                 SignalBars(peer.strength)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "${peer.rssi} dBm · 等级${BluetoothQuality.grade(peer.rssi).label}" +
-                        if (ageSec >= 0) " · ${ageSec}s前" else "",
+                    text = "${peer.rssi} dBm · 等级${BluetoothQuality.grade(peer.rssi).label}" + ageText,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
                 )
