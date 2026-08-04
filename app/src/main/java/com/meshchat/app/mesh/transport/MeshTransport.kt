@@ -19,6 +19,8 @@ data class MeshPeerInfo(
     val ackKeys: List<ByteArray> = emptyList(),
     /** 最后收到对端任何帧的时刻（ms）：帧到达即刷新，UI 据此显示"X 秒前信号"，远距离断连可直观感知。 */
     val lastSeenAt: Long = 0,
+    /** 经中继可达的经由节点 shortId（v1.1.0）；空 = 一跳直连。路由表合成的 2 跳节点此字段非空。 */
+    val relayVia: String = "",
 )
 
 interface MeshTransport {

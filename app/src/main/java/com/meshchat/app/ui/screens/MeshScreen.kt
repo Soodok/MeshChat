@@ -300,35 +300,44 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
             )
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = ageText,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
-                )
-                Spacer(Modifier.width(8.dp))
-                SignalBars(peer.strength)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "${peer.rssi} dBm",
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = TextSecondary,
-                )
-            }
-            val statusText = when (peer.presence) {
-                PeerPresence.ONLINE -> when {
-                    connected -> "已连接 · 点击进入会话"
-                    pending -> "等待对方接受"
-                    else -> "点击发起对话"
+            // v1.1.0 经中继可达（2 跳）：无真实信号/帧到达，隐藏信号行，改显"经 X 可达"
+            if (peer.relayVia.isBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = ageText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    SignalBars(peer.strength)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "${peer.rssi} dBm",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = TextSecondary,
+                    )
                 }
-                PeerPresence.SEARCHING -> "寻找中…"
-                PeerPresence.RECONNECTING -> "断线重连中…"
-                PeerPresence.OFFLINE -> "离线"
             }
-            val statusColor = when (peer.presence) {
-                PeerPresence.ONLINE -> if (connected) MeshGreen else TextSecondary
-                PeerPresence.SEARCHING, PeerPresence.RECONNECTING -> MeshAmber
-                PeerPresence.OFFLINE -> TextSecondary
+            val statusText = when {
+                peer.relayVia.isNotBlank() -> "经 ${peer.relayVia} 可达 · 2跳"
+                else -> when (peer.presence) {
+                    PeerPresence.ONLINE -> when {
+                        connected -> "已连接 · 点击进入会话"
+                        pending -> "等待对方接受"
+                        else -> "点击发起对话"
+                    }
+                    PeerPresence.SEARCHING -> "寻找中…"
+                    PeerPresence.RECONNECTING -> "断线重连中…"
+                    PeerPresence.OFFLINE -> "离线"
+                }
+            }
+            val statusColor = when {
+                peer.relayVia.isNotBlank() -> MeshGreen
+                else -> when (peer.presence) {
+                    PeerPresence.ONLINE -> if (connected) MeshGreen else TextSecondary
+                    PeerPresence.SEARCHING, PeerPresence.RECONNECTING -> MeshAmber
+                    PeerPresence.OFFLINE -> TextSecondary
+                }
             }
             Text(
                 text = statusText,

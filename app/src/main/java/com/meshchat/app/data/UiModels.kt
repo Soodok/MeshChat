@@ -46,6 +46,7 @@ data class MeshPeer(
     val reachable: Boolean = true,
     val presence: PeerPresence = PeerPresence.ONLINE,  // 三色状态：在线绿/寻找中·重连黄/离线黑
     val lastSeenAt: Long = 0,  // 最后收到对端帧的时刻（ms）：UI 显示"X 秒前信号"
+    val relayVia: String = "",  // 经中继可达的经由节点 shortId（v1.1.0 多跳）；空 = 一跳直连
 )
 
 enum class MainDestination(val label: String, val icon: ImageVector) {

@@ -26,6 +26,7 @@ import com.meshchat.app.mesh.transport.MeshTransport
 import com.meshchat.app.mesh.transport.PeerPresence
 import java.io.File
 import java.util.UUID
+import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,6 +53,15 @@ private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送
 private const val MAX_RESEND_INTERVAL_MS = 30_000L // 重发退避封顶：3s→6s→12s→24s→30s，永不 FAILED（零容错，持续确认）
 private const val RECEIPT_REPEAT_INTERVAL_MS = 3_000L    // 接收方重复回执周期（近期消息周期性补发）
 private const val RECEIPT_REPEAT_WINDOW_MS = 180_000L    // 重复回执窗口：收到消息后 3min 内周期性补发（覆盖长时间后台空窗）
+
+// ===== v1.1.0 多跳中继 =====
+private const val OUTBOX_RESEND_INTERVAL_MS = 1_000L  // 中继转发 outbox 重发节流：每条目每 1s 最多重发一次
+private const val OUTBOX_MAX_ATTEMPTS = 3             // 中继转发 outbox 重试上限：3 次后放弃（尽力而为，转发丢帧由 dedup 防重复）
+private const val PING_RELAYS_EVERY = 3               // PING 每 3 次（3s）携带一次 relays 路由信息（绑定 1s 心跳节流控带宽）
+private const val RELAY_FRESH_WINDOW_MS = 10_000L     // 一跳邻居判定：lastSeen 距今 ≤10s 才计入 relays（新鲜邻居才值得广播）
+private const val ROUTE_EXPIRE_MS = 30_000L           // 路由条目超时：中继 3 次心跳周期（~30s）未再确认即失效移除
+private const val FORWARD_JITTER_MIN_MS = 50L         // 转发抖动下界：错开多机同步转发，防广播风暴
+private const val FORWARD_JITTER_MAX_MS = 250L
 
 private const val TAG = "MeshSvc"
 
@@ -124,6 +134,16 @@ class MeshService(
 
     private val _peers = MutableStateFlow<List<MeshPeerInfo>>(emptyList())
     val peers: StateFlow<List<MeshPeerInfo>> = _peers.asStateFlow()
+
+    // ===== v1.1.0 多跳中继：路由表 =====
+    /** 2 跳路由条目：远端节点 -> (经由中继 shortId, 跳数, 最后确认时刻)。内存态，重启重建。 */
+    private data class RouteEntry(val via: String, val hops: Int, val lastSeenAt: Long)
+    private val routeEntries = LinkedHashMap<String, RouteEntry>()
+    /** PING 计数器：每 PING_RELAYS_EVERY 次心跳携带一次 relays 路由信息。 */
+    private var pingCount = 0
+    /** 中继转发 outbox 重发状态：id -> 上次重发时刻 / 重试次数（内存态）。 */
+    private val outboxLastSent = HashMap<String, Long>()
+    private val outboxAttempts = HashMap<String, Int>()
 
     /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
     private val peerEntries = LinkedHashMap<String, PeerEntry>()
@@ -201,6 +221,8 @@ class MeshService(
                 val now = System.currentTimeMillis()
                 heartbeatTick(now)
                 resendPendingReceipts(now)
+                // 中继转发 outbox 重发（每 1s 节流，≤3 次）：转发丢帧兜底，尽力而为
+                resendOutbox(now)
                 // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
                 tickSessionState(now)
                 // 文件传输接收超时清理（60s 无进展丢弃）
@@ -371,7 +393,7 @@ class MeshService(
                 ),
             )
         }
-        _peers.value = peerEntries.values.map { it.info }
+        refreshPeers()
     }
 
     /**
@@ -430,7 +452,18 @@ class MeshService(
             entry.lost = age > LOST_HEARTBEAT_MS
             entry.info = entry.info.copy(lost = entry.lost, presence = presence)
         }
-        _peers.value = peerEntries.values.map { it.info }
+        // v1.1.0 路由清理：中继失联（lastSeen 超 OFFLINE_THRESHOLD 或已移除）→ 移除经它的路由；
+        // 条目自身超时（ROUTE_EXPIRE_MS 未再确认，即中继 3 次心跳周期）→ 移除。
+        val rit = routeEntries.entries.iterator()
+        while (rit.hasNext()) {
+            val (peerId, r) = rit.next()
+            val relay = peerEntries[r.via]
+            if (relay == null || now - relay.lastSeen > OFFLINE_THRESHOLD_MS || now - r.lastSeenAt > ROUTE_EXPIRE_MS) {
+                Log.d(TAG, "route expired: $peerId via ${r.via}")
+                rit.remove()
+            }
+        }
+        refreshPeers()
     }
 
     /**
@@ -458,15 +491,45 @@ class MeshService(
         resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
     }
 
-    /** 广播 PING（带本机昵称），对端收到回 PONG。 */
+    /** 广播 PING（带本机昵称），对端收到回 PONG。每 PING_RELAYS_EVERY 次携带一跳邻居列表（路由信息搭心跳便车）。 */
     private fun sendPing() {
+        pingCount++
+        // 路由信息节流：前 2 次心跳不带（空列表省带宽），第 3 次（3s）带一次
+        val relays = if (pingCount % PING_RELAYS_EVERY == 0) currentRelays() else emptyList()
         val env = MeshEnvelope(
             id = UUID.randomUUID().toString(), kind = "PING",
             srcId = identity.shortId, dstId = "", convId = "conv-${identity.shortId}",
             ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
-            body = PresenceBody(identity.displayName),
+            body = PresenceBody(identity.displayName, relays = relays),
         )
         transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray()))
+    }
+
+    /** 本机一跳邻居 shortId 列表（lastSeen 距今 ≤ RELAY_FRESH_WINDOW_MS 的新鲜节点；上限 8 个控帧预算）。 */
+    private fun currentRelays(): List<String> {
+        val now = System.currentTimeMillis()
+        return peerEntries.entries.asSequence()
+            .filter { (_, e) -> e.lastSeen > 0 && now - e.lastSeen <= RELAY_FRESH_WINDOW_MS }
+            .map { it.key }
+            .take(8)
+            .toList()
+    }
+
+    /**
+     * 从 PING 携带的 relays 学习 2 跳路由（v1.1.0）：relay 已是本机一跳节点（lastSeen 新鲜）则忽略
+     * （一跳优先，不走中继）；否则记"经 srcId 可达"。相同远端多中继时保留最新确认的条目。
+     */
+    private fun learnRoutes(srcId: String, body: PresenceBody) {
+        val relays = body.relays
+        if (relays.isEmpty()) return
+        val now = System.currentTimeMillis()
+        for (relay in relays) {
+            if (relay == identity.shortId) continue
+            val direct = peerEntries[relay]
+            if (direct != null && now - direct.lastSeen <= RELAY_FRESH_WINDOW_MS) continue // 一跳优先
+            routeEntries[relay] = RouteEntry(via = srcId, hops = 2, lastSeenAt = now)
+        }
+        refreshPeers()  // 新学路由立即可见（markSeen 的刷新发生在 learnRoutes 之前）
     }
 
     /** 本机近期收到的、来自指定对端的消息 id 列表（最多 50 条，随心跳 PONG 回执给对端确认送达）。 */
@@ -532,9 +595,26 @@ class MeshService(
         // 总是落库（昵称可能为空/扫描帧）：保证重启后节点持久化恢复，不再依赖 PING 交换
         val name = if (displayName.isNotBlank()) displayName else existing?.info?.displayName ?: ""
         runCatching { store.upsertPeer(peerId, name, now, existing?.info?.hops ?: 1) }
+        // v1.1.0：该节点变成一跳直连 → 移除"经中继可达"路由条目（一跳优先，避免重复显示）
+        if (routeEntries.remove(peerId) != null) Log.d(TAG, "route via-relay dropped: $peerId now direct")
         // 同步刷新 peers 流：仅当前 peer 被显式更新为 ONLINE，其他 peer 保留 heartbeatTick 状态机裁决的 presence
         // （修复：原代码全员 copy(lost=false, presence=ONLINE) 覆盖所有 peer，与状态机打架 → 失联 peer 以 1Hz 抖动）
-        _peers.value = peerEntries.values.map { it.info }
+        refreshPeers()
+    }
+
+    /**
+     * 刷新 peers 流：一跳节点（peerEntries，presence 由状态机裁决）+ 2 跳节点（routeEntries 合成，
+     * relayVia 非空，presence 恒 ONLINE——UI 层据此显示"经中继可达"）。
+     */
+    private fun refreshPeers() {
+        val twoHop = routeEntries.entries.map { (peerId, r) ->
+            MeshPeerInfo(
+                shortId = peerId, deviceAddress = "", rssi = 0, hops = r.hops,
+                displayName = "", lost = false, presence = PeerPresence.ONLINE,
+                relayVia = r.via, lastSeenAt = r.lastSeenAt,
+            )
+        }
+        _peers.value = peerEntries.values.map { it.info } + twoHop
     }
 
     /**
@@ -562,10 +642,56 @@ class MeshService(
                     .getOrNull() ?: return
                 handleEnvelope(envelope)
             }
-            FrameType.RECEIPT -> handleReceipt(frame)
+            FrameType.RECEIPT -> {
+                // v1.1.0 中继转发：确认沿网络泛洪回传（A←B←C 双向可及）——"receipt-$id" 去重键防环。
+                // 中间节点（非发送方）收到未见过回执转发一次；发送方收到自己的回执只确认不转发
+                // （泛洪终点，停止重发，避免无谓的多一跳广播）。
+                val id = Regex("\"id\":\"([^\"]+)\"").find(frame.payloadText)?.groupValues?.get(1)
+                if (id != null) {
+                    if (pendingReceipts.containsKey(id)) {
+                        handleReceipt(frame)
+                    } else {
+                        val key = "receipt-$id"
+                        if (!dedup.contains(key)) {
+                            dedup.mark(key)
+                            transport.broadcast(frame)
+                        }
+                        handleReceipt(frame)
+                    }
+                } else {
+                    handleReceipt(frame)
+                }
+            }
             else -> Unit // HELLO/ACK/PING 由传输层处理
         }
     }
+
+    /**
+     * 中继转发 outbox 重发（tick 每 200ms 调用）：转发帧丢帧兜底。
+     * 每条目每 OUTBOX_RESEND_INTERVAL_MS（1s）最多重发一次；重试 OUTBOX_MAX_ATTEMPTS（3 次）或过期即移除。
+     * 转发与投递共用 envelope id 去重，重复广播由对端 DedupCache 收敛。
+     */
+    internal fun resendOutbox(now: Long) {
+        val entries = runCatching { store.nextOutbox(now) }.getOrDefault(emptyList())
+        for (e in entries) {
+            val last = outboxLastSent[e.id]
+            if (last != null && now - last < OUTBOX_RESEND_INTERVAL_MS) continue
+            val attempts = outboxAttempts[e.id] ?: e.attempts
+            if (attempts >= OUTBOX_MAX_ATTEMPTS || now >= e.expireAt) {
+                runCatching { store.removeOutbox(e.id) }
+                outboxLastSent.remove(e.id)
+                outboxAttempts.remove(e.id)
+                continue
+            }
+            outboxLastSent[e.id] = now
+            outboxAttempts[e.id] = attempts + 1
+            val env = runCatching { MeshJson.decodeEnvelope(e.envelopeJson) }.getOrNull() ?: continue
+            broadcastData(env)
+        }
+    }
+
+    /** 查询对端是否经中继可达（v1.1.0）：命中路由表返回经由节点 shortId，否则 null。 */
+    fun relayViaFor(peerId: String): String? = routeEntries[peerId]?.via
 
     private fun handleEnvelope(envelope: MeshEnvelope) {
         if (envelope.srcId == identity.shortId) return // 忽略自身回环帧
@@ -608,6 +734,8 @@ class MeshService(
                 // 心跳广播帧：仅处理发往本机/广播；回 PONG 双向确认在线，同时交换昵称
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
+                // v1.1.0：从 PING 携带的 relays 学习 2 跳路由（每 3 次心跳搭一次便车）
+                (envelope.body as? PresenceBody)?.let { learnRoutes(envelope.srcId, it) }
                 // 对方在线 → 立即重发未确认消息（后台恢复场景秒级收敛，不等 3s 定时）
                 resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
                 // 硬实时送达确认：回 PONG 携带本机已收到的对端消息 id——确认搭心跳便车，
@@ -656,14 +784,22 @@ class MeshService(
             else -> {
                 // 投递以目标寻址为准：发往本机的消息直接投递，不依赖会话白名单
                 //（会话是内存态，重启即空；若按 srcId in sessions 拦截，会话丢失后消息被误丢）
-                if (envelope.dstId.isBlank() || envelope.dstId == identity.shortId || envelope.srcId in _sessions.value) {
+                if (envelope.kind == "TEXT") {
+                    // v1.1.0 纯中继：任何设备收到的非本机 TEXT 帧都转发（无需会话关系）——
+                    // 路过的设备天然当路由器；TTL≤1 不再转发（防无限扩散）。转发带抖动错开多机同步广播。
+                    if (envelope.dstId == identity.shortId || envelope.dstId.isBlank()) {
+                        route(envelope)
+                    } else if (envelope.ttl - 1 > 0) {
+                        route(envelope, jitter = true)
+                    }
+                } else if (envelope.dstId.isBlank() || envelope.dstId == identity.shortId || envelope.srcId in _sessions.value) {
                     route(envelope)
                 }
             }
         }
     }
 
-    private fun route(envelope: MeshEnvelope) {
+    private fun route(envelope: MeshEnvelope, jitter: Boolean = false) {
         when (val decision = ForwardingDecision(identity.shortId, dedup).decide(envelope)) {
             ForwardDecision.Deliver -> {
                 Log.d(TAG, "deliver kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId}")
@@ -696,7 +832,15 @@ class MeshService(
                         expireAt = System.currentTimeMillis() + OUTBOX_TTL_MS,
                     ),
                 )
-                transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(forwarded).toByteArray()))
+                // 转发抖动（v1.1.0）：错开多机同步转发，防广播风暴。
+                // 本机发起的消息（route 默认 jitter=false）直接广播不等；只有"收到他人帧后转发"才抖动。
+                if (jitter) {
+                    val j = FORWARD_JITTER_MIN_MS +
+                        Random.nextLong(FORWARD_JITTER_MAX_MS - FORWARD_JITTER_MIN_MS + 1)
+                    scope.launch { delay(j); broadcastData(forwarded) }
+                } else {
+                    broadcastData(forwarded)
+                }
             }
             ForwardDecision.Drop -> {
                 // 重复 TEXT（发送方超时重发等确认）：本机已投递过，补发回执让发送方收敛，不再重复落库
@@ -705,7 +849,14 @@ class MeshService(
         }
     }
 
+    /** 广播 DATA 帧（转发/重发共用出口）。 */
+    private fun broadcastData(envelope: MeshEnvelope) {
+        transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray()))
+    }
+
     private fun sendReceipt(envelope: MeshEnvelope) {
+        // 本机发出的回执登记去重：广播回环时不再当转发帧处理（回执泛洪仅由中间节点转发）
+        dedup.mark("receipt-${envelope.id}")
         val receipt = "{\"id\":\"${envelope.id}\",\"srcId\":\"${envelope.srcId}\",\"dstId\":\"${envelope.dstId}\"}"
         transport.broadcast(MeshFrame(FrameType.RECEIPT, receipt.toByteArray()))
     }

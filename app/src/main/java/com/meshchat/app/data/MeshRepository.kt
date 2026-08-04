@@ -96,16 +96,20 @@ class MeshRepositoryImpl(
         return MeshPeer(
             name = displayName.ifBlank { shortId }, shortId = shortId, hops = hops, strength = strength,
             rssi = rssi, lost = lost, reachable = !lost, presence = presence, lastSeenAt = lastSeenAt,
+            relayVia = relayVia,
         )
     }
 
     private fun com.meshchat.app.mesh.storage.StoredMessage.toUiModel(): ChatMessage {
         val time = SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(ts))
+        val sentByMe = srcId == service.shortId
+        // v1.1.0：发往 2 跳目标（经中继可达）的消息，送达文案追加"经中继"标注路径
+        val viaRelay = sentByMe && service.relayViaFor(dstId) != null
         val delivery = when (status) {
             MessageStatus.SENDING -> "正在通过 Mesh 发送"
             MessageStatus.DELIVERED -> "已通过 Mesh 送达"
             MessageStatus.FAILED -> "未送达"
-        }
+        } + if (viaRelay) " · 经中继" else ""
         val file = if (kind == "FILE") {
             val meta = runCatching {
                 kotlinx.serialization.json.Json.decodeFromString<Map<String, String>>(fileMeta ?: "{}")

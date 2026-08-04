@@ -37,6 +37,8 @@ data class PresenceBody(
     val displayName: String,
     /** 心跳确认携带：本机已收到的对端消息 id 列表（送达确认随 PING/PONG 往返，复用已验证通畅的心跳通道，不依赖丢帧的独立回执广播）。 */
     val ackIds: List<String> = emptyList(),
+    /** 中继路由（v1.1.0）：本机一跳邻居 shortId 列表，随 PING 每 3 次携带一次（3s），对端据此学习 2 跳路由。 */
+    val relays: List<String> = emptyList(),
 ) : EnvelopeBody
 
 @Serializable

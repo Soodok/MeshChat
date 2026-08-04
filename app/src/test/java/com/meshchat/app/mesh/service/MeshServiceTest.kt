@@ -337,13 +337,13 @@ class MeshServiceTest {
         service.stop()
     }
 
-    private fun pingFrame(srcId: String, name: String) = MeshFrame(
+    private fun pingFrame(srcId: String, name: String, relays: List<String> = emptyList()) = MeshFrame(
         FrameType.DATA,
         MeshJson.encodeEnvelope(
             MeshEnvelope(
                 id = UUID.randomUUID().toString(), kind = "PING",
                 srcId = srcId, dstId = "", convId = "conv-$srcId",
-                ttl = 8, ts = 0, body = PresenceBody(displayName = name),
+                ttl = 8, ts = 0, body = PresenceBody(displayName = name, relays = relays),
             ),
         ).toByteArray(),
     )
@@ -787,5 +787,132 @@ class MeshServiceTest {
         service.handleFrame(textFrame("m1", "OTHER", "ME", "hi"))
         assertEquals("重复帧应补发 RECEIPT", 2, transport.broadcastCount)
         assertEquals("不得重复落库", 1, store.queryMessages("conv-OTHER").size)
+    }
+
+    // ===== v1.1.0 多跳中继 =====
+
+    @Test
+    fun `non session peer relays text to third node`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // 中继节点 B：与 A、C 均无会话关系（sessions 空），收到 A→C 的 TEXT 应转发（TTL 递减）
+        service.handleFrame(textFrame("t1", "A", "C", "hi"))
+        Thread.sleep(300)  // 等转发抖动 50-250ms
+        val forwarded = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+            .firstOrNull { it.dstId == "C" }
+        assertTrue("非会话节点应转发 TEXT 到 C", forwarded != null)
+        assertEquals(7, forwarded?.ttl)
+    }
+
+    @Test
+    fun `relayed text is not stored or notified on relay node`() {
+        var notified = 0
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+            onIncomingMessage = { _, _, _ -> notified++ },
+        )
+        service.handleFrame(textFrame("t1", "A", "C", "hi"))
+        Thread.sleep(300)
+        assertEquals("中继节点不得弹通知", 0, notified)
+        assertTrue("中继节点不得落库", store.queryMessages("conv-A").isEmpty())
+    }
+
+    @Test
+    fun `receipt is forwarded once and deduplicated`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(receiptFrame("t1"))
+        assertEquals("首次收到回执应转发一次", 1, transport.broadcastCount)
+        service.handleFrame(receiptFrame("t1"))
+        assertEquals("重复回执去重不转发", 1, transport.broadcastCount)
+    }
+
+    @Test
+    fun `ping carries relays every third heartbeat`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // 先让 B 成为本机一跳新鲜邻居（lastSeen 距今 ≤10s）
+        service.handleFrame(pingFrame("B", "老王"))
+        val t0 = System.currentTimeMillis()
+        service.heartbeatTick(t0)          // PING #1
+        service.heartbeatTick(t0 + 1_000)  // PING #2
+        service.heartbeatTick(t0 + 2_000)  // PING #3 → 携带 relays
+        val pings = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+            .filter { it.kind == "PING" && it.srcId == "ME" }
+        assertEquals(3, pings.size)
+        assertEquals("前 2 次心跳不带 relays", emptyList<String>(), (pings[0].body as PresenceBody).relays)
+        assertEquals(emptyList<String>(), (pings[1].body as PresenceBody).relays)
+        assertEquals("第 3 次心跳携带一跳邻居", listOf("B"), (pings[2].body as PresenceBody).relays)
+    }
+
+    @Test
+    fun `route entries learned from ping relays`() {
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // B 广播 PING 携带其一跳邻居 C → 本机学习"C 经 B 可达（2 跳）"
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("C")))
+        val c = service.peers.value.firstOrNull { it.shortId == "C" }
+        assertTrue("应学习 2 跳路由 C→via B", c != null)
+        assertEquals("B", c?.relayVia)
+        assertEquals(2, c?.hops)
+    }
+
+    @Test
+    fun `route entries expire when relay goes offline`() {
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("C")))
+        assertTrue("学习后 C 应可达", service.peers.value.any { it.shortId == "C" })
+        // 中继 B 心跳超时（> OFFLINE_THRESHOLD_MS=15s）→ 经它的路由移除
+        service.heartbeatTick(t0 + 20_000)
+        assertTrue("中继失联后路由应过期", service.peers.value.none { it.shortId == "C" })
+    }
+
+    @Test
+    fun `ping pong are not forwarded`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // PING 只触发本机回 PONG（1 次广播），PING 本身不转发
+        service.handleFrame(pingFrame("B", "老王"))
+        val dataFrames = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+        assertEquals("PING 不应被转发，仅回 PONG", 1, dataFrames.size)
+        assertEquals("PONG", dataFrames[0].kind)
+        // PONG 不产生任何转发广播
+        val pongFrame = MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(
+                MeshEnvelope(
+                    id = "p1", kind = "PONG", srcId = "B", dstId = "ME", convId = "conv-ME",
+                    ttl = 8, ts = 0, body = PresenceBody(displayName = "老王"),
+                ),
+            ).toByteArray(),
+        )
+        service.handleFrame(pongFrame)
+        assertEquals("PONG 不应产生广播", 1, transport.broadcastCount)
     }
 }

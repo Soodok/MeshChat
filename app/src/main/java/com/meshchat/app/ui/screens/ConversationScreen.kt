@@ -58,6 +58,7 @@ fun ConversationScreen(
     title: String,
     connected: Boolean,
     peerPresence: com.meshchat.app.mesh.transport.PeerPresence?,
+    relayVia: String = "",  // v1.1.0：对端经中继可达时的经由节点（空 = 一跳）
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
     onPickFile: (() -> Unit)? = null,
@@ -104,7 +105,7 @@ fun ConversationScreen(
     }
     Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
         // 会话状态 + 对端网络状况已合并进标题栏（名字下方一行），不再单独占内容空间
-        ConversationHeader(title, connected, peerPresence, onBack)
+        ConversationHeader(title, connected, peerPresence, relayVia, onBack)
         Text(
             today,
             color = TextSecondary,
@@ -152,6 +153,7 @@ private fun ConversationHeader(
     title: String,
     connected: Boolean,
     peerPresence: com.meshchat.app.mesh.transport.PeerPresence?,
+    relayVia: String = "",
     onBack: () -> Unit,
 ) {
     Row(
@@ -174,6 +176,8 @@ private fun ConversationHeader(
                 else -> MeshAmber
             }
             val statusText = when {
+                // v1.1.0：对端非一跳但在线，经中继可达——消息由中间节点转发
+                relayVia.isNotBlank() -> "经 $relayVia 可达 · 消息经中继送达"
                 !connected -> "等待对方接受对话请求…"
                 presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
                 presence == com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
