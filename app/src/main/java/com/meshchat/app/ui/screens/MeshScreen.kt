@@ -301,12 +301,18 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = ageText,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
+                )
+                Spacer(Modifier.width(8.dp))
                 SignalBars(peer.strength)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "${peer.rssi} dBm" + ageText,
+                    text = "${peer.rssi} dBm",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
+                    color = TextSecondary,
                 )
             }
             val statusText = when (peer.presence) {
