@@ -17,6 +17,8 @@ data class MeshPeerInfo(
     val presence: PeerPresence = PeerPresence.ONLINE,
     /** 对端随广播（扫描响应）携带的送达确认键：本机已收到消息的压缩标识——扫描即可读到，无需 GATT 连接。 */
     val ackKeys: List<ByteArray> = emptyList(),
+    /** 最后收到对端任何帧的时刻（ms）：帧到达即刷新，UI 据此显示"X 秒前信号"，远距离断连可直观感知。 */
+    val lastSeenAt: Long = 0,
 )
 
 interface MeshTransport {

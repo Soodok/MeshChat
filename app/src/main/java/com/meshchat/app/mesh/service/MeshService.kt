@@ -184,10 +184,11 @@ class MeshService(
                 info.ackKeys.forEach { key -> confirmByAckKey(key) }
                 val now = System.currentTimeMillis()
                 val existing = peerEntries[info.shortId]
-                // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖
+                // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖；
+                // lastSeenAt 每次扫描帧到达都刷新 → info 必变 → _peers 流必 emit
                 val displayName = existing?.info?.displayName ?: ""
                 peerEntries[info.shortId] = PeerEntry(
-                    if (existing != null) info.copy(displayName = displayName) else info,
+                    if (existing != null) info.copy(displayName = displayName, lastSeenAt = now) else info.copy(lastSeenAt = now),
                     lastSeen = now, lost = false,
                 )
                 // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
@@ -510,12 +511,14 @@ class MeshService(
         if (existing != null) {
             existing.lastSeen = now
             existing.lost = false
-            // 显式更新当前 peer 为在线；displayName 为空时保留已学昵称（不覆盖）
+            // 显式更新当前 peer 为在线；displayName 为空时保留已学昵称（不覆盖）。
+            // lastSeenAt 每次帧到达都刷新 → info 必变 → _peers 流必 emit → UI 每帧刷新（远距离断连可感知）
             val updatedName = if (displayName.isNotBlank()) displayName else existing.info.displayName
             existing.info = existing.info.copy(
                 displayName = updatedName,
                 lost = false,
                 presence = PeerPresence.ONLINE,
+                lastSeenAt = now,
             )
         } else {
             peerEntries[peerId] = PeerEntry(

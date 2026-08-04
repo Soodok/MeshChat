@@ -393,6 +393,9 @@ class MeshServiceTest {
         service.handleFrame(pingFrame("B", "Bob"))
         assertEquals("被 markSeen 的 peer 应在线", PeerPresence.ONLINE, service.peers.value.firstOrNull { it.shortId == "B" }?.presence)
         assertEquals("其他 peer 不应被乐观覆盖为在线", PeerPresence.SEARCHING, service.peers.value.firstOrNull { it.shortId == "C" }?.presence)
+        // 帧到达应刷新 lastSeenAt（UI 据此显示"X 秒前信号"）
+        val lastSeen = service.peers.value.firstOrNull { it.shortId == "B" }?.lastSeenAt ?: 0L
+        assertTrue("帧到达应刷新 lastSeenAt", System.currentTimeMillis() - lastSeen < 2_000)
         // 昵称为空（扫描帧）不覆盖已学昵称
         service.handleFrame(pingFrame("B", ""))
         assertEquals("空昵称应保留已学名", "Bob", service.peers.value.firstOrNull { it.shortId == "B" }?.displayName)
