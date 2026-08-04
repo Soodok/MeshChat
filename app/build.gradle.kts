@@ -13,8 +13,8 @@ android {
         applicationId = "com.meshchat.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 60
-        versionName = "1.0.24"
+        versionCode = 61
+        versionName = "1.0.25"
     }
 
     buildFeatures {

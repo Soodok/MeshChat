@@ -142,7 +142,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         // 本机（保留物理状态）
         val oldMe = existing["ME"]
         nodes.add(TopoNode(
-            id = "ME", name = "你", short = "ME", kind = TopoKind.ME, hops = 0, r = 16f * scale,
+            id = "ME", name = "你", short = "ME", kind = TopoKind.ME, hops = 0, r = 10f * scale,
             x = oldMe?.x ?: cx, y = oldMe?.y ?: cy,
             vx = oldMe?.vx ?: 0f, vy = oldMe?.vy ?: 0f,
         ))
@@ -155,7 +155,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 else -> TopoKind.REACHABLE
             }
             val old = existing[peer.shortId]
-            val r = (if (peer.hops <= 1) 16f else if (peer.hops == 2) 13f else 11f) * scale
+            val r = (if (peer.hops <= 1) 10f else if (peer.hops == 2) 8f else 7f) * scale
             nodes.add(TopoNode(
                 id = peer.shortId, name = peer.name, short = peer.shortId.take(2),
                 kind = actualKind, hops = peer.hops, r = r,
@@ -372,10 +372,10 @@ private class TopoEdge(val a: String, val b: String)
  *  所有尺寸基于 scale = min(w,h)/BASE_CANVAS 缩放，适配不同分辨率/屏幕大小 */
 private fun topologyPhysicsStep(nodes: List<TopoNode>, edges: List<TopoEdge>, w: Float, h: Float, pinnedId: String? = null) {
     val scale = minOf(w, h) / BASE_CANVAS
-    val repulsion = 3500f * scale * scale   // 库仑斥力系数（与距离平方反比，系数需 ∝ scale² 保持视觉一致）
+    val repulsion = 2600f * scale * scale   // 库仑斥力系数（与距离平方反比，系数需 ∝ scale² 保持视觉一致）
     val springK = 0.008f                    // 本机↔peer 弹簧刚度
     val meshSpringK = 0.003f                // peer↔peer mesh 骨干弹簧刚度（弱，避免拉成直线）
-    val springLen = 80f * scale             // 弹簧自然长度（节点变小，间距收紧）
+    val springLen = 60f * scale             // 弹簧自然长度（节点变小，间距收紧）
     val damping = 0.9f                      // 速度阻尼
     val jitter = 0.05f * scale              // 微扰
     val maxSpeed = 6f * scale               // 限速
@@ -475,7 +475,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMeshEdges(
         drawLine(
             color = Cyan.copy(alpha = 0.15f),
             start = Offset(a.x, a.y), end = Offset(b.x, b.y),
-            strokeWidth = 1.5f * scale,
+            strokeWidth = 1.2f * scale,
             cap = StrokeCap.Round,
         )
     }
@@ -495,17 +495,17 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
         when (n.kind) {
             TopoKind.SEARCHING -> drawLine(
                 color = MeshAmber.copy(alpha = 0.6f),
-                start = start, end = end, strokeWidth = 3f * scale,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f * scale, 5f * scale), 0f),
+                start = start, end = end, strokeWidth = 2.2f * scale,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f * scale, 4f * scale), 0f),
             )
             TopoKind.DIRECT -> drawLine(
                 color = MeshGreen.copy(alpha = 0.8f),
-                start = start, end = end, strokeWidth = 3.5f * scale,
+                start = start, end = end, strokeWidth = 2.6f * scale,
                 cap = StrokeCap.Round,
             )
             TopoKind.REACHABLE -> drawLine(
                 color = Cyan.copy(alpha = 0.25f),
-                start = start, end = end, strokeWidth = 2.5f * scale,
+                start = start, end = end, strokeWidth = 1.8f * scale,
                 cap = StrokeCap.Round,
             )
             TopoKind.ME, TopoKind.STALE -> { /* 不会到达 */ }
@@ -539,13 +539,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
             color = stroke,
             radius = n.r,
             center = Offset(cx, cy),
-            style = Stroke(width = 4f * scale),
+            style = Stroke(width = 3f * scale),
         )
         // 节点内短 ID（monospace）
         drawIntoCanvas { c ->
             val paint = android.graphics.Paint().apply {
                 color = label.toArgb()
-                textSize = 16f * scale
+                textSize = 11f * scale
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
                 typeface = android.graphics.Typeface.MONOSPACE
@@ -557,9 +557,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
         // 本机下方小三角标识
         if (n.kind == TopoKind.ME) {
             val p = androidx.compose.ui.graphics.Path().apply {
-                moveTo(cx, cy + n.r + 4f * scale)
-                lineTo(cx - 5f * scale, cy + n.r + 12f * scale)
-                lineTo(cx + 5f * scale, cy + n.r + 12f * scale)
+                moveTo(cx, cy + n.r + 3f * scale)
+                lineTo(cx - 4f * scale, cy + n.r + 9f * scale)
+                lineTo(cx + 4f * scale, cy + n.r + 9f * scale)
                 close()
             }
             drawPath(p, Cyan.copy(alpha = 0.8f))
@@ -568,11 +568,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
         drawIntoCanvas { c ->
             val paint = android.graphics.Paint().apply {
                 color = Color(0xFFF5F7FA).copy(alpha = 0.9f).toArgb()
-                textSize = 20f * scale
+                textSize = 15f * scale
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
             }
-            c.nativeCanvas.drawText(n.name, cx, cy - n.r - 15f * scale, paint)
+            c.nativeCanvas.drawText(n.name, cx, cy - n.r - 12f * scale, paint)
         }
     }
 }
