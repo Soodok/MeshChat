@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.0.18（versionCode 54，构建时间 2026-08-04 17:10）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.0.19（versionCode 55，构建时间 2026-08-04 17:30）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -150,9 +150,10 @@ app/src/main/java/com/meshchat/app/
 - **v1.0.16 帧到达即刷新 + 信号时间显示**（用户反馈"远距离显示连着但实际断了、想要刷新更频繁"）：根因——markSeen 更新 lastSeen 但该值不在 UI 数据里，帧稀疏时 info 内容不变 → StateFlow 不 emit → UI 永远显示在线。修复：`MeshPeerInfo` 新增 `lastSeenAt`（最后收到帧时刻），markSeen/扫描帧每次到达都更新 → **info 必变 → _peers 流必 emit → 帧到达即刷新**；`MeshPeer` 透传，MeshScreen PeerRow 新增 ticker 显示"**信号时间**"。失联 peer 状态不被拉起，抖动不回潮。
 - **v1.0.17 信号时间毫秒精度**（用户指定"做成毫秒吧"）：PeerRow ticker 100ms，**<1s 显示 `Xms前`、≥1s 显示 `Xs前`**——近距离帧密集能看到毫秒级跳动（0ms→900ms→归零），远距离断连数字持续增大。
 - **v1.0.18 拓扑图四项优化**（用户反馈"整体靠中间/失联 15s 消失/相对大小"）：① **中心引力** `centerK=0.0015`——所有非 pinned 节点向画布中心微弱拉拢，运动时被弹簧/斥力盖过、静止时主导把整体拉回中间（拖拽中跳过）② **失联 15s 移除** `STALE_TTL_MS=15_000`——STALE 节点超时从拓扑图消失（PeerRow 列表仍保留），`TopoNode.staleAt` 记录首次变 STALE 时刻，跨同步继承 ③ **相对大小** `BASE_CANVAS=360`——所有尺寸（节点半径/弹簧长度/边距/字号/线宽/三角/命中半径）基于 `scale = min(w,h)/360` 缩放，适配不同分辨率/屏幕大小 ④ 斥力系数 ∝ scale²（保持视觉一致），margin 80→60（给中心引力更多空间）。测试 64/64 通过，APK 19,192,426 B。
+- **v1.0.19 三项修复**（用户反馈"等级取消/拓扑图小一点/失联节点 15s 又出现"）：① **PeerRow 去掉等级标签**——只显示 `${rssi} dBm` + ageText，删 `BluetoothQuality` import ② **拓扑图缩小** `aspectRatio 1f → 0.85f`——高度比宽度短，整体视觉小一点 ③ **STALE 15s 重现 bug 根治**——根因：v1.0.18 的 `staleAt` 存在 `TopoNode` 里，节点被移除后 `existing` 不再包含它，下次同步 `old=null` → `staleAt` 重置为 now → 15s 重计时 → 永远超不了时。修复：用独立的 `staleAtMap: mutableStateMapOf<String, Long>()` 跨同步持久化，不依赖 nodes 列表是否还包含该节点；非 STALE 清除记录，STALE 首次记录 now，超时 15s 不加入 nodes。删除 `TopoNode.staleAt` 字段。测试 64/64 通过，APK 19,192,426 B。
 
 ### 下一步首要任务
-0. **v1.0.18 真机验证（当前版本）**：安装 `MeshChat-v1.0.18-debug.apk`，重点看① 拓扑图整体居中：拖拽节点松手后整体缓慢向中间靠拢（中心引力）② 失联节点 15s 后从拓扑图消失（PeerRow 列表仍保留"离线"）③ 相对大小：不同分辨率/屏幕大小设备显示效果一致（节点/字号/线宽随画布缩放）④ 信号时间毫秒显示（v1.0.17）⑤ 聊天列表不抖动、蓝牙重搜、消息收发/文件传输回归。
+0. **v1.0.19 真机验证（当前版本）**：安装 `MeshChat-v1.0.19-debug.apk`，重点看① **失联节点 15s 后真正消失**（不再"消失又出现"循环）② PeerRow 只显示 `dBm`（无"等级X"）③ 拓扑图稍小（aspectRatio 0.85）④ 中心引力/相对大小（v1.0.18）⑤ 信号时间毫秒（v1.0.17）⑥ 聊天列表不抖动、蓝牙重搜、消息收发/文件传输回归。
 1. **v1.0.13 蓝牙重搜验证**：安装 `MeshChat-v1.0.13-debug.apk`，重点复现蓝牙重搜路径：两机先关蓝牙进软件 → 开蓝牙 → 点"重新发现" → 应互相搜到（不再需要重进）。其余回归：Mesh 页拓扑图（力导向/拖拽/三色）、送达确认、滚动、文件传输。
 2. **v1.0.3 推送**：v1.0.3（拓扑图重构）本轮已提交推送 GitHub（v1.0.2 已于上轮推送 `1449bcd`）。
 3. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。

@@ -39,6 +39,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,7 +57,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.MeshPeer
-import com.meshchat.app.mesh.quality.BluetoothQuality
 import com.meshchat.app.mesh.transport.PeerPresence
 import com.meshchat.app.ui.components.SignalBars
 import com.meshchat.app.ui.theme.Cyan
@@ -128,6 +128,8 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
     var canvasH by remember { mutableFloatStateOf(0f) }
     val nodes = remember { mutableStateListOf<TopoNode>() }
     val edges = remember { mutableStateListOf<TopoEdge>() }
+    // STALE 起始时刻跨同步持久化：节点从 nodes 移除后，下次同步仍能判断已超时，避免 15s 重计时
+    val staleAtMap = remember { mutableStateMapOf<String, Long>() }
     var draggingNode by remember { mutableStateOf<TopoNode?>(null) }
     // 帧计数器：触发 Canvas 重绘（节点内部 var 改动不触发重组，靠此驱动）
     var frame by remember { mutableIntStateOf(0) }
@@ -157,16 +159,13 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 else -> TopoKind.REACHABLE
             }
             val old = existing[peer.shortId]
-            // STALE 15s 后从拓扑图移除（PeerRow 列表仍保留显示）
-            if (actualKind == TopoKind.STALE) {
-                val staleAt = old?.staleAt ?: now
-                if (now - staleAt > STALE_TTL_MS) return@forEach  // 超时：不加入 nodes，从图上消失
-            }
-            // staleAt 继承：非 STALE 重置为 0；STALE 保持原时刻（首次变 STALE 用 now）
-            val newStaleAt = when {
-                actualKind != TopoKind.STALE -> 0L
-                old?.staleAt != null && old.staleAt != 0L -> old.staleAt
-                else -> now
+            // STALE 起始时刻用独立 map 持久化（不依赖 nodes 是否还包含该节点）
+            // 非 STALE 清除记录；STALE 首次记录 now，后续保持；超时 15s 不加入 nodes（从图上消失）
+            if (actualKind != TopoKind.STALE) {
+                staleAtMap.remove(peer.shortId)
+            } else {
+                if (peer.shortId !in staleAtMap) staleAtMap[peer.shortId] = now
+                if (now - (staleAtMap[peer.shortId] ?: now) > STALE_TTL_MS) return@forEach
             }
             val r = (if (peer.hops <= 1) 27f else if (peer.hops == 2) 22f else 19f) * scale
             nodes.add(TopoNode(
@@ -175,7 +174,6 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 x = old?.x ?: (cx + (Random.nextFloat() - 0.5f) * 160f * scale),
                 y = old?.y ?: (cy + (Random.nextFloat() - 0.5f) * 160f * scale),
                 vx = old?.vx ?: 0f, vy = old?.vy ?: 0f,
-                staleAt = newStaleAt,
             ))
         }
         // 生成 peer-peer mesh 骨干边（非失联 peer 之间互连）
@@ -205,7 +203,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f)
+                .aspectRatio(0.85f)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                 .background(InkSoft.copy(alpha = 0.4f))
                 .onSizeChanged {
@@ -318,7 +316,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                 SignalBars(peer.strength)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "${peer.rssi} dBm · 等级${BluetoothQuality.grade(peer.rssi).label}" + ageText,
+                    text = "${peer.rssi} dBm" + ageText,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
                 )
@@ -370,8 +368,6 @@ private class TopoNode(
     var y: Float,
     var vx: Float = 0f,
     var vy: Float = 0f,
-    /** 变为 STALE 的时刻（ms），用于 15s 后从拓扑图移除；非 STALE 状态为 0 */
-    var staleAt: Long = 0L,
 )
 
 /** 拓扑边（peer-peer mesh 骨干，v1.0.x 用虚拟边模拟网状结构；v1.1.0 多跳中继后由 routeEntries 驱动）*/
