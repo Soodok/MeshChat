@@ -1,8 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
+}
+
+/** 读取根目录 keystore.properties（正式签名凭证，不入库；缺失时用占位符阻止误发布） */
+private val signingProps: Properties by lazy {
+    Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
 }
 
 android {
@@ -33,20 +43,21 @@ android {
 
     signingConfigs {
         create("release") {
-            // 个人项目：暂用 Android debug keystore 签名 release（保证可安装）；
-            // 正式分发前应替换为专用 keystore
-            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            // 正式签名：keystore.properties 提供凭证（不入库）。
+            // 缺失时占位符保证 assembleRelease 直接失败，防止误发未签名/假签名包
+            storeFile = rootProject.file(signingProps.getProperty("storeFile", "meshchat-release.keystore"))
+            storePassword = signingProps.getProperty("storePassword", "NO_SIGNING_CONFIG")
+            keyAlias = signingProps.getProperty("keyAlias", "meshchat")
+            keyPassword = signingProps.getProperty("keyPassword", "NO_SIGNING_CONFIG")
         }
     }
 
     buildTypes {
         release {
-            // 首次 release：不开混淆（无 proguard-rules.pro，Room/Compose/序列化需 keep 规则，
-            // 混淆会导致运行时崩溃）；后续如需精简体积再补规则文件开启 R8
-            isMinifyEnabled = false
+            // R8 混淆 + 资源压缩（上架正式包）：serialization/Room keep 规则见 proguard-rules.pro
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
     }

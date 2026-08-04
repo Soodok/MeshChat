@@ -10,6 +10,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
 - **当前版本：v1.0.25（versionCode 61，构建时间 2026-08-04 18:45）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
+- **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`

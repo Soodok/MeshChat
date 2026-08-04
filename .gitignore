@@ -22,3 +22,7 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 签名（禁止入库！keystore + 密码丢失将无法更新上架版本）
+*.keystore
+keystore.properties
