@@ -1,24 +1,83 @@
-# MeshChat Android 前端
+# MeshChat
 
-MeshChat 是面向无公网或弱网场景的近场安全通信应用。本工程仅包含 Android 客户端前端：界面、导航、交互状态和演示数据。
+面向**无公网 / 弱网极端环境**的近场安全通信 Android 应用。
 
-## 已实现
+不依赖基站、Wi-Fi 路由或任何互联网基础设施，通过蓝牙在设备间自组织形成去中心化网状网络（Mesh）：设备互相发现、建立对话、收发消息与文件。适用于灾后应急、野外作业、地下空间、隔离区等场景。
 
-- Jetpack Compose 深色视觉系统：墨蓝底色、Mesh 青色强调、绿色连接状态
-- 聊天列表：在线/待路由状态、未读提醒、端到端加密提示
-- 单聊界面：2 跳连接状态、消息气泡与可用的本地消息发送交互
-- Mesh 界面：拓扑概览、邻近节点列表、信号强度和发现入口
-- 我的页面：身份密钥与通用设置入口
-- 设备内嵌后端服务框架：帧协议/消息信封、LRU 去重、TTL 转发决策、短 ID 身份、Room 持久化、MeshService 发送-转发-投递-回执编排、MeshRepository 前端数据源接入（演示级加密占位，BLE 真机联调待硬件环境）
+## 特性
+
+**通信链路（BLE 真机验证）**
+
+- 蓝牙发现：Service Data 携带短 ID 识别节点，扫描即持久化恢复
+- 对话握手：INVITE → INVITE_ACK 会话锁定，ACK 持续重发收敛（30s 窗口），杜绝握手丢帧
+- 消息收发：双向实时到达，TTL=8 转发决策 + LRU 去重
+- 三层送达确认：RECEIPT 回执 / PONG 携带 ackIds / 广播确认键（扫描响应），广播丢帧场景必收敛
+- 文件传输：窗口滑动 + bitmap 缺失确认，接收端落盘 Downloads，进度实时
+- 心跳校准：1s PING / 200ms 状态刷新，在线-断线重连-离线三色状态机 + 信号时间（毫秒级）显示
+- 后台常驻：前台服务 + 通知直达，蓝牙关→开自动重建传输层
+
+**Mesh 拓扑可视化**
+
+- 力导向网状布局：库仑斥力 + 弹簧力 + 中心引力，去中心化自然分布
+- 节点可拖拽，松手自动回归物理模拟
+- 状态色制：直连绿 / 可达蓝 / 寻找中黄虚线，失联节点不显示
+- 相对尺寸自适应：节点、连线、字号随画布缩放，不同分辨率表现一致
+
+**工程**
+
+- 深色高信息密度视觉：墨蓝底色、Mesh 青色强调、终端风格等宽字体
+- 64 项单元测试通过（协议/路由/存储/服务编排/传输）
+- 正式签名 + R8 混淆 release 包（约 1.5 MB）
+
+## 架构
+
+```
+app/src/main/java/com/meshchat/app/
+├── data/            # 前端数据源（MeshRepository 契约 + 实现）
+├── mesh/
+│   ├── protocol/    # 帧编解码、消息信封 + TEXT/FILE 载荷、JSON 序列化
+│   ├── routing/     # LRU 去重表、转发决策
+│   ├── identity/    # 短 ID 身份（持久化）
+│   ├── storage/     # Room 持久化（消息/节点/会话）
+│   ├── transfer/    # 文件传输引擎（窗口/ACK 状态机）
+│   ├── service/     # MeshService：发送-转发-投递-回执编排 + 前台服务
+│   └── transport/   # BLE 传输（GATT 双通道）、传输抽象
+└── ui/              # Compose 界面（聊天/拓扑/设置/身份）
+```
+
+设备内嵌去中心化后端：每个节点既是客户端也是中继，消息通过邻居逐跳转发，无中心服务器。
+
+## 技术栈
+
+- Kotlin 2.2.10 · Jetpack Compose · Material3
+- AGP 9.0.0 · Gradle 9.1.0 · KSP · Room 2.7 · kotlinx-serialization
+- minSdk 26（Android 8.0）/ targetSdk 36
+
+## 构建与运行
+
+```bash
+# 单元测试
+./gradlew testDebugUnitTest
+
+# 正式包（R8 混淆 + 签名；需 keystore.properties，见下文）
+./gradlew assembleRelease
+```
+
+- 用 Android Studio 打开工程根目录，同步后运行 `app` 模块
+- 需要真机蓝牙（API 26+）；Android 11 及以下还需开启系统位置服务（BLE 扫描依赖）
+- 正式签名凭证存放在 `keystore.properties`（不入库）。**keystore 与密码务必自行备份，丢失将无法更新已发布版本**
 
 ## 边界
 
-本工程尚未实现或模拟：真实 BLE 链路联调（传输层代码已就绪，待硬件环境验证）、Wi-Fi Direct、真实密钥生成与加密（当前为演示级占位接口）。Mesh 路由、消息转发与本地持久化逻辑已由设备内嵌后端框架实现；页面中的连接、路由、加密提示仍以前端演示状态呈现，待 BLE 真机联调后由真实数据驱动。
-
-## 运行
-
-在 Android Studio 打开 `E:\MeshChat Project`，使用本机 Android SDK（API 36）同步并运行 `app` 模块。建议使用 Android 8.0（API 26）或以上模拟器/真机。
+- 端到端加密当前为演示级占位（Cipher 接口预留），未接入真实密钥协商
+- 多跳中继（>1 跳转发）协议与路由设计已就绪，v1.1.0 实装中
+- Wi-Fi Direct 高速载体、群聊为规划项
+- 蓝牙传输有效范围受设备与遮挡影响，空旷室内通常为数十米内（实测以机型为准）
 
 ## 设计基准
 
-融合后的视觉基准图保存在 `design/meshchat-visual-baseline.png`，后续页面应保持同一色彩、间距、图标与层级语言。
+视觉基准图见 `design/meshchat-visual-baseline.png`：墨蓝底色、青色强调、绿色连接、高信息密度终端风格。
+
+## 许可
+
+MIT License（待补充）。
