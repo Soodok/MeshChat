@@ -47,6 +47,7 @@ private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
 private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校准一次
 private const val LOST_HEARTBEAT_MS = 2_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1 帧丢失，更灵敏）
 private const val OFFLINE_THRESHOLD_MS = 15_000L  // 无心跳超过该时长 → 离线（保留显示置黑，更快反映失联）
+private const val SEARCHING_TIMEOUT_MS = 6_000L   // 持久化恢复后 6 秒仍未找到 → 自动失联（避免无限寻找）
 private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送达回执的等待时间，超时重发（更快确认）
 private const val MAX_RESEND_INTERVAL_MS = 30_000L // 重发退避封顶：3s→6s→12s→24s→30s，永不 FAILED（零容错，持续确认）
 private const val RECEIPT_REPEAT_INTERVAL_MS = 3_000L    // 接收方重复回执周期（近期消息周期性补发）
@@ -132,6 +133,9 @@ class MeshService(
     /** 上次 PING 广播时刻（tick 200ms 节流到 1s）。 */
     private var lastPingAt = 0L
 
+    /** 服务启动时刻（用于持久化恢复节点的寻找超时判定）。 */
+    private val startupAt = System.currentTimeMillis()
+
     /** 待送达确认的 TEXT：id -> (信封, 上次发送时刻, 重试次数, 广播确认键)。回执（RECEIPT）是广播帧可能丢失，需超时重发。 */
     private class PendingText(val envelope: MeshEnvelope, var lastSentAt: Long, var retries: Int = 0, val ackKey: ByteArray)
     private val pendingReceipts = LinkedHashMap<String, PendingText>()
@@ -202,6 +206,19 @@ class MeshService(
                 transfer.tick(now)
             }
         }
+    }
+
+    /**
+     * 强制重新搜索：停掉并重建 BLE 传输层，清空遗留状态。
+     *
+     * 适用场景：进入 App 时蓝牙未开启（transport.start() 静默失败但 started 已置位），
+     * 之后开启蓝牙——此时 start() 幂等守卫会直接返回，BLE 广播/扫描永远不会重建，
+     * 只能重进 App 恢复。此方法绕过守卫，stop+start 重建传输层（连接/订阅/队列全清）。
+     */
+    fun restartDiscovery() {
+        Log.w(TAG, "restartDiscovery: rebuild BLE transport, clear stale state")
+        runCatching { transport.stop() }
+        runCatching { transport.start() }
     }
 
     fun stop() {
@@ -403,7 +420,8 @@ class MeshService(
             val entry = iterator.next().value
             val age = now - entry.lastSeen
             val presence = when {
-                entry.lastSeen == 0L -> PeerPresence.SEARCHING            // 持久化恢复，从未在本会话见过
+                entry.lastSeen == 0L && now - startupAt < SEARCHING_TIMEOUT_MS -> PeerPresence.SEARCHING  // 持久化恢复，6s 内寻找中
+                entry.lastSeen == 0L -> PeerPresence.OFFLINE              // 6s 仍未找到 → 自动失联
                 age < LOST_HEARTBEAT_MS -> PeerPresence.ONLINE            // 有心跳 → 在线
                 age < OFFLINE_THRESHOLD_MS -> PeerPresence.RECONNECTING   // 短暂失联 → 断线重连中
                 else -> PeerPresence.OFFLINE                              // 长时间无响应 → 离线（保留）

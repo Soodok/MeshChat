@@ -43,8 +43,10 @@ class MeshServiceTest {
         var frames = mutableListOf<MeshFrame>()
         override val incoming = inner.incoming
         override val foundPeers = inner.foundPeers
-        override fun start() = inner.start()
-        override fun stop() = inner.stop()
+        var startCount = 0
+        var stopCount = 0
+        override fun start() { startCount++; inner.start() }
+        override fun stop() { stopCount++; inner.stop() }
         override fun broadcast(frame: MeshFrame) {
             broadcastCount++
             frames.add(frame)
@@ -359,6 +361,21 @@ class MeshServiceTest {
 
     private fun dataKinds(frames: List<MeshFrame>): List<String> =
         frames.mapNotNull { runCatching { MeshJson.decodeEnvelope(it.payloadText) }.getOrNull()?.kind }
+
+    @Test
+    fun `restart discovery rebuilds transport to clear stale state`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        assertEquals(1, transport.startCount)
+        // 蓝牙从关到开/连接残留：强制重建传输层（绕过 start 幂等守卫）
+        service.restartDiscovery()
+        assertEquals("强制重搜应重建传输层", 2, transport.startCount)
+        assertTrue("应先停止旧传输层以清空遗留状态", transport.stopCount >= 1)
+        service.stop()
+    }
 
     @Test
     fun `ping replies pong and records peer name`() {

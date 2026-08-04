@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.0.4（versionCode 40，构建时间 2026-08-03 23:42）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.0.13（versionCode 49，构建时间 2026-08-04 08:06）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
 - 注意：`gradle.properties` 中 `android.disallowKotlinSourceSets=false`（AGP 9 内置 Kotlin 与 KSP 集成的必要豁免，实验性）
 - 视觉基准：`design/meshchat-visual-baseline.png`
@@ -129,13 +129,14 @@ app/src/main/java/com/meshchat/app/
   - **数据驱动**：`MeshTopology(peers, sessions)` 直接消费现有 `List<MeshPeer>` + `Set<String>`，无新数据模型。v1.0.x 三色映射：sessions 包含→绿、presence==OFFLINE→灰、其余→蓝。
   - **点阵网格背景**（Cyan α0.06，24px 间距）+ 圆角 12dp 容器 + 底部统计行（已会话/在线/失联计数）。
   - **后端接口预留**：v1.1.0 多跳中继实装后，只需扩展节点合成逻辑（读 `routeEntries` 补充 REACHABLE 节点 + RELAY 边），UI 零改动。设计规格：`docs/superpowers/specs/2026-08-03-mesh-topology-graph-design.md`。
+- **v1.0.13 蓝牙重搜强制重建**（用户反馈：两机先关蓝牙进软件→开蓝牙→点"重新发现"仍互相搜不到，必须重进一台才能搜到）：根因——进入 App 时蓝牙未开，`BleTransport.start()` 静默失败（runCatching 吞掉）但 `MeshService.started` 已置位；开蓝牙后点重新发现→`service.start()` 幂等守卫直接 return，BLE 永不重建。修复：新增 `MeshService.restartDiscovery()`（`transport.stop()+start()` 强制重建传输层，连接/订阅/队列全清），`MeshRepository.startDiscovery()` 改调 `service.start()+restartDiscovery()`——**"重新发现"按钮现在会强行搜索**。单测 +1（restart discovery rebuilds transport）。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-presence-background-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-presence-background.md`。
   - 规格：`docs/superpowers/specs/2026-08-03-meshchat-rfcomm-transport-design.md`；计划：`docs/superpowers/plans/2026-08-03-meshchat-rfcomm-transport.md`。
-- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → v0.16.0 灵敏度/滚动轮询/最近对话三色持久化 `3608afb` → v0.17.0 确认强化/自动寻找/滚动根治 `b0f9e0d` → v0.18.0 心跳确认搭便车/昵称随消息/Application 启动 `2625b62` → v0.19.0 收到帧即登记可回传/死连接清理/CCCD 重试 `f6ea4f6` → v0.20.0 广播确认通道 `cf722dc` → v1.0.0 正式版发布 `92d03b2` → v1.0.1 信号格数阈值 `c7a9a67` → v1.0.2 对话 UI 头部合并（待提交）→ **v1.0.3 Mesh 拓扑图力导向重构（待提交）**。
+- git 历史：基线 `d138496` → 远程合并 `4d25192` → 设计规格 `3aa4fd4` → 计划 `75dddb0` → 任务 0-11 共 12 个实现提交（最新 `b6a2d2c`）→ 联调提交 `fd10d7d` → 交接块 `ab2f287`/`067618b` → v0.11.0 修复 `9e22674` → v0.12.0 文件传输 8 提交（`a8bdf2b`~`23172bb`）→ v0.13.0 RFCOMM 5 提交（`21a3b62` 分帧 → `c3969cb` transport → `3493324` sendFrame 注入 → `efe9d32` 双传输集成 → 任务 5 装配/交接待提交）→ v0.13.1 RFCOMM 停用 `e8911fb` → v0.14.0 7 提交（`bf96fe7` 协议/身份 → `728a228` upsertPeer → `62b0ff3` 会话持久化 → `b53aa1d` 心跳 → `a5b41b7` 前台服务 → `37e084b` UI → `e356ce6` 装配/交接）→ v0.14.1 卡 SENDING 修复 `e09ea94` → v0.15.0 体验三件套 `36ac5cc` → v0.15.1 节点持久化/滚动/即时重发 `e922dd0` → v0.15.2 零容错 `84fbcd7` → v0.16.0 灵敏度/滚动轮询/最近对话三色持久化 `3608afb` → v0.17.0 确认强化/自动寻找/滚动根治 `b0f9e0d` → v0.18.0 心跳确认搭便车/昵称随消息/Application 启动 `2625b62` → v0.19.0 收到帧即登记可回传/死连接清理/CCCD 重试 `f6ea4f6` → v0.20.0 广播确认通道 `cf722dc` → v1.0.0 正式版发布 `92d03b2` → v1.0.1 信号格数阈值 `c7a9a67` → v1.0.2 对话 UI 头部合并 `1449bcd` → v1.0.3 拓扑图力导向重构 `0248c28` → v1.0.4~1.0.10 拓扑图体验调优/拖拽重写（`bc2e728`/`941c040`/`8b37e40`，前端实装）→ **v1.0.13 蓝牙重搜强制重建（待提交）**。
 
 ### 已验证内容
-- `gradlew testDebugUnitTest`：**63/63 测试通过，0 失败**（含 v0.20.0 广播确认键 2 例、v0.18.0 PONG ackIds/昵称、v0.15.2 退避重发/重复回执、v0.16.0 MeshRepositoryTest 等全部回归）。BleTransport 为 Android 框架层（无 JVM 单测），以真机复现路径验证。
-- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v1.0.3-debug.apk`（19.2MB）。
+- `gradlew testDebugUnitTest`：**64/64 测试通过，0 失败**（v1.0.13 新增 restart discovery 重建传输层；含 v0.20.0 广播确认键、v0.18.0 PONG ackIds/昵称、v0.15.2 退避重发/重复回执、v0.16.0 MeshRepositoryTest 等全部回归）。BleTransport 为 Android 框架层（无 JVM 单测），以真机复现路径验证。
+- `gradlew assembleDebug`：**BUILD SUCCESSFUL**，APK `MeshChat-v1.0.13-debug.apk`（19,176,042 B）。
 - v1.0.3 编译验证：`compileDebugKotlin` SUCCESS（力导向拓扑图 + 物理引擎 + 拖拽手势 + 三色绘制全部编译通过）。
 - **真机三机（A11 GSI / A12 华为 / A16）实测打通**：握手→会话锁定→消息双向到达（MeshSvc 日志确认 `deliver kind=TEXT src=<对端> dst=<本机>` 与 `recv kind=TEXT` 双向出现）。
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
@@ -147,7 +148,7 @@ app/src/main/java/com/meshchat/app/
 - **RFCOMM 已停用（用户决策）**：配对弹窗在华为/GSI 不弹出 + 配对模型对多设备中心拓扑不友好；代码保留未启用。后续提速方向改为 **WiFi Direct**（免配对、中心外设模型天然、吞吐百 MB/s 级，复用 MeshTransport 抽象即可）。
 
 ### 下一步首要任务
-1. **v1.0.3 真机验证（当前版本）**：安装 `MeshChat-v1.0.3-debug.apk`，重点看 Mesh 页拓扑图：① 节点力导向自然分布不卡边缘 ② 拖拽节点流畅、松手回归物理 ③ 三色正确（已会话绿/在线蓝/离线灰）④ 本机 Cyan 实心+下三角 ⑤ 短按选中高亮 ⑥ 统计行计数正确。其余回归：送达确认、滚动、三色状态、文件传输。
+1. **v1.0.13 真机验证（当前版本）**：安装 `MeshChat-v1.0.13-debug.apk`，重点复现蓝牙重搜路径：两机先关蓝牙进软件 → 开蓝牙 → 点"重新发现" → 应互相搜到（不再需要重进）。其余回归：Mesh 页拓扑图（力导向/拖拽/三色）、送达确认、滚动、文件传输。
 2. **v1.0.3 推送**：v1.0.3（拓扑图重构）本轮已提交推送 GitHub（v1.0.2 已于上轮推送 `1449bcd`）。
 3. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
 4. 三机全链路回归：握手→会话→双向消息→文件传输→心跳状态对称→失联重连→多跳转发（TTL 8）。

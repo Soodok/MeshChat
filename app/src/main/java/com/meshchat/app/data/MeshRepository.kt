@@ -60,7 +60,8 @@ class MeshRepositoryImpl(
         service.peers.map { list -> list.map { it.toUiModel() } }
 
     override fun startDiscovery() {
-        service.start()
+        service.start()               // 确保 Mesh 逻辑已启动（幂等）
+        service.restartDiscovery()    // 强制重建 BLE：清空遗留状态（蓝牙从关到开/连接残留时必需）
     }
 
     override fun localShortId(): String = service.shortId
