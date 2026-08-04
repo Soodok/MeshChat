@@ -144,6 +144,7 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
+- **⚠️ 推送阻塞（网络）**：commit `0f5a732`（上架签名升级）与 tag `v1.0.25` 已在本地，**push 到 GitHub 失败**——`github.com:443` TCP 连接被 reset/超时（3 次重试均失败，无 git 代理配置）。网络恢复后执行：`git push origin main && git push origin v1.0.25`。GitHub Release（挂 APK）需 gh CLI 或网页：仓库 https://github.com/Soodok/MeshChat 的 Releases 页上传 `MeshChat-v1.0.25-release.apk`。
 - **无阻塞**（v1.0.0 已推送 GitHub origin/main，本地与远程同步）。备用源 `soodok.online/meshchat_bare.git` 未同步（如需可 push）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
 - **A11（安卓 11 GSI）位置服务**：BLE 扫描依赖位置服务，已 adb 开启（location_mode=3）；若重刷/恢复出厂需重新开启。
