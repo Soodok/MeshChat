@@ -116,9 +116,33 @@ fun MeshChatHome(
                 } else "file"
             } ?: "file"
             val mime = resolver.getType(uri) ?: "application/octet-stream"
-            val size = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+            // v1.1.48：部分 provider（云盘/压缩成员/管道描述符）openAssetFileDescriptor.length 返回 0/-1，
+            // 真文件被误判"空文件"拒发（用户"选完文件显示 0B 发不了"）。三级解析：
+            // ① OpenableColumns.SIZE 列（DocumentsUI/下载/本地文件必带）② AFD length ③ 读流数字节（最后兜底）
+            var size = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (idx >= 0 && !c.isNull(idx)) c.getLong(idx) else -1L
+                } else -1L
+            } ?: -1L
+            if (size <= 0) {
+                size = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            }
+            if (size <= 0) {
+                // 管道/未知长度描述符：读流计真实字节（仅极少数 provider 走到；大文件走此兜底较慢但可发）
+                size = resolver.openInputStream(uri)?.use { input ->
+                    val buf = ByteArray(8192)
+                    var count = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        count += n
+                    }
+                    count
+                } ?: -1L
+            }
             if (size <= 0L) {
-                Toast.makeText(context, "空文件不支持发送", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "无法获取文件大小，暂不支持发送", Toast.LENGTH_SHORT).show()
             } else {
                 onSendFile(name, mime, size) { resolver.openInputStream(uri)!! }
             }

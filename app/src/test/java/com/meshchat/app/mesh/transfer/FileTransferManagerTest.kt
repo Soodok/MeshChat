@@ -496,6 +496,43 @@ class FileTransferManagerTest {
     }
 
     @Test
+    fun `chunk before start does not ack empty missing prematurely`() = runTest {
+        // v1.1.48 幽灵会话（START 首播丢失只剩块）：totalChunks=0 时 missing=空，旧逻辑 ackCounter%WINDOW==0 即回 ACK
+        // → 发送端误判"全部收到"提前 DONE、START 永远补不来 → 文件静默丢失。修复：元数据未齐（metaReady=false）不回 ACK。
+        val transport = CountingTransport()
+        val manager = FileTransferManager(
+            transport = transport, shortId = "B",
+            saver = FakeSaver(kotlin.io.path.createTempDirectory("ghostB").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 5,
+        )
+        val fid = "12345678-1234-1234-1234-123456789013"
+        val data = randomBytes(File3.CHUNK_BYTES)
+        // 只有 CHUNK、无 START（START 首播被 BLE 吞帧场景）
+        manager.onFile3Frame(File3.encodeChunk("A", fid, 0, 0L, data))
+        assertTrue("无元数据的幽灵会话不得回空 missing ACK（防发送端误判完成）", ackBodies(transport.frames).isEmpty())
+        // START 随后到达（窗口重发必先发 START）：补元数据 → 收齐落盘 DONE
+        manager.onFile3Frame(File3.encodeStart("A", fid, 1, data.size.toLong(), false, "ghost.bin", "application/octet-stream"))
+        assertEquals("补 START 后应收齐 DONE", TransferStatus.DONE, manager.progress.value?.status)
+        assertTrue("收齐后应回最终 ACK（missing 空）", ackBodies(transport.frames).any { it.missing.isEmpty() })
+    }
+
+    @Test
+    fun `sender aborts after stall timeout instead of retrying forever`() = runTest {
+        // v1.1.48 用户"发送方卡着不动"：链路存活（isConnectedTo=true）但 ACK 永远不来（芯片级写拒绝/对端回执全丢），
+        // v1.1.38 无上限重试会让发送端无限"卡着不动"。窗口停滞超时（此处 300ms）给出收尾 → FAILED。
+        val manager = FileTransferManager(
+            transport = CountingTransport(), shortId = "A",
+            saver = FakeSaver(kotlin.io.path.createTempDirectory("stallA2").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 50, maxWindowRetries = Int.MAX_VALUE,
+            stallTimeoutMs = 300,
+        )
+        val bytes = randomBytes(File3.CHUNK_BYTES * 8)
+        manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "stall2.bin", "application/octet-stream", bytes.size.toLong())
+        awaitDone(manager)
+        assertEquals("窗口停滞超时应 FAILED 而非无限重试", TransferStatus.FAILED, manager.progress.value?.status)
+    }
+
+    @Test
     fun `file3 frames fit BLE single-frame budget`() {
         // v1.1.36 v2 CHUNK：61B 头（含 36 字符完整 UUID fid + 8B byteOffset）+ 448B 数据 = 509B ≤ MTU 512 载荷。
         // 历史教训：v1.1.28 用 8 字符短 fid 测试漏网（头 25B），生产 fid=完整 UUID 头超预算 → 真机 0 块；

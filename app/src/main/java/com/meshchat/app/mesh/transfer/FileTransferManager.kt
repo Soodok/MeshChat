@@ -42,6 +42,8 @@ class FileTransferManager(
     private val scope: CoroutineScope,
     private val windowTimeoutMs: Long = WINDOW_TIMEOUT_MS,
     private val maxWindowRetries: Int = MAX_WINDOW_RETRIES,
+    /** v1.1.48：窗口总停滞超时（测试可传小值验证放弃路径）。 */
+    private val stallTimeoutMs: Long = FILE_STALL_TIMEOUT_MS,
     private val tmpDirProvider: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
     private val onProgress: (FileProgress) -> Unit = {},
     private val onSaved: (convId: String, fileId: String, fileName: String, mime: String, size: Long, uri: String?) -> Unit = { _, _, _, _, _, _ -> },
@@ -63,7 +65,14 @@ class FileTransferManager(
          * 才停止传输；v1.1.37 的 12 次在长传中仍可能偶发耗尽）。测试/调试可显式传小值验证超时路径。
          */
         const val MAX_WINDOW_RETRIES = Int.MAX_VALUE
-        const val RECV_STALL_TIMEOUT_MS = 60_000L
+        /**
+         * 发送端总停滞超时（v1.1.48）：链路存活（isConnectedTo=true）但**一个窗口都推不动**（芯片级写拒绝/
+         * 对端回执全丢等）时，v1.1.38 的无上限重试会让发送方永远"卡着不动"。此超时给出收尾：窗口 45s 无推进
+         * → FAILED（UI 显示"未送达"而非无限发送中），用户可重试。正常传输每窗口 ≤ 数秒，45s 足够覆盖卡顿恢复
+         * （v1.1.37 遮挡续传测试窗口超时 200ms 收敛），不影响"断开才停"的语义——仅当链路活着但彻底无进展时放弃。
+         */
+        const val FILE_STALL_TIMEOUT_MS = 45_000L
+        const val RECV_STALL_TIMEOUT_MS = 30_000L   // v1.1.48：60s→30s——发送端放弃后接收方占位气泡更快转"未送达"，不长期卡"正在发送中"
         /** 已落盘 fileId 记忆上限（v1.1.40）：防补发拦截表无限增长；超限移除最旧。 */
         const val MAX_COMPLETED_FILES = 32
         /**
@@ -280,6 +289,10 @@ class FileTransferManager(
                 Log.d(TAG, "send window ${s.fileId} [$windowStart..${s.expectEnd}]/${totalChunks} frames=${inWindow} chunkBytes=${s.chunkBytes}")
                 DebugLogBuffer.log(TAG, "send window [$windowStart..${s.expectEnd}]/$totalChunks frames=$inWindow")
                 broadcastWindow(s, cache)
+                // v1.1.48：停滞收尾轮数——链路存活但连续 stallTimeoutMs/windowTimeoutMs 轮无推进
+                // （ACK 全丢/芯片写拒绝/回执永不收敛）→ 放弃 FAILED，不再无限"卡着不动"。
+                // 按轮数计（而非真实时钟）便于测试可控；生产 45s/1s=45 轮 ≈ 45s+退避。
+                val stallRoundLimit = (stallTimeoutMs / windowTimeoutMs).coerceAtLeast(2)
                 var retries = 0
                 while (true) {
                     // v1.1.38：重试无上限（零容错），仅链路断开才停止——对端 GATT 连接已断则不再硬撑重发
@@ -301,6 +314,12 @@ class FileTransferManager(
                         Log.w(TAG, "window timeout ${s.fileId} [$windowStart..${s.expectEnd}] retry=$retries")
                         DebugLogBuffer.log(TAG, "window timeout [$windowStart..${s.expectEnd}] retry=$retries")
                         if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
+                        if (retries >= stallRoundLimit) {
+                            Log.w(TAG, "transfer stall ${s.fileId} window [$windowStart..${s.expectEnd}] no progress after $stallRoundLimit rounds, abort")
+                            DebugLogBuffer.log(TAG, "send ABORT transfer stall no window progress")
+                            finish(s, TransferStatus.FAILED)
+                            return
+                        }
                         debugStats.recordFileWindowRetry()
                         // v1.1.37 退避：连续超时说明链路正卡顿，重发前等 300ms×retries（封顶 2s）给链路恢复时间，
                         // 避免在蓝牙栈忙/干扰期密集重发加剧拥塞（v1.1.36 前 1s 连发 5 次即放弃，卡顿 >5s 必失败）
@@ -326,6 +345,12 @@ class FileTransferManager(
                     if (need.size >= s.lastMissingCount) retries++ else retries = 0
                     s.lastMissingCount = need.size
                     if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
+                    if (retries >= stallRoundLimit) {
+                        Log.w(TAG, "transfer stall ${s.fileId} window [$windowStart..${s.expectEnd}] missing never converges after $stallRoundLimit rounds, abort")
+                        DebugLogBuffer.log(TAG, "send ABORT transfer stall missing never converges")
+                        finish(s, TransferStatus.FAILED)
+                        return
+                    }
                 }
             }
             finish(s, TransferStatus.DONE)
@@ -596,11 +621,13 @@ class FileTransferManager(
             return   // v1.1.40：收齐已发 DONE，不得再被下方 RUNNING 覆盖（老 FILE 路径有 return，FILE3 漏了——传太快时进度条被覆盖回"发送中"）
         }
         if (!isNew) {
-            // 重复块 = 发送端正在等确认/超时重发：立即回 ACK 让其收敛
-            sendAck(session)
+            // 重复块 = 发送端正在等确认/超时重发：立即回 ACK 让其收敛。
+            // v1.1.48：仅元数据已齐（metaReady）的会话回——幽灵会话（START 丢失只剩块）totalChunks=0 时
+            // missing=空会让发送端误判"全部收到"提前完成 → START 永远补不来 → 文件静默丢失；
+            // 静默等待窗口重发（广播窗口必先发 START）补元数据，才能正确收尾。
+            if (session.metaReady) sendAck(session)
         } else if (session.ackCounter++ % WINDOW == 0) {
-            // ACK 合并：每收满一窗口回一次
-            sendAck(session)
+            if (session.metaReady) sendAck(session)
         }
         updateReceiveProgress(session, TransferStatus.RUNNING)
     }
