@@ -221,6 +221,7 @@ app/src/main/java/com/meshchat/app/
   - **测试**：DebugStatsTest 重写为窗口语义（FakeClock 推进：无样本 -1/只收 100%/2 收 2 失败 50%/超 5s 过期回 -1/新窗口重计/清零回 -1），总 **130/130 通过**。APK `MeshChat-v1.1.21-debug.apk`（20,892,755 B）+ `MeshChat-v1.1.21-release.apk`（2,916,498 B，R8+签名）。**已推送 origin/main（db154b7）**。
 
 ### 已验证内容
+- **v1.1.23 中继 UI 同步验证**：`testDebugUnitTest` **131/131 通过，0 失败**；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 85 / versionName 1.1.23）；APK `MeshChat-v1.1.23-debug.apk`（20,892,755 B）/ `MeshChat-v1.1.23-release.apk`（2,916,498 B，R8+正式签名 CN=MeshChat O=Soodok，apksigner verify 通过）。⚠️ 待用户真机验证：中继 UI 同步（聊天列表绿色/Header 经中继可达/经中继文案）。
 - **v1.1.22 示波器统一缩放验证**：`testDebugUnitTest` **130/130 通过，0 失败**；`assembleDebug` + `assembleRelease` BUILD SUCCESSFUL（versionCode 84 / versionName 1.1.22）；APK debug 20,892,755 B / release 2,916,498 B。⚠️ 待用户真机验证：三线共用同一 y 轴后丢包幅度观感。
 - **v1.1.21 丢包 p/s + 5s 窗口验证**：`testDebugUnitTest` **130/130 通过，0 失败**（DebugStatsTest 窗口语义重写）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 83 / versionName 1.1.21）；APK debug 20,892,755 B / release 2,916,498 B（R8+签名）。⚠️ 待用户真机验证：示波器丢包 p/s 与发送 p/s 对比、Mesh 页信号 5s 内随失败波动。
 - **v1.1.20 Mesh 页接收成功率验证**：`testDebugUnitTest` **130/130 通过，0 失败**（MeshServiceTest -3+1、DebugStatsTest +1 receiveSuccessRate）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 82 / versionName 1.1.20）；APK `MeshChat-v1.1.20-debug.apk`（20,892,755 B）。⚠️ 待用户真机验证：有失败事件（隔墙/关蓝牙/发坏帧）时 Mesh 页百分比下降。
