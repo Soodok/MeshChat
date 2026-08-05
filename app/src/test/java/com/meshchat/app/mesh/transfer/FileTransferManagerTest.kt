@@ -1,5 +1,6 @@
 package com.meshchat.app.mesh.transfer
 
+import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FileBodyV2
@@ -12,6 +13,7 @@ import com.meshchat.app.mesh.transport.MeshTransport
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Base64
+import java.util.Random
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -22,6 +24,10 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class FileTransferManagerTest {
+
+    /** 不可压缩随机数据：发送端压缩回退原文件，块数 = ceil(size / File3.CHUNK_BYTES)，测试断言稳定。 */
+    private val rng = Random(42)
+    private fun randomBytes(n: Int): ByteArray = ByteArray(n).also { rng.nextBytes(it) }
 
     private class CountingTransport : MeshTransport {
         private val inner = InMemoryTransport()
@@ -53,9 +59,14 @@ class FileTransferManagerTest {
     /** 块视图（统一 FILE 单块 / FILE2 多块）。 */
     private data class ChunkView(val fileId: String, val chunkIndex: Int)
 
-    /** 从广播帧里取出 FILE/FILE2 块。 */
+    /** 从广播帧里取出 FILE/FILE2/FILE3 块。 */
     private fun fileChunks(frames: List<MeshFrame>): List<ChunkView> =
         frames.mapNotNull { frame ->
+            // v1.1.28 FILE3 二进制帧：直接解析（无 JSON 信封）
+            if (File3.isFile3(frame.payload)) {
+                val parsed = File3.parse(frame.payload) as? File3.Frame.ChunkFrame ?: return@mapNotNull null
+                return@mapNotNull listOf(ChunkView(parsed.chunk.fid, parsed.chunk.seq))
+            }
             val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@mapNotNull null
             when (val b = env.body) {
                 is FileBody -> listOf(ChunkView(b.fileId, b.chunkIndex))
@@ -80,7 +91,8 @@ class FileTransferManagerTest {
             scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
         )
         val w = FileTransferManager.WINDOW
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 33) { it.toByte() }   // 33 块 → 5 窗口
+        val total = 33
+        val bytes = randomBytes(File3.CHUNK_BYTES * total)   // 33 块 → 5 窗口（不可压缩 → 不压缩原样传输）
         val fileId = manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -94,18 +106,18 @@ class FileTransferManagerTest {
         assertEquals(w - 1, firstWindow.last().chunkIndex)
 
         // 回 ACK：缺第 3 块 → 仅重发第 3 块
-        manager.onFileAck(ack(fileId, 33, listOf(3)))
+        manager.onFileAck(ack(fileId, total, listOf(3)))
         val retried = awaitChunks(transport, 1)
         assertEquals(3, retried.first().chunkIndex)
 
         // 连续回 empty ACK 推进剩余窗口直至完成
         var guard = 0
         while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 60) {
-            manager.onFileAck(ack(fileId, 33, emptyList()))
+            manager.onFileAck(ack(fileId, total, emptyList()))
             kotlinx.coroutines.delay(20)
         }
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
-        assertEquals(33L * FileTransferManager.CHUNK_BYTES, manager.progress.value?.transferredBytes)
+        assertEquals(total.toLong() * File3.CHUNK_BYTES, manager.progress.value?.transferredBytes)
     }
 
     @Test
@@ -115,7 +127,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m2").toFile()),
             scope = backgroundScope, windowTimeoutMs = 500, maxWindowRetries = 3,
         )
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 32) { 1 }
+        val bytes = randomBytes(File3.CHUNK_BYTES * 32)
         manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -143,7 +155,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m3").toFile()),
             scope = backgroundScope, windowTimeoutMs = 50, maxWindowRetries = 2,
         )
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 8) { 2 }
+        val bytes = randomBytes(File3.CHUNK_BYTES * 8)
         manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -161,7 +173,7 @@ class FileTransferManagerTest {
             transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("m4").toFile()),
             scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 2,
         )
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 4) { 3 }
+        val bytes = randomBytes(File3.CHUNK_BYTES * 4)
         val id1 = manager.sendFile(
             convId = "conv-B", dstId = "B",
             openSource = { ByteArrayInputStream(bytes) },
@@ -287,14 +299,21 @@ class FileTransferManagerTest {
             transport = transport, shortId = "B", saver = FakeSaver(dirB),
             scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 5,
         )
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 100) { (it % 97).toByte() }  // 100 块 → 4 窗口
+        val bytes = randomBytes(File3.CHUNK_BYTES * 100)  // 100 块 → 13 窗口
         val relay = backgroundScope.launch {
             transport.incoming.collect { frame ->
-                val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@collect
-                when (env.body) {
-                    is FileBody, is FileBodyV2 -> if (env.dstId == "B") b.onFileChunk(env)
-                    is FileAckBody -> if (env.dstId == "A") a.onFileAck(env)
-                    else -> Unit
+                // v1.1.28 FILE3 二进制帧（无 JSON 信封）：直接转发给 B；ACK 仍为 JSON
+                if (File3.isFile3(frame.payload)) {
+                    when (File3.parse(frame.payload)) {
+                        is File3.Frame.ChunkFrame, is File3.Frame.StartFrame -> b.onFile3Frame(frame.payload)
+                        null -> Unit
+                    }
+                } else {
+                    val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@collect
+                    when (env.body) {
+                        is FileAckBody -> if (env.dstId == "A") a.onFileAck(env)
+                        else -> Unit
+                    }
                 }
             }
         }
@@ -316,12 +335,15 @@ class FileTransferManagerTest {
             scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
             sendFrame = { dst, frame -> sentVia.add(dst to frame) },
         )
-        val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 8) { 5 }
+        val bytes = randomBytes(File3.CHUNK_BYTES * 8)
         val fileId = manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "f.bin", "application/octet-stream", bytes.size.toLong())!!
-        // 数据块走 writeUnreliable（CountingTransport 记录到 frames）：8 块 = CHUNKS_PER_FRAME(2) × 4 帧
+        // 数据块走 writeUnreliable（CountingTransport 记录到 frames）：8 块 + START 帧
         var guard = 0
         while (fileChunks(transport.frames).size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
         assertTrue("首窗 8 块应经 writeUnreliable 到达", fileChunks(transport.frames).size >= 8)
+        assertTrue("START 元数据帧应经 writeUnreliable 发出", transport.frames.any {
+            File3.isFile3(it.payload) && File3.parse(it.payload) is File3.Frame.StartFrame
+        })
         assertEquals("数据块不得走注入 sendFrame（仅 ACK 通道）", 0, sentVia.size)
         // 全部窗口完成后停发
         while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 200) {
@@ -329,6 +351,62 @@ class FileTransferManagerTest {
             kotlinx.coroutines.delay(20)
         }
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
+    }
+
+    @Test
+    fun `file3 frames fit BLE single-frame budget`() {
+        // v1.1.28 FILE3 二进制帧：CHUNK（25B 头 + 480B 数据）与长文件名 START 都必须 ≤ MTU 512 可用载荷 509B
+        val chunk = File3.encodeChunk("AB12", "f-12345678", 0, ByteArray(File3.CHUNK_BYTES) { 1 })
+        println("DIAG FILE3 CHUNK bytes=${chunk.size} budget=509")
+        assertTrue("FILE3 CHUNK 帧 ${chunk.size}B 超 509B", chunk.size <= 509)
+
+        val start = File3.encodeStart(
+            srcId = "AB12", fid = "f-12345678", totalChunks = 100, origSize = 48000, compressed = true,
+            name = "项目周报-第三季度-终版-超长中文文件名".repeat(4),   // 120 字 ≈ 360B（含截断防御）
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        println("DIAG FILE3 START bytes=${start.size} budget=509")
+        assertTrue("FILE3 START 帧 ${start.size}B 超 509B", start.size <= 509)
+    }
+
+    @Test
+    fun `file3 compressed transfer decompresses to original`() = runTest {
+        // v1.1.28 压缩传输 e2e：可压缩数据 → 发送端 deflate 压缩分块 → 接收端收齐解压 → 字节一致
+        val transport = InMemoryTransport()
+        val dirB = kotlin.io.path.createTempDirectory("e2e-c").toFile()
+        val a = FileTransferManager(
+            transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("e2e-cA").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 5,
+        )
+        val b = FileTransferManager(
+            transport = transport, shortId = "B", saver = FakeSaver(dirB),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 5,
+        )
+        // 可压缩内容：重复文本（deflate 压缩率显著）→ 传输块数大幅减少
+        val bytes = "MeshChat 近场安全通信——文件传输内置压缩验证。".repeat(400).toByteArray()
+        val relay = backgroundScope.launch {
+            transport.incoming.collect { frame ->
+                if (File3.isFile3(frame.payload)) {
+                    when (File3.parse(frame.payload)) {
+                        is File3.Frame.ChunkFrame, is File3.Frame.StartFrame -> b.onFile3Frame(frame.payload)
+                        null -> Unit
+                    }
+                } else {
+                    val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@collect
+                    when (env.body) {
+                        is FileAckBody -> if (env.dstId == "A") a.onFileAck(env)
+                        else -> Unit
+                    }
+                }
+            }
+        }
+        a.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "doc.txt", "text/plain", bytes.size.toLong())
+        awaitDone(a)
+        relay.cancel()
+        assertEquals(TransferStatus.DONE, a.progress.value?.status)
+        val saved = File(dirB, "doc.txt")
+        assertTrue("B 应落盘解压后的完整文件", saved.exists())
+        assertEquals("解压后字节与原始一致", bytes.toList(), saved.readBytes().toList())
     }
 
     private fun envelope(fileId: String, body: FileBody) = MeshEnvelope(

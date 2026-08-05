@@ -10,6 +10,7 @@ import com.meshchat.app.mesh.debug.RouteDecision
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
+import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileBodyV2
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
@@ -901,6 +902,12 @@ class MeshService(
     fun handleFrame(frame: MeshFrame) {
         when (frame.type) {
             FrameType.DATA -> {
+                // v1.1.28 FILE3 二进制文件帧（MC3 魔数）：纯二进制载荷，旁路 JSON 解析直交文件传输层
+                if (File3.isFile3(frame.payload)) {
+                    debugStats.recordReceived(FrameKind.FILE_CHUNK, frame.payload.size)
+                    handleFile3Frame(frame.payload)
+                    return
+                }
                 val envelope = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }
                     .getOrNull()
                 if (envelope == null) {
@@ -933,6 +940,47 @@ class MeshService(
                 }
             }
             else -> Unit // HELLO/ACK/PING 由传输层处理
+        }
+    }
+
+    /**
+     * FILE3 二进制文件帧处理（v1.1.28）：START 帧落库占位（按 fileId 去重，与 FILE/FILE2 分支同构，
+     * 独立实现避免扰动老路径），CHUNK/START 均交 FileTransferManager。帧内自带 srcId/fid，
+     * 无 JSON 信封（文件帧点对点一跳，不参与多跳中继）。
+     */
+    private fun handleFile3Frame(payload: ByteArray) {
+        when (val f = File3.parse(payload)) {
+            is File3.Frame.StartFrame -> {
+                val start = f.start
+                if (start.srcId == identity.shortId) return // 自身回环帧
+                val fileId = start.fid
+                // 先落库占位（按 fileId 去重；upsert 幂等），再收块——收齐回调会置 DELIVERED，顺序不能反
+                if (receivedFiles.add(fileId)) {
+                    val alreadySaved = store.queryMessages("conv-${start.srcId}").any {
+                        it.id == fileId && it.status == MessageStatus.DELIVERED
+                    }
+                    if (alreadySaved) {
+                        transfer.acknowledgeCompletedFile(
+                            fileId = fileId,
+                            convId = "conv-${start.srcId}",
+                            senderId = start.srcId,
+                            totalChunks = start.totalChunks,
+                        )
+                        return
+                    }
+                    store.insertMessage(
+                        StoredMessage(
+                            id = fileId, convId = "conv-${start.srcId}", kind = "FILE",
+                            srcId = start.srcId, dstId = identity.shortId, text = start.name,
+                            fileMeta = fileMetaJson(start.name, start.mime, start.origSize, null),
+                            status = MessageStatus.SENDING, ts = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                transfer.onFile3Frame(payload)
+            }
+            is File3.Frame.ChunkFrame -> transfer.onFile3Frame(payload)
+            null -> debugStats.recordReceivedFailure()
         }
     }
 

@@ -1,6 +1,7 @@
 package com.meshchat.app.mesh.service
 
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
@@ -335,13 +336,12 @@ class MeshServiceTest {
             rfcomm = rfcomm,
         )
         service.sendFile("conv-OTHER", "OTHER", { java.io.ByteArrayInputStream(ByteArray(100) { 1 }) }, "f.txt", "text/plain", 100)
-        // v1.1.27：文件数据块统一走 writeUnreliable（无确认写），不再经 rfcomm/sendFrame。
-        // MeshService 内部 scope 为 Dispatchers.Default（真实 30ms 节流）→ 用真实等待而非测试虚拟时钟
+        // v1.1.28：文件数据块统一走 writeUnreliable（无确认写）且为 FILE3 二进制帧（MC3 魔数），不再经 rfcomm/sendFrame。
+        // MeshService 内部 scope 为 Dispatchers.Default（真实节流）→ 用真实等待而非测试虚拟时钟
         var guard = 0
-        fun isFile2(frame: MeshFrame) = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }
-            .getOrNull()?.kind == "FILE2"
-        while (transport.frames.none(::isFile2) && guard++ < 100) Thread.sleep(20)
-        assertTrue("文件块应经 writeUnreliable 发出（FILE2 帧）", transport.frames.any(::isFile2))
+        fun isFile3(frame: MeshFrame) = File3.isFile3(frame.payload)
+        while (transport.frames.none(::isFile3) && guard++ < 100) Thread.sleep(20)
+        assertTrue("文件块应经 writeUnreliable 发出（FILE3 帧）", transport.frames.any(::isFile3))
         assertEquals("数据块不再走 rfcomm sendTo", 0, rfcommSent.size)
         service.stop()
     }
