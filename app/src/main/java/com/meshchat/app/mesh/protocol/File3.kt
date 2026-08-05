@@ -26,8 +26,12 @@ object File3 {
     const val KIND_CHUNK = 0x01
     const val KIND_START = 0x02
 
-    /** 数据块字节（v1.1.28）：二进制无 base64 膨胀，CHUNK 帧 25B 头 + 480B = 505B ≤ MTU 512 可用载荷 509B。 */
-    const val CHUNK_BYTES = 480
+    /**
+     * 数据块字节：53B 帧头（fid=36 字符完整 UUID：magic3+ver1+kind1+srcLen1+srcId4+fidLen1+fid36+seq4+len2）+ 456B = 509B
+     * 恰好 ≤ MTU 512 可用载荷 509B。**v1.1.35 修复**：原 480B 块 + 53B 头 = 533B 超 MTU → 真机每帧写失败/静默丢 → 0 块
+     * （v1.1.28 测试用 8 字符短 fid 头 25B → 505B 通过，生产用完整 UUID 漏网）。
+     */
+    const val CHUNK_BYTES = 456
 
     /** START 帧元数据预算（BLE 单帧硬限制）：文件名 UTF-8 最大字节、mime 最大字节（超长截断防御）。 */
     const val MAX_NAME_BYTES = 400

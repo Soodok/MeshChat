@@ -387,13 +387,16 @@ class FileTransferManagerTest {
 
     @Test
     fun `file3 frames fit BLE single-frame budget`() {
-        // v1.1.28 FILE3 二进制帧：CHUNK（25B 头 + 480B 数据）与长文件名 START 都必须 ≤ MTU 512 可用载荷 509B
-        val chunk = File3.encodeChunk("AB12", "f-12345678", 0, ByteArray(File3.CHUNK_BYTES) { 1 })
+        // v1.1.28 FILE3 二进制帧：CHUNK（53B 头含完整 UUID fid + 456B 数据）与长文件名 START 都必须 ≤ MTU 512 可用载荷 509B。
+        // **必须用 36 字符完整 UUID 当 fid**——v1.1.28 用 8 字符短 fid 测试（头 25B+480B=505B 通过），
+        // 生产 fid=完整 UUID → 头 53B+480B=533B 超 509B → 真机每帧失败 0 块（v1.1.35 修复：块 480→456）。
+        val fullFid = "12345678-1234-1234-1234-123456789012"   // 36 字符（与 UUID.randomUUID().toString() 同长，无前缀）
+        val chunk = File3.encodeChunk("AB12", fullFid, 0, ByteArray(File3.CHUNK_BYTES) { 1 })
         println("DIAG FILE3 CHUNK bytes=${chunk.size} budget=509")
         assertTrue("FILE3 CHUNK 帧 ${chunk.size}B 超 509B", chunk.size <= 509)
 
         val start = File3.encodeStart(
-            srcId = "AB12", fid = "f-12345678", totalChunks = 100, origSize = 48000, compressed = true,
+            srcId = "AB12", fid = fullFid, totalChunks = 100, origSize = 48000, compressed = true,
             name = "项目周报-第三季度-终版-超长中文文件名".repeat(4),   // 120 字 ≈ 360B（含截断防御）
             mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
