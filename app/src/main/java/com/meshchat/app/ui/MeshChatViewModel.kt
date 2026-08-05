@@ -112,12 +112,17 @@ class MeshChatViewModel(
             while (true) {
                 val s = _debugSettings.value
                 if (!s.paused) {
-                    val snap = debugStats.snapshot(s.windowMs)
-                    _debugSnapshot.value = snap.copy(peers = when (s.sortBy) {
-                        "name" -> snap.peers.sortedBy { it.displayName }
-                        "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
-                        else -> snap.peers.sortedByDescending { it.rssi }
-                    })
+                    // 防御：快照聚合/数据提供器异常只跳过本轮，绝不让循环崩溃拖垮进程
+                    try {
+                        val snap = debugStats.snapshot(s.windowMs)
+                        _debugSnapshot.value = snap.copy(peers = when (s.sortBy) {
+                            "name" -> snap.peers.sortedBy { it.displayName }
+                            "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
+                            else -> snap.peers.sortedByDescending { it.rssi }
+                        })
+                    } catch (t: Throwable) {
+                        android.util.Log.w("MeshChatVM", "debug snapshot failed", t)
+                    }
                 }
                 delay(s.refreshIntervalMs)
             }

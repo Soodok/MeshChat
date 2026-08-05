@@ -236,7 +236,7 @@ class DebugStats(
         val broadcastWin = broadcastQ.statsSince(now, windowMs)
         val del: DeliveryStats
         synchronized(deliveryLock) {
-            val pending = pendingProvider()
+            val pending = runCatching { pendingProvider() }.getOrDefault(0)
             del = DeliveryStats(
                 pending = pending,
                 confirmed = confirmed,
@@ -276,16 +276,17 @@ class DebugStats(
             timestampMs = now,
             frames = frames,
             ble = ble,
-            peers = peersProvider(),
-            routeEntries = routeEntriesProvider(),
-            sessions = sessionsProvider(),
-            pendingInvites = pendingInvitesProvider(),
+            // 外部数据提供器不信任：任一异常只影响对应字段，绝不让快照/调用方崩溃
+            peers = runCatching { peersProvider() }.getOrDefault(emptyList()),
+            routeEntries = runCatching { routeEntriesProvider() }.getOrDefault(0),
+            sessions = runCatching { sessionsProvider() }.getOrDefault(0),
+            pendingInvites = runCatching { pendingInvitesProvider() }.getOrDefault(0),
             delivery = del,
-            file = fileStatsProvider(),
+            file = runCatching { fileStatsProvider() }.getOrDefault(FileStats(windowRetries = fileWindowRetries)),
             system = SystemStats(
                 uptimeMs = now - startedAt,
-                serviceStarted = serviceStartedProvider(),
-                bluetoothEnabled = bluetoothEnabledProvider(),
+                serviceStarted = runCatching { serviceStartedProvider() }.getOrDefault(false),
+                bluetoothEnabled = runCatching { bluetoothEnabledProvider() }.getOrDefault(false),
                 totalMemoryKb = runtime.totalMemory() / 1024,
                 freeMemoryKb = runtime.freeMemory() / 1024,
             ),

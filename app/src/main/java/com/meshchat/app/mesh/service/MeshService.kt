@@ -32,6 +32,7 @@ import com.meshchat.app.mesh.transport.MeshTransport
 import com.meshchat.app.mesh.transport.PeerPresence
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -152,7 +153,7 @@ class MeshService(
     // ===== v1.1.0 多跳中继：路由表 =====
     /** 2 跳路由条目：远端节点 -> (经由中继 shortId, 跳数, 最后确认时刻)。内存态，重启重建。 */
     private data class RouteEntry(val via: String, val hops: Int, val lastSeenAt: Long)
-    private val routeEntries = LinkedHashMap<String, RouteEntry>()
+    private val routeEntries = ConcurrentHashMap<String, RouteEntry>()
     /** PING 计数器：每 PING_RELAYS_EVERY 次心跳携带一次 relays 路由信息。 */
     private var pingCount = 0
     /** 中继转发 outbox 重发状态：id -> 上次重发时刻 / 重试次数（内存态）。 */
@@ -160,7 +161,7 @@ class MeshService(
     private val outboxAttempts = HashMap<String, Int>()
 
     /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
-    private val peerEntries = LinkedHashMap<String, PeerEntry>()
+    private val peerEntries = ConcurrentHashMap<String, PeerEntry>()
 
     private data class PeerEntry(var info: MeshPeerInfo, var lastSeen: Long, var lost: Boolean)
 
