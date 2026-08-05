@@ -496,9 +496,10 @@ class BleTransport(
     }
 
     /**
-     * 写特征值（API 兼容）：API 33+ 用单参重载（内部使用 characteristic.writeType）；
-     * API 26-32 用三参重载（单参会 NoSuchMethodError——v1.1.27 把确认写也统一成单参，
-     * 导致 A12/A11 作发送端时所有写失败、接收端 0 块，v1.1.26 三参正常）。
+     * 写特征值：统一三参 `writeCharacteristic(char, value, writeType)`——v1.1.26 路径，真机实证可靠。
+     * 单参（API 33+ `writeCharacteristic(char)` + characteristic.value/writeType）在 ~500B 大帧上
+     * 被部分设备/模拟器蓝牙栈静默丢弃（返回 true 但零到达，心跳 235B 不受影响）——v1.1.27~31 文件 0 块根因。
+     * 返回值：API 33+ 三参返回 int（0=SUCCESS，弃用但仍可用）；API 26-32 返回 boolean（true=1）。
      */
     private fun writeCharacteristicCompat(
         gatt: BluetoothGatt,
@@ -507,17 +508,8 @@ class BleTransport(
         writeType: Int,
     ): Boolean {
         characteristic.writeType = writeType
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // API 33+：单参重载内部使用 characteristic.writeType + characteristic.value——必须先设 value！
-            // （v1.1.30 重构遗漏设 value → 发送空/旧数据 → 接收端 decode 失败，回归）
-            characteristic.value = bytes
-            runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
-        } else {
-            // API 26-32：三参重载（单参会 NoSuchMethodError）。编译期返回类型是 int（SDK 36 定义），
-            // 但运行时 API<33 该重载实际返回 boolean（成功 true=1 / 失败 false=0）→ 统一判 r != 0。
-            val r = runCatching { gatt.writeCharacteristic(characteristic, bytes, writeType) }.getOrDefault(0)
-            r != 0
-        }
+        val r = runCatching { gatt.writeCharacteristic(characteristic, bytes, writeType) }.getOrDefault(-1)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) r == 0 else r != 0
     }
 
     private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame, unreliable: Boolean = false): Boolean {
