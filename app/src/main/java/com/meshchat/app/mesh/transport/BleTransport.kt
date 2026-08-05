@@ -58,25 +58,6 @@ class BleTransport(
     @Volatile
     private var negotiatedMtu = 23
 
-    /** v1.1.42 写失败容错状态：address -> 连续写失败次数（成功清零，≥5 触发连接重建自愈）。 */
-    private val failStreak = HashMap<String, Int>()
-    /** v1.1.42 补写重试退避指数：address -> 当前退避档（200ms×2^n，封顶 2s）。 */
-    private val flushBackoff = HashMap<String, Int>()
-    /** v1.1.42 write FAILED 日志限频（3s 内只打一条，防重试刷屏）。 */
-    @Volatile
-    private var lastWriteFailLogAt = 0L
-
-    /**
-     * v1.1.43 per-connection MTU：client 侧每条 GATT 连接的协商 MTU（不同对端设备 MTU 能力不同——
-     * 对端只支持 247/185 等小 MTU 时，230B+ 帧写它必"大小不接受"）。onMtuChanged 更新，断开移除。
-     */
-    private val gattMtu = HashMap<BluetoothGatt, Int>()
-    /** v1.1.43 server 侧 per-device MTU：notify 载荷受对端 central 连接的 MTU 限制，超限 notify 必失败（回执/PONG 丢失）。 */
-    private val serverMtu = HashMap<String, Int>()
-    /** v1.1.43 超限帧跳过日志限频（5s 一条，防刷屏）。 */
-    @Volatile
-    private var lastOversizeLogAt = 0L
-
     private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
@@ -87,8 +68,6 @@ class BleTransport(
         const val PENDING_FRAME_TIMEOUT_MS = 30_000L
         const val CONNECT_RETRY_COOLDOWN_MS = 5_000L
         const val DISCOVER_TIMEOUT_MS = 5_000L
-        /** 写失败连续次数阈值（v1.1.42）：连接显示 CONNECTED 但写持续失败 → 写通道疑似坏死，强制重建连接自愈。 */
-        const val MAX_WRITE_FAIL_STREAK = 5
         /** 客户端特征配置描述符（CCCD）标准 UUID，用于订阅 notify。 */
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
         /** 扫描响应携带的送达确认键 Service Data UUID：对端扫描即读到，无需 GATT 连接。 */
@@ -133,7 +112,6 @@ class BleTransport(
                 debugStats.recordGattDisconnect()
                 serverDevices.remove(device.address)
                 subscribedDevices.remove(device.address)
-                serverMtu.remove(device.address)
             }
         }
 
@@ -159,8 +137,6 @@ class BleTransport(
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             Log.d(TAG, "server mtu[${device.address}] mtu=$mtu")
             DebugLogBuffer.log(TAG, "server mtu[${device.address}] mtu=$mtu")
-            // v1.1.43：记录 server 侧该对端连接的 MTU（notify 载荷校验用）
-            serverMtu[device.address] = mtu
         }
 
         override fun onCharacteristicWriteRequest(
@@ -401,8 +377,6 @@ class BleTransport(
                     private var discoverRetries = 0
                     private var servicesDiscovered = false
                     private var discoverTimer: Runnable? = null
-                    /** v1.1.44：MTU 协商超时重试定时器（onMtuChanged 3s 未到 → 重发 requestMtu）。 */
-                    private var mtuTimer: Runnable? = null
 
                     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                         Log.d(TAG, "connect[${device.address}] newState=$newState status=$status")
@@ -412,29 +386,21 @@ class BleTransport(
                                 connectAttempts.remove(device.address)
                                 servicesDiscovered = false
                                 DebugLogBuffer.log(TAG, "connect[${device.address}] CONNECTED status=$status")
-                                // v1.1.44：**requestMtu 移到 onServicesDiscovered 成功之后**——部分蓝牙栈在服务发现
-                                // 完成前请求 MTU 会被忽略/失败，导致该连接 MTU 停在 23 → 所有大帧"大小不接受"
-                                // （用户日志大量写失败真根因）。服务就绪后再协商 MTU，协商成功率大幅提升。
+                                runCatching { gatt.requestMtu(512) }
+                                    .onFailure { Log.w(TAG, "requestMtu failed: $it") }
                                 // v1.1.27 曾加 setPreferredPhy(2M)+requestConnectionPriority(HIGH)（吞吐优化）——
                                 // v1.1.33 移除：该组合在部分 Android 13+/16 设备上致连接参数异常、大帧（~500B）ATT 写
                                 // 静默失败（v1.1.26 无此调用时文件传输正常 30 块/s，v1.1.27 起全 0 块，回退验证）。
                                 discoverServicesWithTimeout(gatt)
-                                // v1.1.41：连接恢复立即补写排队帧（连接抖动期的写不再丢失）
-                                tryFlush(device.address)
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
                                 debugStats.recordGattDisconnect()
                                 DebugLogBuffer.log(TAG, "connect[${device.address}] DISCONNECTED status=$status")
                                 // 移除连接记录：持续扫描重新发现时会自动重连（受冷却限制）
                                 discoverTimer?.let { mainHandler.removeCallbacks(it) }
-                                mtuTimer?.let { mainHandler.removeCallbacks(it) }
                                 gatt.close()
                                 gattClients.remove(device.address)
-                                gattMtu.remove(gatt)
-                                // v1.1.41：**保留 pendingFrames**——连接抖动期排队的帧等重连后补写（30s 超时兜底清理）
-                                // v1.1.42：断开即重建起点，失败计数/退避清零
-                                failStreak.remove(device.address)
-                                flushBackoff.remove(device.address)
+                                pendingFrames.remove(device.address)
                             }
                         }
                     }
@@ -462,24 +428,11 @@ class BleTransport(
                     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                         Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
                         DebugLogBuffer.log(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
-                        mtuTimer?.let { mainHandler.removeCallbacks(it) }
                         if (status == BluetoothGatt.GATT_SUCCESS) {
                             debugStats.recordMtu(mtu)
                             negotiatedMtu = mtu
-                            // v1.1.43：记录该连接的 MTU（per-connection 写前校验用）
-                            gattMtu[gatt] = mtu
                             // MTU 就绪后补写排队帧（服务可能早已发现、帧因超 MTU 滞留——v1.1.36 关键补写点）
                             tryFlush(device.address)
-                        } else {
-                            // v1.1.44：协商失败也重试（3s 后）
-                            val retry = object : Runnable {
-                                override fun run() {
-                                    Log.w(TAG, "mtu negotiation failed(status=$status) for ${device.address}, retry")
-                                    runCatching { gatt.requestMtu(512) }
-                                }
-                            }
-                            mtuTimer = retry
-                            mainHandler.postDelayed(retry, 3_000L)
                         }
                     }
 
@@ -508,22 +461,6 @@ class BleTransport(
                             debugStats.recordServicesDiscovered(true)
                             Log.d(TAG, "services discovered[${device.address}]")
                             DebugLogBuffer.log(TAG, "services discovered[${device.address}] status=$status")
-                            // v1.1.44：服务就绪后再协商 MTU（CONNECTED 时请求太早会被部分栈忽略/失败 → 大帧大小不接受）。
-                            // onMtuChanged 成功后 tryFlush 会把排队帧按新 MTU 补写。
-                            runCatching { gatt.requestMtu(512) }
-                                .onFailure { Log.w(TAG, "requestMtu failed: $it") }
-                            // v1.1.44：MTU 协商超时兜底——3s 内 onMtuChanged 未更新该连接 MTU → 重发 requestMtu
-                            mtuTimer?.let { mainHandler.removeCallbacks(it) }
-                            val mtuRetry = object : Runnable {
-                                override fun run() {
-                                    if (!gattMtu.containsKey(gatt)) {
-                                        Log.w(TAG, "mtu negotiation timeout for ${device.address}, retry")
-                                        runCatching { gatt.requestMtu(512) }
-                                    }
-                                }
-                            }
-                            mtuTimer = mtuRetry
-                            mainHandler.postDelayed(mtuRetry, 3_000L)
                             // 订阅对端 notify（写 CCCD），对端即可通过 server→central 通道回传帧
                             val char = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
                             if (char != null) {
@@ -564,130 +501,53 @@ class BleTransport(
         gattClients.keys.toList().forEach { address ->
             val gatt = gattClients[address] ?: return@forEach
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
-            // v1.1.43：用该连接自己的协商 MTU 校验（不同对端 MTU 能力不同，全局值会误判）
-            val connMtu = gattMtu[gatt] ?: negotiatedMtu
-            when {
-                characteristic == null ->
-                    // 服务尚未发现：暂存，待服务发现后补写；超时帧丢弃防永久滞留
-                    queueFrame(address, frame)
-                frame.payload.size > connMtu - 3 ->
-                    // v1.1.44：帧超该连接当前 MTU（"大小不接受"）——MTU 协商是异步的，服务发现后 requestMtu(512)
-                    // 会经 onMtuChanged 把 MTU 变大（23→512），**排队等 MTU 就绪后补写送达**（不跳过不丢帧）；
-                    // 30s 超时兜底清理（对端真不支持大 MTU 时不再硬发）。
-                    queueFrame(address, frame)
-                else -> {
-                    // v1.1.45：**不再检查 getConnectionState==CONNECTED**——该检查不可靠（v1.1.41 引入后
-                    // 用户实测：本机显示 CONNECTED 写仍失败/对端显示非 CONNECTED 帧全排队发不出，v1.1.40
-                    // 无此检查零丢包）。直接尝试写，让真实写结果驱动失败处理：
-                    if (!writeTo(gatt, frame, unreliable)) {
-                        // 写失败（栈层拒绝/连接半死/超限误判）：排队 + 退避重试（帧不丢）；
-                        // 连续失败 ≥5 次 → 连接写通道坏死，强制重建自愈（写失败驱动，而非状态检查）
-                        recordWriteFailure(address, frame)
-                    } else {
-                        // 写成功：清零失败计数与退避
-                        failStreak.remove(address)
-                        flushBackoff.remove(address)
+            // 可写条件 = 服务已发现 && 帧 ≤ 当前 MTU 载荷（v1.1.36 加 MTU 检查：MTU 未协商完成/协商不足时大帧写必失败）
+            if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
+                if (!writeTo(gatt, frame, unreliable)) {
+                    // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
+                    val state = runCatching {
+                        bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT)
+                    }.getOrDefault(BluetoothProfile.STATE_DISCONNECTED)
+                    if (state != BluetoothProfile.STATE_CONNECTED) {
+                        Log.w(TAG, "write failed for $address, link dead, drop stale connection")
+                        gattClients.remove(address)
+                        runCatching { gatt.close() }
                     }
                 }
+            } else {
+                // 服务尚未发现 或 MTU 尚未协商到容纳该帧：暂存，待就绪（onServicesDiscovered/onMtuChanged）后补写；超时帧丢弃防永久滞留
+                queueFrame(address, frame)
             }
         }
     }
 
-    /** v1.1.43 超限帧（大小不接受）跳过日志：5s 限频，防刷屏。 */
-    private fun logOversize(target: String, payloadBytes: Int, mtu: Int) {
-        val now = System.currentTimeMillis()
-        if (now - lastOversizeLogAt > 5_000) {
-            lastOversizeLogAt = now
-            Log.w(TAG, "frame ${payloadBytes}B > MTU ${mtu - 3} for $target, skip (upper-layer resend)")
-            DebugLogBuffer.log(TAG, "skip OVERSIZE ${payloadBytes}B > ${mtu - 3} for $target")
-        }
-    }
-
-    /** 暂存待补写帧（服务未发现 / 连接非 CONNECTED / MTU 不足 / 栈忙）；超时清理 + 限长防无限增长。 */
+    /** 暂存待补写帧（服务未发现 / MTU 不足）；超时清理 + 限长防无限增长。 */
     private fun queueFrame(address: String, frame: MeshFrame) {
         val now = System.currentTimeMillis()
         val queued = pendingFrames.getOrPut(address) { mutableListOf() }
         queued.removeAll { now - it.first > PENDING_FRAME_TIMEOUT_MS }
         if (queued.size >= 32) queued.removeAt(0)
         queued.add(now to frame)
-        Log.d(TAG, "queue frame for $address (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
+        Log.w(TAG, "service/MTU not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
+        DebugLogBuffer.log(TAG, "service/MTU NOT ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
     }
 
-    /** 记录一次写失败：入队保帧 + 退避重试；连续失败达阈值强制重建连接（v1.1.42 自愈）。 */
-    private fun recordWriteFailure(address: String, frame: MeshFrame) {
-        val streak = (failStreak[address] ?: 0) + 1
-        failStreak[address] = streak
-        queueFrame(address, frame)
-        if (streak >= MAX_WRITE_FAIL_STREAK) {
-            Log.w(TAG, "write failed $streak times consecutively for $address, force reconnect to recover")
-            DebugLogBuffer.log(TAG, "force RECONNECT $address (${streak} consecutive write failures)")
-            failStreak.remove(address)
-            flushBackoff.remove(address)
-            forceReconnect(address)
-        } else {
-            scheduleFlush(address)
-        }
-    }
-
-    /** 补写重试退避（v1.1.42）：200ms×2^n 封顶 2s——写通道瞬态故障时给栈恢复时间，避免高频重试加剧失败。 */
-    private fun scheduleFlush(address: String) {
-        val attempt = (flushBackoff[address] ?: 0).coerceAtMost(4)
-        flushBackoff[address] = attempt + 1
-        val delayMs = minOf(2_000L, 200L * (1 shl attempt))
-        mainHandler.postDelayed({ tryFlush(address) }, delayMs)
-    }
-
-    /** 强制重建到对端的连接（v1.1.42）：写通道连续失败疑似坏死——close 旧 gatt + 绕过冷却立即重连。 */
-    private fun forceReconnect(address: String) {
-        val old = gattClients.remove(address) ?: return
-        runCatching { old.disconnect() }
-        runCatching { old.close() }
-        connectAttempts.remove(address)   // 绕过冷却，立即重建
-        val device = runCatching { bluetoothAdapter?.getRemoteDevice(address) }.getOrNull() ?: return
-        mainHandler.post { connectTo(device) }
-    }
-
-    /** 服务发现成功/MTU 就绪/连接恢复后补写排队帧；仍不满足条件的（连接未回/MTU 未到）留队等下次触发。 */
+    /** 服务发现成功/MTU 就绪后补写排队帧；仍不满足条件的（MTU 未到）留队等下次触发。 */
     private fun tryFlush(address: String) {
         val gatt = gattClients[address] ?: return
-        val now = System.currentTimeMillis()
         val pending = pendingFrames.remove(address) ?: return
         val keep = mutableListOf<Pair<Long, MeshFrame>>()
-        var failed = false
         for ((ts, frame) in pending) {
-            if (now - ts > PENDING_FRAME_TIMEOUT_MS) continue   // 超时帧丢弃（对端长期不可达，不再硬发）
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
-            // v1.1.43：per-connection MTU 校验（不同对端能力不同）；v1.1.45 不再检查连接状态（不可靠，让写结果说话）
-            val connMtu = gattMtu[gatt] ?: negotiatedMtu
-            if (characteristic != null && frame.payload.size <= connMtu - 3) {
-                // v1.1.45：补写不重复计失败统计（recordStats=false，防失败计数虚高）
-                if (writeTo(gatt, frame, recordStats = false)) {
-                    failStreak.remove(address)
-                    flushBackoff.remove(address)
-                } else {
-                    failed = true
-                    keep.add(ts to frame)   // 写失败：帧不丢，重新入队等下次退避重试
-                }
+            if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
+                writeTo(gatt, frame)
             } else {
-                keep.add(ts to frame)   // 服务未就绪/超 MTU：留队等下次触发（MTU 变大/重建后新连接可能容纳）
+                keep.add(ts to frame)
             }
         }
         if (keep.isNotEmpty()) {
+            Log.d(TAG, "flush $address: ${keep.size} frames still waiting for MTU/service")
             pendingFrames[address] = keep
-            if (failed) {
-                // 有写失败：计数 + 退避重试（或连续失败重建）
-                val streak = (failStreak[address] ?: 0) + 1
-                failStreak[address] = streak
-                if (streak >= MAX_WRITE_FAIL_STREAK) {
-                    Log.w(TAG, "flush write failed $streak times for $address, force reconnect")
-                    DebugLogBuffer.log(TAG, "force RECONNECT $address (flush, $streak consecutive failures)")
-                    failStreak.remove(address)
-                    flushBackoff.remove(address)
-                    forceReconnect(address)
-                } else {
-                    scheduleFlush(address)
-                }
-            }
         }
     }
 
@@ -714,7 +574,7 @@ class BleTransport(
         }
     }
 
-    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame, unreliable: Boolean = false, recordStats: Boolean = true): Boolean {
+    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame, unreliable: Boolean = false): Boolean {
         val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return false
         val bytes = frame.encode()
         if (unreliable) {
@@ -729,26 +589,19 @@ class BleTransport(
                 val ok = writeCharacteristicCompat(
                     gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
                 )
-                if (recordStats) debugStats.recordGattWrite(ok)
+                debugStats.recordGattWrite(ok)
                 return ok
             }
-            if (recordStats) debugStats.recordGattWrite(true)
+            debugStats.recordGattWrite(true)
             return true
         }
         val ok = writeCharacteristicCompat(
             gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         )
-        // v1.1.45：重试补写（tryFlush，recordStats=false）不重复计入失败统计——
-        // v1.1.42 每次重试失败都 recordGattWrite(false) → 失败计数虚高（示波器失败峰值 180p/s 假象）
-        if (recordStats) debugStats.recordGattWrite(ok)
+        debugStats.recordGattWrite(ok)
         if (!ok) {
-            // v1.1.42 日志限频：写失败由退避重试/重建自愈兜底（帧不丢），不再每条失败都刷日志
-            val now = System.currentTimeMillis()
-            if (now - lastWriteFailLogAt > 3_000) {
-                lastWriteFailLogAt = now
-                Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
-                DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
-            }
+            Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
+            DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
         }
         return ok
     }
@@ -762,12 +615,6 @@ class BleTransport(
         mainHandler.post {
             subscribedDevices.forEach { address ->
                 val device = serverDevices[address] ?: return@forEach
-                // v1.1.43：notify 载荷受该对端连接的 MTU 限制——超限 notify 必失败（回执/PONG 静默丢失），跳过由上层重发兜底
-                val mtu = serverMtu[address] ?: negotiatedMtu
-                if (bytes.size > mtu - 3) {
-                    logOversize(address, bytes.size, mtu)
-                    return@forEach
-                }
                 val ok = runCatching {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         // API 33+：4 参数重载，载荷作为参数传入
