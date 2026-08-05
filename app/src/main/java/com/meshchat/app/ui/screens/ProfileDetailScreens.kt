@@ -42,13 +42,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.meshchat.app.BuildConfig
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider
 import com.meshchat.app.ui.theme.Ink
 import com.meshchat.app.ui.theme.InkSoft
+import com.meshchat.app.ui.theme.MeshAmber
 import com.meshchat.app.ui.theme.MeshGreen
 import com.meshchat.app.ui.theme.TextPrimary
 import com.meshchat.app.ui.theme.TextSecondary
@@ -185,7 +188,24 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 8.dp),
             )
             Text("版本", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
-            Text("v1.1.2", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+            Text("v${BuildConfig.VERSION_NAME}", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+            Text("开源仓库", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            val uriHandler = LocalUriHandler.current
+            Text(
+                "github.com/Soodok/MeshChat",
+                color = Cyan,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .clickable { uriHandler.openUri("https://github.com/Soodok/MeshChat") },
+            )
+            Text("免责声明", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text(
+                "开源项目可能被用于恶意用途。本项目仅用于学习与合法的应急通信研究，作者对任何滥用或误用不承担责任；使用者须确保其使用方式符合所在地区法律法规。",
+                color = MeshAmber,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
     }
 }
