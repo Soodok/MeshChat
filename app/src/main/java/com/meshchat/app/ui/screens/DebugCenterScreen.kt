@@ -357,14 +357,14 @@ private fun FailureCard(snap: DebugSnapshot) {
     }
 }
 
-/** 示波器：横轴=最近 96 个采样点（时间窗口随刷新间隔），绿=发送速率、蓝=接收速率、红=失败占比（失败事件 ÷ 发送包数，与发送示数相对）。 */
+/** 示波器：横轴=最近 96 个采样点（时间窗口随刷新间隔），绿=发送速率、蓝=接收速率、红=失败速率（包/秒，与收发包同单位）。 */
 @Composable
 private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
     val last = history.lastOrNull()
     SectionCard("示波器") {
         StatRow(
             "实时速率",
-            "↑${"%.1f/s".format(last?.sentRate ?: 0.0)} ↓${"%.1f/s".format(last?.recvRate ?: 0.0)} · 失败 ${"%.0f%%".format((last?.failureRatio ?: 0.0) * 100)}",
+            "↑${"%.1f/s".format(last?.sentRate ?: 0.0)} ↓${"%.1f/s".format(last?.recvRate ?: 0.0)} · 丢包 ${"%.1f/s".format(last?.failureRate ?: 0.0)}",
             Cyan,
         )
         androidx.compose.foundation.Canvas(
@@ -388,9 +388,9 @@ private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
                 drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(w, y), 1f)
             }
             if (history.size < 2) return@Canvas
-            // y 轴动态缩放：收发速率以历史峰值为满量程；失败占比独立缩放（量级通常远小于 1.0）
+            // y 轴动态缩放：收发速率以历史峰值为满量程；失败速率独立缩放（量级通常远小于收发）
             val maxRate = history.maxOf { maxOf(it.sentRate, it.recvRate) }.coerceAtLeast(0.1)
-            val maxFail = history.maxOf { it.failureRatio }.coerceAtLeast(0.01)
+            val maxFail = history.maxOf { it.failureRate }.coerceAtLeast(0.1)
             val n = history.size
             val step = w / 95f
             fun yOf(rate: Double): Float = (h - (rate / maxRate * h).toFloat()).coerceIn(0f, h)
@@ -407,8 +407,8 @@ private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
             // 发送绿线 / 接收蓝线
             drawPath(trace(::yOf) { it.sentRate }, MeshGreen, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
             drawPath(trace(::yOf) { it.recvRate }, Cyan, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
-            // 失败占比红线（独立缩放：与发送包数相对的失败率，替代原琥珀脉冲）
-            drawPath(trace(::yOfFail) { it.failureRatio }, MeshRed, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            // 失败速率红线（独立缩放：丢包/失败事件包每秒，与收发包同单位）
+            drawPath(trace(::yOfFail) { it.failureRate }, MeshRed, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
             // 扫描头：最新发送速率亮点（history.size >= 2 已保证 last 非空）
             drawCircle(Cyan, 3.5f, androidx.compose.ui.geometry.Offset(w, yOf(history.last().sentRate)))
         }

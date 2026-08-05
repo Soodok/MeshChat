@@ -103,13 +103,12 @@ class MeshChatViewModel(
     )
 
     // ---- 调试中心·示波器（采样历史，内存态；随刷新循环追加，重启清零）----
-    /** 单次采样点：发送/接收总速率 + 本轮失败事件占比（0-1，失败事件数 ÷ 发送包数，与发送示数相对）。 */
-    data class OscPoint(val sentRate: Double, val recvRate: Double, val failureRatio: Double)
+    /** 单次采样点：发送/接收总速率 + 本轮失败事件速率（包/秒，与收发包同单位，可直观对比）。 */
+    data class OscPoint(val sentRate: Double, val recvRate: Double, val failureRate: Double)
 
     private val _oscHistory = MutableStateFlow<List<OscPoint>>(emptyList())
     val oscHistory: StateFlow<List<OscPoint>> = _oscHistory.asStateFlow()
     private var prevFailureTotal = 0L   // 上次采样时失败累计（解码失败 + BLE 写/notify 失败）
-    private var prevSentTotal = 0L      // 上次采样时发送包累计（失败占比分母）
 
     private val _debugControlState = MutableStateFlow(DebugControlState())
     val debugControlState: StateFlow<DebugControlState> = _debugControlState.asStateFlow()
@@ -170,20 +169,16 @@ class MeshChatViewModel(
                             "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
                             else -> snap.peers.sortedByDescending { it.rssi }
                         })
-                        // 示波器采样：总收发速率 + 本轮失败占比（失败事件 ÷ 发送包数，与发送示数相对）
+                        // 示波器采样：总收发速率 + 本轮失败事件速率（包/秒，与收发包同单位）
                         val f = snap.failures
                         val failureTotal = f.receivedDecodeFailures + f.bleWriteFailed + f.bleNotifyFailed
-                        val sentDelta = snap.frames.values.sumOf { it.sent } - prevSentTotal
-                        prevSentTotal += sentDelta
-                        val failureRatio = if (sentDelta > 0) {
-                            (failureTotal - prevFailureTotal).toDouble() / sentDelta
-                        } else 0.0
+                        val failureRate = (failureTotal - prevFailureTotal) / (s.refreshIntervalMs / 1000.0)
                         prevFailureTotal = failureTotal
                         _oscHistory.value = (
                             _oscHistory.value + OscPoint(
                                 sentRate = snap.frames.values.sumOf { it.sentRatePerSec },
                                 recvRate = snap.frames.values.sumOf { it.receivedRatePerSec },
-                                failureRatio = failureRatio.coerceIn(0.0, 1.0),
+                                failureRate = failureRate,
                             )
                             ).takeLast(OSC_MAX_POINTS)
                     }

@@ -127,16 +127,22 @@ class DebugStatsTest {
     }
 
     @Test
-    fun `receive success rate is received over received plus failures`() {
-        val stats = DebugStats()
+    fun `receive success rate uses sliding window not cumulative`() {
+        val clock = FakeClock()
+        val stats = DebugStats(clock.tick)
         assertEquals(-1.0, stats.receiveSuccessRate(), 1e-9)   // 无样本
         stats.recordReceived(FrameKind.PING, 10)
         stats.recordReceived(FrameKind.PING, 10)
-        assertEquals(1.0, stats.receiveSuccessRate(), 1e-9)    // 只收无失败 → 100%
+        assertEquals(1.0, stats.receiveSuccessRate(), 1e-9)    // 窗口内只收无失败 → 100%
         stats.recordReceivedFailure()
-        assertEquals(2.0 / 3.0, stats.receiveSuccessRate(), 1e-9)  // 2 收 1 失败
         stats.recordGattWrite(false)
-        assertEquals(2.0 / 4.0, stats.receiveSuccessRate(), 1e-9)  // 写失败计入分母
+        assertEquals(2.0 / 4.0, stats.receiveSuccessRate(), 1e-9)  // 2 收 + 2 失败（解码+写）
+        // 窗口滑动：超过 5s 后事件全部过期 → 无样本（不累计历史）
+        clock.now = 6_000
+        assertEquals(-1.0, stats.receiveSuccessRate(), 1e-9)
+        // 新窗口重新统计
+        stats.recordReceived(FrameKind.PING, 10)
+        assertEquals(1.0, stats.receiveSuccessRate(), 1e-9)
         stats.reset()
         assertEquals(-1.0, stats.receiveSuccessRate(), 1e-9)   // 清零后无样本
     }

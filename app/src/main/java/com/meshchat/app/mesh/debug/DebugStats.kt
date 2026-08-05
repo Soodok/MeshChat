@@ -172,12 +172,16 @@ class DebugStats(
     }
 
     /**
-     * 全局接收成功率(0-1) = 累计接收包数 ÷ (累计接收包数 + 累计失败事件数)。
-     * 失败事件 = 解码失败 + BLE 写失败 + notify 失败；无任何样本返回 -1（Mesh 页信号显示，v1.1.20）。
+     * 接收成功率(0-1) = 窗口内接收包数 ÷ (窗口内接收包数 + 窗口内失败事件数)（v1.1.21：5s 滑动窗口，反映近期变化，
+     * 不再累计导致"连接越久越强"）。失败事件 = 解码失败 + BLE 写失败 + notify 失败；窗口无样本返回 -1。
      */
-    fun receiveSuccessRate(): Double {
-        val rx = recvTotal.values.sum()
-        val fail: Long = synchronized(bleLock) { receivedFailures + writeFailed + notifyFailed }
+    fun receiveSuccessRate(windowMs: Long = 5_000L): Double {
+        val now = clock()
+        var rx = 0L
+        for (kind in FrameKind.entries) {
+            rx += recvQ[kind]?.statsSince(now, windowMs)?.get(0) ?: 0L
+        }
+        val fail = receivedFailuresQ.statsSince(now, windowMs)[0] + bleFailQ.statsSince(now, windowMs)[0]
         return if (rx + fail > 0) rx.toDouble() / (rx + fail) else -1.0
     }
 
@@ -200,6 +204,8 @@ class DebugStats(
     private var writeRequestsReceived = 0L
     private var servicesDiscovered = 0L
     private var servicesDiscoverRetries = 0L
+    /** BLE 写/notify 失败时间戳队列（接收成功率 5s 窗口的分母）。 */
+    private val bleFailQ = EventQueue()
 
     fun recordBleBroadcast(bytes: Int) {
         broadcastQ.push(clock(), bytes)
@@ -212,8 +218,12 @@ class DebugStats(
     fun recordGattConnectSuccess() = synchronized(bleLock) { gattConnectSuccess++; gattCurrent++ }
     fun recordGattDisconnect() = synchronized(bleLock) { gattDisconnects++; gattCurrent = (gattCurrent - 1).coerceAtLeast(0) }
     fun recordMtu(value: Int) = synchronized(bleLock) { mtu = value }
-    fun recordGattWrite(ok: Boolean) = synchronized(bleLock) { if (ok) writeSuccess++ else writeFailed++ }
-    fun recordNotify(ok: Boolean) = synchronized(bleLock) { if (ok) notifySuccess++ else notifyFailed++ }
+    fun recordGattWrite(ok: Boolean) = synchronized(bleLock) {
+        if (ok) writeSuccess++ else { writeFailed++; bleFailQ.push(clock(), 0) }
+    }
+    fun recordNotify(ok: Boolean) = synchronized(bleLock) {
+        if (ok) notifySuccess++ else { notifyFailed++; bleFailQ.push(clock(), 0) }
+    }
     fun recordWriteRequestReceived() = synchronized(bleLock) { writeRequestsReceived++ }
     fun recordServicesDiscovered(ok: Boolean) = synchronized(bleLock) { if (ok) servicesDiscovered++ else servicesDiscoverRetries++ }
 
@@ -363,6 +373,7 @@ class DebugStats(
         broadcastQ.reset()
         receivedFailuresQ.reset(); receivedFailures = 0
         synchronized(bleLock) {
+            bleFailQ.reset()
             broadcastCount = 0; broadcastBytes = 0; scanResultCount = 0; scanStartedCount = 0
             gattConnectAttempts = 0; gattConnectSuccess = 0; gattDisconnects = 0; gattCurrent = 0; mtu = 0
             writeSuccess = 0; writeFailed = 0; notifySuccess = 0; notifyFailed = 0
