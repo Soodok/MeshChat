@@ -15,14 +15,24 @@
     <!-- API 26-28 写公共 Downloads 需要（API 29+ 走 MediaStore 免权限） -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Android 13+：仅在用户从界面主动启用消息提醒时请求，启动时不弹窗。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 前台服务必需（Android 9+ targetSdk>=28 startForegroundService 校验；缺失启动即 SecurityException 崩溃） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ 强制 FGS type 权限：connectedDevice 对应前台服务的 foregroundServiceType，缺失 startForeground 抛 SecurityException -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
         android:name=".MeshChatApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher_meshchat"
         android:label="MeshChat"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_meshchat"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MeshChat">
+        android:theme="@style/Theme.MeshChat"
+        android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"
