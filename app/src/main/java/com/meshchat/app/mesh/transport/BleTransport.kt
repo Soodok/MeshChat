@@ -24,6 +24,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import com.meshchat.app.mesh.debug.DebugStats
 import com.meshchat.app.mesh.protocol.MeshFrame
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -35,6 +36,8 @@ class BleTransport(
     private val serviceUuid: UUID = UUID.fromString("0000A5E1-0000-1000-8000-00805F9B34FB"),
     private val charUuid: UUID = UUID.fromString("0000A5E2-0000-1000-8000-00805F9B34FB"),
     private val advertiseShortId: String = "0000",
+    /** 调试统计内核（默认独立实例，生产由 Application 注入共享单例）。 */
+    private val debugStats: DebugStats = DebugStats(),
 ) : MeshTransport {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -91,8 +94,10 @@ class BleTransport(
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             Log.d(TAG, "server conn[${device.address}] newState=$newState status=$status")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                debugStats.recordGattConnectSuccess()
                 serverDevices[device.address] = device
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                debugStats.recordGattDisconnect()
                 serverDevices.remove(device.address)
                 subscribedDevices.remove(device.address)
             }
@@ -130,6 +135,7 @@ class BleTransport(
             offset: Int,
             value: ByteArray?,
         ) {
+            debugStats.recordWriteRequestReceived()
             Log.d(TAG, "write request from ${device.address} (${value?.size ?: 0}B)")
             gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
             // 关键修复：收到对端写帧即视为"可 notify 回传"——收到帧本身证明链路活着。
@@ -176,11 +182,15 @@ class BleTransport(
     }
 
     override fun broadcast(frame: MeshFrame) {
+        debugStats.recordBleBroadcast(frame.payload.size)
         writeToConnectedClients(frame)   // 通道1：本机 central → 已连接的对端（写特征）
         notifySubscribers(frame)          // 通道2：已连入本机的对端（server 连接，notify 回传）
     }
 
     override fun sendTo(peerId: String, frame: MeshFrame) { /* 按 peerId 解析地址后写入 */ }
+
+    override fun bluetoothEnabled(): Boolean =
+        runCatching { bluetoothAdapter?.isEnabled == true }.getOrDefault(false)
 
     private fun registerServer() {
         gattServer = bluetoothManager.openGattServer(context, gattServerCallback)
@@ -241,6 +251,7 @@ class BleTransport(
     }
 
     private fun startScanning() {
+        debugStats.recordScanStarted()
         val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -251,6 +262,7 @@ class BleTransport(
     private val advertiseCallback = object : AdvertiseCallback() {}
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            debugStats.recordScanResult()
             val device = result.device ?: return
             val record = result.scanRecord ?: return
             // 识别广播中的 Service Data：内容为本机短 ID
@@ -277,6 +289,7 @@ class BleTransport(
     }
 
     private fun connectTo(device: BluetoothDevice) {
+        debugStats.recordGattConnectAttempt()
         if (gattClients.containsKey(device.address)) return
         val now = System.currentTimeMillis()
         val lastTry = connectAttempts[device.address]
@@ -295,6 +308,7 @@ class BleTransport(
                         Log.d(TAG, "connect[${device.address}] newState=$newState status=$status")
                         when (newState) {
                             BluetoothProfile.STATE_CONNECTED -> {
+                                debugStats.recordGattConnectSuccess()
                                 connectAttempts.remove(device.address)
                                 servicesDiscovered = false
                                 runCatching { gatt.requestMtu(512) }
@@ -302,6 +316,7 @@ class BleTransport(
                                 discoverServicesWithTimeout(gatt)
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
+                                debugStats.recordGattDisconnect()
                                 // 移除连接记录：持续扫描重新发现时会自动重连（受冷却限制）
                                 discoverTimer?.let { mainHandler.removeCallbacks(it) }
                                 gatt.close()
@@ -333,6 +348,7 @@ class BleTransport(
 
                     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                         Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
+                        if (status == BluetoothGatt.GATT_SUCCESS) debugStats.recordMtu(mtu)
                     }
 
                     @Deprecated("Deprecated in Java")
@@ -357,6 +373,7 @@ class BleTransport(
                         servicesDiscovered = true
                         discoverTimer?.let { mainHandler.removeCallbacks(it) }
                         if (status == BluetoothGatt.GATT_SUCCESS) {
+                            debugStats.recordServicesDiscovered(true)
                             Log.d(TAG, "services discovered[${device.address}]")
                             // 订阅对端 notify（写 CCCD），对端即可通过 server→central 通道回传帧
                             val char = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
@@ -378,9 +395,11 @@ class BleTransport(
                             }
                             pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it.second) }
                         } else if (discoverRetries++ < MAX_DISCOVER_RETRIES) {
+                            debugStats.recordServicesDiscovered(false)
                             Log.w(TAG, "services discover failed(status=$status), retry #$discoverRetries")
                             gatt.discoverServices()
                         } else {
+                            debugStats.recordServicesDiscovered(false)
                             Log.w(TAG, "services discover failed(status=$status), giving up")
                         }
                     }
@@ -423,6 +442,7 @@ class BleTransport(
         val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return false
         characteristic.value = frame.encode()
         val ok = runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
+        debugStats.recordGattWrite(ok)
         if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
         return ok
     }
@@ -446,6 +466,7 @@ class BleTransport(
                         server.notifyCharacteristicChanged(device, characteristic, false)
                     }
                 }.onFailure { Log.e(TAG, "notify error for $address: $it") }.isSuccess
+                debugStats.recordNotify(ok)
                 if (!ok) {
                     Log.w(TAG, "notify failed for $address")
                     // 对端连接可能已死/未真正订阅：移除登记，避免持续对死连接空发 notify；
