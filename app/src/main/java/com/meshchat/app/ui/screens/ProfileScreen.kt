@@ -13,9 +13,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +38,9 @@ fun ProfileScreen(
     modifier: Modifier = Modifier,
     onOpenKeys: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpenSecurityCenter: () -> Unit,
+    onOpenDebugCenter: () -> Unit,
 ) {
     Column(modifier = modifier.padding(top = 14.dp)) {
         Row(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -50,6 +56,9 @@ fun ProfileScreen(
         HorizontalDivider(color = MeshDivider)
         ProfileRow(Icons.Outlined.Key, "身份密钥", "查看本机短 ID", onClick = onOpenKeys)
         ProfileRow(Icons.Outlined.Settings, "通用设置", "设置项", onClick = onOpenSettings)
+        ProfileRow(Icons.Outlined.Security, "安全中心", "权限状态与安全能力", onClick = onOpenSecurityCenter)
+        ProfileRow(Icons.Outlined.BugReport, "调试中心", "实时收发/链路数据", onClick = onOpenDebugCenter)
+        ProfileRow(Icons.Outlined.Info, "关于 MeshChat", "版本、通信方式与隐私说明", onClick = onOpenAbout)
         HorizontalDivider(color = MeshDivider)
         Text("MeshChat · 离线近场安全通信", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(24.dp))
     }

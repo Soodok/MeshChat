@@ -46,6 +46,10 @@ import com.meshchat.app.data.ChatMessage
 import com.meshchat.app.data.ChatPreview
 import com.meshchat.app.data.MainDestination
 import com.meshchat.app.data.MeshPeer
+import com.meshchat.app.security.capability.SecurityCapabilityStatus
+import com.meshchat.app.security.local.LocalSecuritySnapshot
+import com.meshchat.app.security.model.SecurityCapability
+import com.meshchat.app.ui.MeshChatViewModel
 import com.meshchat.app.ui.components.SecurityNote
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Ink
@@ -70,6 +74,8 @@ fun MeshChatHome(
     backgroundEnabled: Boolean,
     onBackgroundEnabledChange: (Boolean) -> Unit,
     onOpenConversation: (String?) -> Unit,
+    onToggleConversationArchived: (String) -> Unit,
+    onDeleteConversation: (String) -> Unit,
     onStartDiscovery: () -> Unit,
     onSendInvite: (String) -> Unit,
     onAcceptInvite: (String) -> Unit,
@@ -77,6 +83,16 @@ fun MeshChatHome(
     onSendMessage: (String) -> Unit,
     onSendFile: (name: String, mime: String, size: Long, openSource: () -> java.io.InputStream) -> Unit,
     onOpenFile: (ChatMessage) -> Unit = {},
+    securityCapabilities: Map<SecurityCapability, SecurityCapabilityStatus>,
+    localSecuritySnapshot: LocalSecuritySnapshot?,
+    onRequestNotificationPermission: () -> Unit,
+    onOpenSecuritySettings: () -> Unit,
+    onRefreshLocalSecurity: () -> Unit,
+    onDeleteLocalSecurityHistory: () -> Unit,
+    debugSnapshot: com.meshchat.app.mesh.debug.DebugSnapshot,
+    debugSettings: MeshChatViewModel.DebugSettings,
+    onUpdateDebugSettings: (MeshChatViewModel.DebugSettings) -> Unit,
+    onResetDebugStats: () -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -162,8 +178,26 @@ fun MeshChatHome(
             "settings" -> GeneralSettingsScreen(
                 displayName = displayName,
                 onDisplayNameChange = onDisplayNameChange,
+                canEditDisplayName = sessions.isNotEmpty(),
                 backgroundEnabled = backgroundEnabled,
                 onBackgroundEnabledChange = onBackgroundEnabledChange,
+                onBack = { profileDetail = null },
+            )
+            "about" -> AboutScreen(onBack = { profileDetail = null })
+            "debug" -> DebugCenterScreen(
+                snapshot = debugSnapshot,
+                settings = debugSettings,
+                onSettingsChange = onUpdateDebugSettings,
+                onReset = onResetDebugStats,
+                onBack = { profileDetail = null },
+            )
+            "security" -> SecurityCenterScreen(
+                statuses = securityCapabilities,
+                localSnapshot = localSecuritySnapshot,
+                onRequestNotificationPermission = onRequestNotificationPermission,
+                onOpenAppSettings = onOpenSecuritySettings,
+                onRefreshLocalSecurity = onRefreshLocalSecurity,
+                onDeleteLocalHistory = onDeleteLocalSecurityHistory,
                 onBack = { profileDetail = null },
             )
         }
@@ -231,7 +265,9 @@ fun MeshChatHome(
                 MainDestination.CHATS -> ChatsScreen(
                     modifier = Modifier.padding(contentPadding),
                     conversations = conversations,
-                    onChatSelected = { onOpenConversation(it) }, // 进入所选会话（id = 对端短 ID），而非硬编码"我"
+                    onChatSelected = { onOpenConversation(it) }, // 进入所选会话（id = 对端短 ID），而非硬编码“我”
+                    onToggleArchived = onToggleConversationArchived,
+                    onDeleteConversation = onDeleteConversation,
                 )
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),
@@ -249,6 +285,9 @@ fun MeshChatHome(
                     modifier = Modifier.padding(contentPadding),
                     onOpenKeys = { profileDetail = "keys" },
                     onOpenSettings = { profileDetail = "settings" },
+                    onOpenAbout = { profileDetail = "about" },
+                    onOpenSecurityCenter = { profileDetail = "security" },
+                    onOpenDebugCenter = { profileDetail = "debug" },
                 )
             }
         }

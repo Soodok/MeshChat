@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.meshchat.app.MeshChatApplication
 import com.meshchat.app.data.MeshRepositoryImpl
+import com.meshchat.app.data.ConversationPreferences
 
 class MeshChatViewModelFactory : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
@@ -18,7 +19,11 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             setDisplayName = { app.displayName = it },
             backgroundEnabledProvider = { app.backgroundEnabled },
             setBackgroundEnabled = { app.backgroundEnabled = it },
+            conversationPreferences = ConversationPreferences(app),
             conversationRequest = app.conversationRequest,
+            securityCapabilityManager = app.securityCapabilityManager,
+            localSecurityCoordinator = app.localSecurityCoordinator,
+            debugStats = app.debugStats,
         ) as T
     }
 }

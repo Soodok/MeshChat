@@ -4,13 +4,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.meshchat.app.data.ChatMessage
 import com.meshchat.app.data.ChatPreview
+import com.meshchat.app.data.ConversationPreferences
 import com.meshchat.app.data.FileUiMeta
 import com.meshchat.app.data.MeshPeer
 import com.meshchat.app.data.MeshRepository
 import com.meshchat.app.mesh.transfer.TransferStatus
+import com.meshchat.app.security.capability.SecurityCapabilityManager
+import com.meshchat.app.security.capability.SecurityCapabilityStatus
+import com.meshchat.app.security.model.SecurityCapability
+import com.meshchat.app.security.local.LocalSecurityCoordinator
+import com.meshchat.app.security.local.LocalSecuritySnapshot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -26,7 +35,11 @@ class MeshChatViewModel(
     private val setDisplayName: (String) -> Unit,
     private val backgroundEnabledProvider: () -> Boolean,
     private val setBackgroundEnabled: (Boolean) -> Unit,
+    private val conversationPreferences: ConversationPreferences,
     private val conversationRequest: kotlinx.coroutines.flow.StateFlow<String?>,
+    private val securityCapabilityManager: SecurityCapabilityManager,
+    private val localSecurityCoordinator: LocalSecurityCoordinator,
+    private val debugStats: com.meshchat.app.mesh.debug.DebugStats,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
@@ -36,17 +49,77 @@ class MeshChatViewModel(
 
     val localDisplayName: String get() = displayNameProvider()
 
-    fun updateDisplayName(value: String) = setDisplayName(value)
+    /** 安全中心在 Step 04 消费的只读能力状态；不影响基础聊天可用性。 */
+    val securityCapabilities: StateFlow<Map<com.meshchat.app.security.model.SecurityCapability, SecurityCapabilityStatus>> =
+        securityCapabilityManager.status
+
+    private val _localSecuritySnapshot = MutableStateFlow<LocalSecuritySnapshot?>(null)
+    val localSecuritySnapshot: StateFlow<LocalSecuritySnapshot?> = _localSecuritySnapshot
+
+    fun recordSecurityCapabilityResult(capability: SecurityCapability, granted: Boolean) {
+        if (granted) securityCapabilityManager.recordGranted(setOf(capability))
+        else securityCapabilityManager.recordDenied(setOf(capability))
+    }
+
+    fun updateDisplayName(value: String) {
+        if (sessions.value.isNotEmpty()) setDisplayName(value)
+    }
 
     val backgroundEnabled: Boolean get() = backgroundEnabledProvider()
 
     fun updateBackgroundEnabled(value: Boolean) = setBackgroundEnabled(value)
 
     init {
+        securityCapabilityManager.refresh()
+        refreshLocalSecurity()
         // 通知点击 → 打开对应会话（convId = conv-<shortId>，target 取短 ID）
         viewModelScope.launch {
             conversationRequest.collect { convId ->
                 convId?.let { openConversation(it.substringAfterLast("-")) }
+            }
+        }
+        startDebugLoop()
+    }
+
+    // ---- 调试中心 ----
+    /** 仪表盘调节项（内存态，重启回默认；暂停仅冻结刷新，计数继续累积）。 */
+    data class DebugSettings(
+        val refreshIntervalMs: Long = 1_000L,
+        val windowMs: Long = 5_000L,
+        val perMinute: Boolean = false,
+        val showFrames: Boolean = true,
+        val showBle: Boolean = true,
+        val showRoutes: Boolean = true,
+        val showDelivery: Boolean = true,
+        val showFile: Boolean = true,
+        val sortBy: String = "rssi",   // rssi / name / recent
+        val paused: Boolean = false,
+    )
+
+    private val _debugSettings = MutableStateFlow(DebugSettings())
+    val debugSettings: StateFlow<DebugSettings> = _debugSettings.asStateFlow()
+    private val _debugSnapshot = MutableStateFlow<com.meshchat.app.mesh.debug.DebugSnapshot>(com.meshchat.app.mesh.debug.DebugSnapshot())
+    val debugSnapshot: StateFlow<com.meshchat.app.mesh.debug.DebugSnapshot> = _debugSnapshot.asStateFlow()
+
+    fun updateDebugSettings(transform: (DebugSettings) -> DebugSettings) {
+        _debugSettings.value = transform(_debugSettings.value)
+    }
+
+    fun resetDebugStats() = debugStats.reset()
+
+    private fun startDebugLoop() {
+        viewModelScope.launch {
+            while (true) {
+                val s = _debugSettings.value
+                if (!s.paused) {
+                    val snap = debugStats.snapshot(s.windowMs)
+                    _debugSnapshot.value = snap.copy(peers = when (s.sortBy) {
+                        "name" -> snap.peers.sortedBy { it.displayName }
+                        "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
+                        else -> snap.peers.sortedByDescending { it.rssi }
+                    })
+                }
+                delay(s.refreshIntervalMs)
             }
         }
     }
@@ -83,8 +156,19 @@ class MeshChatViewModel(
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val conversations: StateFlow<List<ChatPreview>> = repository.observeConversations()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val archivedConversationIds = MutableStateFlow(conversationPreferences.archivedIds())
+    private val readTimes = MutableStateFlow(conversationPreferences.readTimes())
+
+    val conversations: StateFlow<List<ChatPreview>> = combine(
+        repository.observeConversations(), archivedConversationIds, readTimes, conversationTarget,
+    ) { list, archivedIds, reads, openConversationId ->
+        list.map { preview ->
+            preview.copy(
+                archived = preview.id in archivedIds,
+                unread = preview.id != openConversationId && !preview.lastMessageSentByMe && preview.lastMessageAt > (reads[preview.id] ?: 0L),
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val peers: StateFlow<List<MeshPeer>> = repository.observePeers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -118,7 +202,38 @@ class MeshChatViewModel(
 
     /** 打开/关闭会话（target = 对端短 ID；null = 返回列表）。 */
     fun openConversation(target: String?) {
+        conversationTarget.value?.let { markConversationRead(it) }
         conversationTarget.value = target
+        target?.let { markConversationRead(it) }
+    }
+
+    /** Runs on a worker: no network is consulted and no permission dialog is triggered. */
+    fun refreshLocalSecurity() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _localSecuritySnapshot.value = localSecurityCoordinator.refresh()
+        }
+    }
+
+    fun deleteLocalSecurityHistory() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _localSecuritySnapshot.value = localSecurityCoordinator.deleteLocalHistory()
+        }
+    }
+
+    fun toggleConversationArchived(peerId: String) {
+        val archived = peerId !in archivedConversationIds.value
+        conversationPreferences.setArchived(peerId, archived)
+        archivedConversationIds.value = conversationPreferences.archivedIds()
+    }
+
+    fun deleteConversation(peerId: String) {
+        viewModelScope.launch { repository.deleteConversation(peerId) }
+    }
+
+    private fun markConversationRead(peerId: String) {
+        val now = System.currentTimeMillis()
+        conversationPreferences.markRead(peerId, now)
+        readTimes.value = readTimes.value + (peerId to now)
     }
 
     /** 向当前会话发送消息：目标取当前会话，而非硬编码"我"（修复发消息永远自环）。 */

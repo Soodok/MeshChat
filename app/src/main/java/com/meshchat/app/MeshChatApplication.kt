@@ -22,6 +22,13 @@ import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
 import com.meshchat.app.mesh.transfer.AndroidFileSaver
 import com.meshchat.app.mesh.transport.BleTransport
+import com.meshchat.app.security.capability.AndroidSecurityCapabilityStateReader
+import com.meshchat.app.security.capability.SecurityCapabilityManager
+import com.meshchat.app.security.capability.SharedPreferencesCapabilityPromptStore
+import com.meshchat.app.security.local.AndroidLocalSecuritySignalCollector
+import com.meshchat.app.security.local.LocalSecurityCoordinator
+import com.meshchat.app.security.risk.EncryptedSecurityEventStore
+import com.meshchat.app.security.risk.SecurityRiskEngine
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +41,23 @@ class MeshChatApplication : Application() {
     }
 
     val store by lazy { RoomMeshStore(MeshDatabase.build(this)) }
+
+    /** 权限/能力状态集中管理；只读系统状态，绝不在应用启动时弹出可选安全能力的授权框。 */
+    val securityCapabilityManager by lazy {
+        SecurityCapabilityManager(
+            stateReader = AndroidSecurityCapabilityStateReader(this),
+            promptStore = SharedPreferencesCapabilityPromptStore(this),
+        )
+    }
+
+    /** Local-first security pipeline; it has no network, VPN, or cloud-service dependency. */
+    val localSecurityCoordinator by lazy {
+        LocalSecurityCoordinator(
+            signalCollector = AndroidLocalSecuritySignalCollector(this),
+            riskEngine = SecurityRiskEngine(),
+            eventStore = EncryptedSecurityEventStore(this),
+        )
+    }
 
     /** 本机身份：短 ID 持久化存储，重启后保持同一 ID（否则会话/路由随重启失效）。 */
     val identity by lazy {
@@ -64,7 +88,10 @@ class MeshChatApplication : Application() {
                 .edit().putBoolean("background_enabled", value).apply()
         }
 
-    val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId) }
+    /** 调试统计内核（真机调试中心数据源；内存态，重启清零）。 */
+    val debugStats by lazy { com.meshchat.app.mesh.debug.DebugStats() }
+
+    val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId, debugStats = debugStats) }
     val service by lazy {
         val notifications = NotificationHelper(this)
         val svc = MeshService(
@@ -77,6 +104,7 @@ class MeshChatApplication : Application() {
                 notifications.showMessage(fromName, text.take(80), "conv-$fromId")
             },
             onFileSaved = { fileName -> notifications.showFileSaved(fileName) },
+            debugStats = debugStats,
         )
         // 广播确认键注入：BleTransport 扫描响应携带本机已收消息键，对端扫描即确认送达（无需 GATT 连接）
         transport.setAckProvider { svc.broadcastAckKeys() }
