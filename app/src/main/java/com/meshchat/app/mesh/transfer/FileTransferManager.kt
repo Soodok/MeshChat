@@ -1,6 +1,7 @@
 package com.meshchat.app.mesh.transfer
 
 import android.util.Log
+import com.meshchat.app.mesh.debug.FrameKind
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
@@ -144,7 +145,9 @@ class FileTransferManager(
             ttl = 8, ts = System.currentTimeMillis(),
             body = FileAckBody(fileId = fileId, totalChunks = totalChunks, missing = emptyList()),
         )
-        sendFrame(senderId, MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray()))
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray())
+        debugStats.recordSent(FrameKind.FILE_ACK, frame.payload.size)
+        sendFrame(senderId, frame)
     }
 
     /** 孤儿 .part 临时文件：进程重启后无法续传，立即删除。 */
@@ -205,6 +208,7 @@ class FileTransferManager(
                         retries++
                         Log.w(TAG, "window timeout ${s.fileId} [$windowStart..${s.expectEnd}] retry=$retries")
                         if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
+                        debugStats.recordFileWindowRetry()
                         broadcastWindow(s, cache)
                         continue
                     }
@@ -272,7 +276,9 @@ class FileTransferManager(
             body = FileBody(fileId = s.fileId, fileName = name, mime = mime, size = size,
                 totalChunks = totalChunks, chunkIndex = index, chunkData = data),
         )
-        sendFrame(s.dstId, MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray()))
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray())
+        debugStats.recordSent(FrameKind.FILE_CHUNK, frame.payload.size)
+        sendFrame(s.dstId, frame)
     }
 
     private fun updateProgress(s: SendSession, status: TransferStatus) {
@@ -311,6 +317,7 @@ class FileTransferManager(
         }
         session.lastActivity = System.currentTimeMillis()
         val data = runCatching { Base64.getDecoder().decode(body.chunkData) }.getOrNull() ?: return
+        debugStats.recordReceived(FrameKind.FILE_CHUNK, data.size)
         session.writeChunk(body.chunkIndex, data)   // 重复块内部幂等跳过
         updateReceiveProgress(session, TransferStatus.RUNNING)
 
@@ -325,6 +332,7 @@ class FileTransferManager(
 
     fun onFileAck(envelope: MeshEnvelope) {
         val body = envelope.body as? FileAckBody ?: return
+        debugStats.recordReceived(FrameKind.FILE_ACK, 0)
         val s = sending ?: return
         if (body.fileId == s.fileId) {
             Log.d(TAG, "recv FILE_ACK ${body.fileId} missing=${body.missing.size}")
@@ -375,7 +383,9 @@ class FileTransferManager(
             body = FileAckBody(fileId = s.fileId, totalChunks = s.totalChunks,
                 missing = if (final) emptyList() else s.missing.take(MAX_ACK_MISSING)),
         )
-        sendFrame(s.senderId, MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray()))
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray())
+        debugStats.recordSent(FrameKind.FILE_ACK, frame.payload.size)
+        sendFrame(s.senderId, frame)
     }
 
     private fun updateReceiveProgress(s: ReceiveSession, status: TransferStatus) {
