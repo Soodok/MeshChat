@@ -1,6 +1,7 @@
 package com.meshchat.app.mesh.service
 
 import android.util.Log
+import com.meshchat.app.mesh.debug.DebugControl
 import com.meshchat.app.mesh.debug.DebugStats
 import com.meshchat.app.mesh.debug.FileStats
 import com.meshchat.app.mesh.debug.FrameKind
@@ -168,6 +169,12 @@ class MeshService(
     /** 上次 PING 广播时刻（tick 200ms 节流到 1s）。 */
     private var lastPingAt = 0L
 
+    // ---- 调试主动控制（volatile 可调；默认值=常量，未调节时行为零变化；内存态重启回默认）----
+    @Volatile private var heartbeatIntervalMs: Long = HEARTBEAT_INTERVAL_MS
+    @Volatile private var lostHeartbeatMs: Long = LOST_HEARTBEAT_MS
+    @Volatile private var resendBaseMs: Long = RECEIPT_TIMEOUT_MS
+    @Volatile private var resendMaxMs: Long = MAX_RESEND_INTERVAL_MS
+
     /** 服务启动时刻（用于持久化恢复节点的寻找超时判定）。 */
     private val startupAt = System.currentTimeMillis()
 
@@ -291,6 +298,17 @@ class MeshService(
             serviceStarted = { started },
             bluetoothEnabled = { runCatching { transport.bluetoothEnabled() }.getOrDefault(false) },
         )
+        // 调试主动控制：UI 调节经 DebugStats 控制总线转发到本服务控制面
+        debugStats.attachControls { cmd ->
+            when (cmd) {
+                is DebugControl.SetHeartbeat -> setHeartbeat(cmd.intervalMs, cmd.lostMs)
+                is DebugControl.SetResendPolicy -> setResendPolicy(cmd.baseMs, cmd.maxMs)
+                DebugControl.SuspendSignaling -> suspendSignaling()
+                DebugControl.ResumeSignaling -> resumeSignaling()
+                DebugControl.BroadcastPing -> broadcastPing()
+                DebugControl.ResetControls -> resetDebugControls()
+            }
+        }
     }
 
     /** 移除可再生的持久化缓存（过期 outbox、长期未见节点）；聊天记录与已存文件保留。 */
@@ -506,7 +524,7 @@ class MeshService(
      * 每 1s 广播 PING（带本机昵称）；按三色状态机更新各节点：在线绿 / 断线重连黄 / 离线黑（保留不删除）。
      */
     internal fun heartbeatTick(now: Long) {
-        if (now - lastPingAt >= HEARTBEAT_INTERVAL_MS) {
+        if (now - lastPingAt >= heartbeatIntervalMs) {
             lastPingAt = now
             sendPing()
         }
@@ -527,11 +545,11 @@ class MeshService(
             val presence = when {
                 entry.lastSeen == 0L && now - startupAt < SEARCHING_TIMEOUT_MS -> PeerPresence.SEARCHING  // 持久化恢复，6s 内寻找中
                 entry.lastSeen == 0L -> PeerPresence.OFFLINE              // 6s 仍未找到 → 自动失联
-                age < LOST_HEARTBEAT_MS -> PeerPresence.ONLINE            // 有心跳 → 在线
+                age < lostHeartbeatMs -> PeerPresence.ONLINE            // 有心跳 → 在线
                 age < OFFLINE_THRESHOLD_MS -> PeerPresence.RECONNECTING   // 短暂失联 → 断线重连中
                 else -> PeerPresence.OFFLINE                              // 长时间无响应 → 离线（保留）
             }
-            entry.lost = age > LOST_HEARTBEAT_MS
+            entry.lost = age > lostHeartbeatMs
             entry.info = entry.info.copy(lost = entry.lost, presence = presence)
         }
         // v1.1.0 路由清理：中继失联（lastSeen 超 OFFLINE_THRESHOLD 或已移除）→ 移除经它的路由；
@@ -558,7 +576,7 @@ class MeshService(
         while (it.hasNext()) {
             val (id, p) = it.next()
             // 退避间隔：重试越多间隔越长（5s, 10s, 20s, 40s, 60s 封顶）
-            val gap = if (pingTriggered) 0L else minOf(RECEIPT_TIMEOUT_MS * (1L shl minOf(p.retries, 4)), MAX_RESEND_INTERVAL_MS)
+            val gap = if (pingTriggered) 0L else minOf(resendBaseMs * (1L shl minOf(p.retries, 4)), resendMaxMs)
             if (now - p.lastSentAt < gap) continue
             p.retries++
             p.lastSentAt = now
@@ -590,6 +608,37 @@ class MeshService(
         val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray())
         recordSentFrame(frame)
         transport.broadcast(frame)
+    }
+
+    // ===== 调试主动控制（UI 调节经 DebugStats 控制总线下发；全部幂等可逆）=====
+    /** 心跳间隔 + 失联阈值（联动由 UI 保证 lostMs = intervalMs * 2）。 */
+    fun setHeartbeat(intervalMs: Long, lostMs: Long) {
+        heartbeatIntervalMs = intervalMs.coerceIn(200L, 10_000L)
+        lostHeartbeatMs = lostMs.coerceIn(500L, 20_000L)
+    }
+
+    /** 消息重发退避（基础间隔 + 封顶）。 */
+    fun setResendPolicy(baseMs: Long, maxMs: Long) {
+        resendBaseMs = baseMs.coerceIn(500L, 60_000L)
+        resendMaxMs = maxMs.coerceIn(baseMs, 300_000L)
+    }
+
+    /** 暂停发现层（广播+扫描；已建立 GATT 连接收发不受影响）。 */
+    fun suspendSignaling() = transport.suspendDiscovery()
+
+    /** 恢复发现层。 */
+    fun resumeSignaling() = transport.resumeDiscovery()
+
+    /** 立即广播一轮 PING（链路探测）。 */
+    fun broadcastPing() = sendPing()
+
+    /** 恢复全部默认并确保未处于暂停态。 */
+    fun resetDebugControls() {
+        heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS
+        lostHeartbeatMs = LOST_HEARTBEAT_MS
+        resendBaseMs = RECEIPT_TIMEOUT_MS
+        resendMaxMs = MAX_RESEND_INTERVAL_MS
+        resumeSignaling()
     }
 
     /** 本机一跳邻居 shortId 列表（lastSeen 距今 ≤ RELAY_FRESH_WINDOW_MS 的新鲜节点；上限 8 个控帧预算）。 */

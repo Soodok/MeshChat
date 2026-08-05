@@ -973,4 +973,57 @@ class MeshServiceTest {
         service.handleFrame(pongFrame)
         assertEquals("PONG 不应产生广播", 1, transport.broadcastCount)
     }
+
+    @Test
+    fun `heartbeat interval can be adjusted via debug control`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+
+        service.setHeartbeat(2_000, 4_000)
+        val t0 = System.currentTimeMillis() + 10_000   // 虚拟推进 10s：确保距 start 时 lastPingAt 超过任何心跳间隔
+        service.heartbeatTick(t0)                       // 必发一轮 PING，lastPingAt = t0
+        transport.frames.clear()
+        service.heartbeatTick(t0 + 500)                 // 0.5s < 2s → 不发
+        assertTrue("0.5s 后不应发 PING", transport.frames.isEmpty())
+        service.heartbeatTick(t0 + 2_500)               // 2.5s ≥ 2s → 发
+        assertTrue("2.5s 后应发 PING", transport.frames.isNotEmpty())
+    }
+
+    @Test
+    fun `resend policy can be adjusted via debug control`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+
+        service.setResendPolicy(10_000, 60_000)
+        service.sendText(convId = "c1", dstId = "OTHER", text = "hi")  // 非会话节点 → 转发，pendingReceipts 登记未确认
+        val t0 = System.currentTimeMillis() + 5_000      // 距发送约 5s < 新基础 10s
+        transport.frames.clear()
+        service.resendPendingReceipts(t0, pingTriggered = false)
+        assertTrue("10s 内不应重发", transport.frames.isEmpty())
+        service.resendPendingReceipts(t0 + 10_000, pingTriggered = false)  // 距发送约 15s ≥ 10s
+        assertTrue("10s 后应重发", transport.frames.isNotEmpty())
+    }
+
+    @Test
+    fun `signaling can be suspended and resumed via debug control`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+
+        service.suspendSignaling()
+        assertTrue(transport.discoverySuspended)
+        service.resumeSignaling()
+        assertTrue(!transport.discoverySuspended)
+    }
 }
