@@ -495,26 +495,51 @@ class BleTransport(
         }
     }
 
+    /**
+     * 写特征值（API 兼容）：API 33+ 用单参重载（内部使用 characteristic.writeType）；
+     * API 26-32 用三参重载（单参会 NoSuchMethodError——v1.1.27 把确认写也统一成单参，
+     * 导致 A12/A11 作发送端时所有写失败、接收端 0 块，v1.1.26 三参正常）。
+     */
+    private fun writeCharacteristicCompat(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        bytes: ByteArray,
+        writeType: Int,
+    ): Boolean {
+        characteristic.writeType = writeType
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
+        } else {
+            // API 26-32：三参重载（单参会 NoSuchMethodError）。编译期返回类型是 int（SDK 36 定义），
+            // 但运行时 API<33 该重载实际返回 boolean（成功 true=1 / 失败 false=0）→ 统一判 r != 0。
+            val r = runCatching { gatt.writeCharacteristic(characteristic, bytes, writeType) }.getOrDefault(0)
+            r != 0
+        }
+    }
+
     private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame, unreliable: Boolean = false): Boolean {
         val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return false
-        characteristic.value = frame.encode()
+        val bytes = frame.encode()
         if (unreliable) {
             // 无确认写（文件数据块）：不等待对端 GATT 应答 → 写往返消失。丢帧由应用层窗口重传兜底。
             // 对端特性无 WRITE_NO_RESPONSE 属性（老版本）→ 写失败回退可靠确认写。
-            val okNoAck: Boolean = runCatching {
-                // 统一走 writeType 字段 + 单参写：API 33+ 单参重载内部即使用 characteristic.writeType
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                gatt.writeCharacteristic(characteristic)
-            }.getOrDefault(false)
+            val okNoAck = writeCharacteristicCompat(
+                gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+            )
             if (!okNoAck) {
                 Log.w(TAG, "writeNoAck failed, fallback to acknowledged write (${frame.type}, ${frame.payload.size}B)")
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                return runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
+                val ok = writeCharacteristicCompat(
+                    gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                )
+                debugStats.recordGattWrite(ok)
+                return ok
             }
             debugStats.recordGattWrite(true)
             return true
         }
-        val ok = runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
+        val ok = writeCharacteristicCompat(
+            gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        )
         debugStats.recordGattWrite(ok)
         if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
         return ok
