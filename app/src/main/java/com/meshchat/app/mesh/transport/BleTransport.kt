@@ -51,6 +51,13 @@ class BleTransport(
     @Volatile
     private var txPowerDbm: Int = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
 
+    /**
+     * 当前协商的 GATT MTU（v1.1.36）：onMtuChanged 成功时更新，默认 23。
+     * 文件传输引擎按 currentMtu() 动态算块大小；写帧前检查 payload ≤ mtu-3，不足排队等 MTU（防 MTU 未协商完成即写大帧失败）。
+     */
+    @Volatile
+    private var negotiatedMtu = 23
+
     private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
@@ -204,6 +211,9 @@ class BleTransport(
 
     override fun bluetoothEnabled(): Boolean =
         runCatching { bluetoothAdapter?.isEnabled == true }.getOrDefault(false)
+
+    /** 当前协商 GATT MTU（文件传输引擎动态块大小依据）。 */
+    override fun currentMtu(): Int = negotiatedMtu
 
     /** 调试控制：设置广播发射功率(dBm，仅限四档)——重启广播生效（广播更新有频率限制）。 */
     override fun setTxPowerLevel(power: Int) {
@@ -403,7 +413,12 @@ class BleTransport(
                     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                         Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
                         DebugLogBuffer.log(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
-                        if (status == BluetoothGatt.GATT_SUCCESS) debugStats.recordMtu(mtu)
+                        if (status == BluetoothGatt.GATT_SUCCESS) {
+                            debugStats.recordMtu(mtu)
+                            negotiatedMtu = mtu
+                            // MTU 就绪后补写排队帧（服务可能早已发现、帧因超 MTU 滞留——v1.1.36 关键补写点）
+                            tryFlush(device.address)
+                        }
                     }
 
                     @Deprecated("Deprecated in Java")
@@ -449,7 +464,8 @@ class BleTransport(
                                     }
                                 }
                             }
-                            pendingFrames.remove(device.address)?.forEach { writeTo(gatt, it.second) }
+                            // 服务发现成功：统一补写排队帧（含因 MTU 不足滞留的）
+                            tryFlush(device.address)
                         } else if (discoverRetries++ < MAX_DISCOVER_RETRIES) {
                             debugStats.recordServicesDiscovered(false)
                             Log.w(TAG, "services discover failed(status=$status), retry #$discoverRetries")
@@ -466,12 +482,12 @@ class BleTransport(
     }
 
     private fun writeToConnectedClients(frame: MeshFrame, unreliable: Boolean = false) {
-        val now = System.currentTimeMillis()
         // 快照 key 再遍历：写失败会移除死连接，不能在 forEach 中改 map
         gattClients.keys.toList().forEach { address ->
             val gatt = gattClients[address] ?: return@forEach
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
-            if (characteristic != null) {
+            // 可写条件 = 服务已发现 && 帧 ≤ 当前 MTU 载荷（v1.1.36 加 MTU 检查：MTU 未协商完成/协商不足时大帧写必失败）
+            if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
                 if (!writeTo(gatt, frame, unreliable)) {
                     // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
                     val state = runCatching {
@@ -484,14 +500,39 @@ class BleTransport(
                     }
                 }
             } else {
-                // 服务尚未发现：暂存，待 onServicesDiscovered 后补写；超时帧丢弃防永久滞留
-                val queued = pendingFrames.getOrPut(address) { mutableListOf() }
-                queued.removeAll { now - it.first > PENDING_FRAME_TIMEOUT_MS }
-                if (queued.size >= 32) queued.removeAt(0)
-                queued.add(now to frame)
-                Log.w(TAG, "service not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
-                DebugLogBuffer.log(TAG, "service NOT ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
+                // 服务尚未发现 或 MTU 尚未协商到容纳该帧：暂存，待就绪（onServicesDiscovered/onMtuChanged）后补写；超时帧丢弃防永久滞留
+                queueFrame(address, frame)
             }
+        }
+    }
+
+    /** 暂存待补写帧（服务未发现 / MTU 不足）；超时清理 + 限长防无限增长。 */
+    private fun queueFrame(address: String, frame: MeshFrame) {
+        val now = System.currentTimeMillis()
+        val queued = pendingFrames.getOrPut(address) { mutableListOf() }
+        queued.removeAll { now - it.first > PENDING_FRAME_TIMEOUT_MS }
+        if (queued.size >= 32) queued.removeAt(0)
+        queued.add(now to frame)
+        Log.w(TAG, "service/MTU not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
+        DebugLogBuffer.log(TAG, "service/MTU NOT ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
+    }
+
+    /** 服务发现成功/MTU 就绪后补写排队帧；仍不满足条件的（MTU 未到）留队等下次触发。 */
+    private fun tryFlush(address: String) {
+        val gatt = gattClients[address] ?: return
+        val pending = pendingFrames.remove(address) ?: return
+        val keep = mutableListOf<Pair<Long, MeshFrame>>()
+        for ((ts, frame) in pending) {
+            val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
+            if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
+                writeTo(gatt, frame)
+            } else {
+                keep.add(ts to frame)
+            }
+        }
+        if (keep.isNotEmpty()) {
+            Log.d(TAG, "flush $address: ${keep.size} frames still waiting for MTU/service")
+            pendingFrames[address] = keep
         }
     }
 

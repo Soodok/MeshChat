@@ -59,4 +59,10 @@ interface MeshTransport {
 
     /** 恢复发现层（广播+扫描）；默认无操作，BleTransport 覆写。 */
     fun resumeDiscovery() = Unit
+
+    /**
+     * 当前协商的 GATT MTU 字节数（BleTransport 覆写，onMtuChanged 更新）；-1 = 未知/非 BLE 载体。
+     * 文件传输引擎据此动态计算块大小，保证帧 ≤ MTU-3 载荷，避免硬编码大块在 MTU 协商不足的真机上写失败。
+     */
+    fun currentMtu(): Int = -1
 }

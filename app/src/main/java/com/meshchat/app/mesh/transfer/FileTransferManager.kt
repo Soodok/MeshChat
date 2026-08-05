@@ -81,6 +81,19 @@ class FileTransferManager(
         const val MAX_ACK_MISSING = WINDOW
         /** 接收端 ACK 合并兜底：距上次 ACK 超过该时长仍有未确认新块 → 立即回（最后不足整窗的收尾不拖到窗口超时）。 */
         const val ACK_FLUSH_MS = 300L
+
+        /**
+         * 发送端数据块大小（v1.1.36，MTU 感知动态）：块 + 61B v2 CHUNK 帧头必须 ≤ 协商 MTU 载荷（mtu-3）。
+         * 真机 MTU 常协商不足 512（497/247 常见），v1.1.35 硬编码 456 块（帧 509B）在载荷 <509 时每帧写失败
+         * → 发送方 write FAILED / 0 块。此函数按 transport.currentMtu() 动态降块，帧永远 ≤ 载荷。
+         * mtu ≤ 0（未知/测试替身）按 512 计（上限块）。下限 64B 保块数可控（MTU 极端小时宁可多块也不能超帧）。
+         */
+        fun dynamicChunkBytes(mtu: Int): Int {
+            val effective = if (mtu <= 0) 512 else mtu
+            val payload = effective - 3
+            val header = 61   // v2 CHUNK 固定头（36 字符完整 UUID fid）
+            return (payload - header).coerceIn(64, File3.CHUNK_BYTES)
+        }
     }
 
     private val _progress = MutableStateFlow<FileProgress?>(null)
@@ -95,6 +108,8 @@ class FileTransferManager(
         val fileName: String,
         val mime: String,
         val size: Long,
+        /** v1.1.36：MTU 感知动态块大小（发送端块 = 帧数据部分；帧头 61B，帧 ≤ 协商 MTU 载荷）。 */
+        val chunkBytes: Int,
     ) {
         var expectStart = 0
         var expectEnd = 0
@@ -102,7 +117,7 @@ class FileTransferManager(
         /** v1.1.28 预处理产物：压缩/原样复制后的数据文件（发送期间存在，完毕删除）。 */
         var dataFile: File? = null
         var compressed: Boolean = false
-        /** 预处理后算出的总块数（压缩后字节数 / File3.CHUNK_BYTES）。 */
+        /** 预处理后算出的总块数（压缩后字节数 / chunkBytes）。 */
         var totalChunks = 0
     }
 
@@ -124,14 +139,21 @@ class FileTransferManager(
         var size: Long = 0L,
         var totalChunks: Int = 0,
         var compressed: Boolean = false,
-        /** 块定位步长：老 FILE/FILE2 用 CHUNK_BYTES(120)，FILE3 用 File3.CHUNK_BYTES(480)。 */
+        /**
+         * 块定位步长：老 FILE/FILE2 用 CHUNK_BYTES(120)；FILE3 v1 老帧（v1.1.28~35）用 LEGACY_CHUNK_BYTES(456)。
+         * FILE3 v2 帧（v1.1.36+）不依赖本字段——帧内携带 byteOffset 显式定位（块大小随发送端 MTU 动态变化）。
+         */
         val chunkSize: Int = CHUNK_BYTES,
     ) {
         /** 写块；返回是否为新块（重复块幂等跳过并返回 false，用于触发立即回 ACK）。 */
-        fun writeChunk(chunkIndex: Int, data: ByteArray): Boolean {
+        fun writeChunk(chunkIndex: Int, data: ByteArray): Boolean =
+            writeChunkAt(chunkIndex, chunkIndex * chunkSize.toLong(), data)
+
+        /** 按字节偏移写块（v1.1.36 FILE3 v2 帧用：发送端块大小动态，偏移由帧携带）；返回是否为新块。 */
+        fun writeChunkAt(chunkIndex: Int, byteOffset: Long, data: ByteArray): Boolean {
             if (chunkIndex in received) return false
             java.io.RandomAccessFile(tmpFile, "rw").use { raf ->
-                raf.seek(chunkIndex * chunkSize.toLong())
+                raf.seek(byteOffset)
                 raf.write(data)
             }
             received += chunkIndex
@@ -208,9 +230,11 @@ class FileTransferManager(
             fileId = UUID.randomUUID().toString(),
             convId = convId, dstId = dstId, openSource = openSource,
             fileName = fileName, mime = mime, size = size,
+            // v1.1.36：块大小按当前协商 MTU 动态计算——MTU 协商不足 512 时自动降块，帧永不超载荷（防 write FAILED/0 块）
+            chunkBytes = dynamicChunkBytes(transport.currentMtu()),
         )
-        Log.d(TAG, "sendFile start fileId=${session.fileId} size=$size chunks=${(size + CHUNK_BYTES - 1) / CHUNK_BYTES} name=$fileName")
-        DebugLogBuffer.log(TAG, "sendFile start size=$size name=$fileName")
+        Log.d(TAG, "sendFile start fileId=${session.fileId} size=$size chunks=${(size + session.chunkBytes - 1) / session.chunkBytes} chunkBytes=${session.chunkBytes} mtu=${transport.currentMtu()} name=$fileName")
+        DebugLogBuffer.log(TAG, "sendFile start size=$size name=$fileName chunkBytes=${session.chunkBytes} mtu=${transport.currentMtu()}")
         sending = session
         senderJob = scope.launch { runSender(session) }
         return session.fileId
@@ -237,7 +261,7 @@ class FileTransferManager(
                 }
                 s.expectStart = windowStart
                 s.expectEnd = windowStart + inWindow - 1
-                Log.d(TAG, "send window ${s.fileId} [$windowStart..${s.expectEnd}]/${totalChunks} frames=${inWindow} chunkBytes=$CHUNK_BYTES")
+                Log.d(TAG, "send window ${s.fileId} [$windowStart..${s.expectEnd}]/${totalChunks} frames=${inWindow} chunkBytes=${s.chunkBytes}")
                 DebugLogBuffer.log(TAG, "send window [$windowStart..${s.expectEnd}]/$totalChunks frames=$inWindow")
                 broadcastWindow(s, cache)
                 var retries = 0
@@ -321,7 +345,7 @@ class FileTransferManager(
             s.compressed = false
         }
         val file = s.dataFile ?: return false
-        s.totalChunks = ((file.length() + File3.CHUNK_BYTES - 1) / File3.CHUNK_BYTES).toInt()
+        s.totalChunks = ((file.length() + s.chunkBytes - 1) / s.chunkBytes).toInt()
         s.totalChunks > 0
     } catch (e: Exception) {
         Log.e(TAG, "prepareData error: $e")
@@ -335,13 +359,13 @@ class FileTransferManager(
         val cache = LinkedHashMap<Int, ByteArray>()
         FileInputStream(file).use { source ->
             // InputStream.skip 不保证跳过全部字节（Java 契约），必须循环丢弃到目标偏移，否则多窗口读到的块错位
-            var remaining = start * File3.CHUNK_BYTES.toLong()
+            var remaining = start * s.chunkBytes.toLong()
             while (remaining > 0) {
                 val n = source.skip(minOf(remaining, 1L shl 16))
                 if (n <= 0) break
                 remaining -= n
             }
-            val buf = ByteArray(File3.CHUNK_BYTES)
+            val buf = ByteArray(s.chunkBytes)
             for (i in 0 until count) {
                 val n = source.read(buf)
                 if (n <= 0) break
@@ -378,13 +402,13 @@ class FileTransferManager(
     }
 
     /**
-     * 数据块帧（v1.1.28 FILE3）：纯二进制（无 base64/JSON 膨胀，数据占比 ~95%）。
+     * 数据块帧（v1.1.28 FILE3 二进制；v1.1.36 v2：头带 byteOffset，接收端按字节偏移写盘，块大小可动态）。
      * v1.1.31 起走确认写 broadcast：无确认写（WRITE_NO_RESPONSE）在 Android 蓝牙栈静默丢帧
      * （返回 true 但实际未送达、无回调），文件帧回退确认写保证可靠；丢帧仍由窗口重传兜底。
      * 老版本对端 decode MC3 帧失败自动丢帧。
      */
     private fun broadcastChunk3(s: SendSession, seq: Int, data: ByteArray) {
-        val payload = File3.encodeChunk(shortId, s.fileId, seq, data)
+        val payload = File3.encodeChunk(shortId, s.fileId, seq, seq * s.chunkBytes.toLong(), data)
         val frame = MeshFrame(FrameType.DATA, payload)
         debugStats.recordSent(FrameKind.FILE_CHUNK, payload.size)
         transport.broadcast(frame)
@@ -491,7 +515,8 @@ class FileTransferManager(
                 fileId = start.fid, convId = "conv-${start.srcId}", senderId = start.srcId,
                 tmpFile = File(tmpDir(), "${start.fid}.part"),
                 received = mutableSetOf(), lastActivity = System.currentTimeMillis(),
-                chunkSize = File3.CHUNK_BYTES,
+                // v1 老帧（v1.1.28~35 发送端，块固定 456）定位步长；v2 帧走 byteOffset 不依赖
+                chunkSize = File3.LEGACY_CHUNK_BYTES,
             )
         }
         session.lastActivity = System.currentTimeMillis()
@@ -512,12 +537,18 @@ class FileTransferManager(
                 fileId = chunk.fid, convId = "conv-${chunk.srcId}", senderId = chunk.srcId,
                 tmpFile = File(tmpDir(), "${chunk.fid}.part"),
                 received = mutableSetOf(), lastActivity = System.currentTimeMillis(),
-                chunkSize = File3.CHUNK_BYTES,
+                // v1 老帧定位步长；v2 帧（byteOffset ≥ 0）写盘不依赖
+                chunkSize = File3.LEGACY_CHUNK_BYTES,
             )
         }
         session.lastActivity = System.currentTimeMillis()
         debugStats.recordReceived(FrameKind.FILE_CHUNK, chunk.data.size)
-        val isNew = session.writeChunk(chunk.seq, chunk.data)
+        // v2 帧（块大小随发送端 MTU 动态）按帧内字节偏移写盘；v1 老帧回退 seq×456
+        val isNew = if (chunk.byteOffset >= 0) {
+            session.writeChunkAt(chunk.seq, chunk.byteOffset, chunk.data)
+        } else {
+            session.writeChunk(chunk.seq, chunk.data)
+        }
         session.ackDirty = true
         if (session.isComplete && session.metaReady) {
             completeReceive(session)

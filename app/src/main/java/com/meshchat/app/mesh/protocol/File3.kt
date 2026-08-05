@@ -21,17 +21,24 @@ import java.nio.charset.StandardCharsets
  */
 object File3 {
     const val MAGIC = "MC3"
+    /** v1 帧（v1.1.28~35）：CHUNK 头 53B（seq4+len2，块定位 = seq×456）。 */
     const val VER = 0x01
+    /** v2 帧（v1.1.36+）：CHUNK 头 61B（seq4+byteOffset8+len2），块定位 = 帧内字节偏移，不依赖固定块大小。 */
+    const val VER2 = 0x02
 
     const val KIND_CHUNK = 0x01
     const val KIND_START = 0x02
 
     /**
-     * 数据块字节：53B 帧头（fid=36 字符完整 UUID：magic3+ver1+kind1+srcLen1+srcId4+fidLen1+fid36+seq4+len2）+ 456B = 509B
-     * 恰好 ≤ MTU 512 可用载荷 509B。**v1.1.35 修复**：原 480B 块 + 53B 头 = 533B 超 MTU → 真机每帧写失败/静默丢 → 0 块
-     * （v1.1.28 测试用 8 字符短 fid 头 25B → 505B 通过，生产用完整 UUID 漏网）。
+     * v2 数据块上限：61B 帧头（magic3+ver1+kind1+srcLen1+srcId4+fidLen1+fid36+seq4+byteOffset8+len2）+ 448B = 509B
+     * 恰好 ≤ MTU 512 可用载荷 509B。v1.1.35 曾用 456B 块 + 53B 头 = 509B 贴着上限——但真机 MTU 常协商不足
+     * 512（497/247 常见），509B 帧仍超载荷 → 发送方 write FAILED（v1.1.36 起发送端按实际 MTU 动态降块大小，
+     * 448 仅为 MTU=512 时的上限）。
      */
-    const val CHUNK_BYTES = 456
+    const val CHUNK_BYTES = 448
+
+    /** v1 老格式（v1.1.28~35）块大小：仅接收端定位老版本发送的 v1 CHUNK 帧用（seq×456）。 */
+    const val LEGACY_CHUNK_BYTES = 456
 
     /** START 帧元数据预算（BLE 单帧硬限制）：文件名 UTF-8 最大字节、mime 最大字节（超长截断防御）。 */
     const val MAX_NAME_BYTES = 400
@@ -55,6 +62,8 @@ object File3 {
         val fid: String,
         val seq: Int,
         val data: ByteArray,
+        /** v2 帧的块字节偏移（写盘定位用）；v1 老帧 = -1（调用方回退 seq×LEGACY_CHUNK_BYTES）。 */
+        val byteOffset: Long = -1L,
     )
 
     sealed class Frame {
@@ -89,20 +98,26 @@ object File3 {
         return buf.array()
     }
 
-    fun encodeChunk(srcId: String, fid: String, seq: Int, data: ByteArray): ByteArray {
+    /**
+     * v2 数据块帧（v1.1.36+）：携带字节偏移（byteOffset）显式定位——发送端块大小可随 MTU 动态变化，
+     * 接收端写盘不再依赖固定块大小。
+     * 头 61B：magic3+ver1+kind1+srcLen1+srcId+fidLen1+fid+seq4+byteOffset8+len2。
+     */
+    fun encodeChunk(srcId: String, fid: String, seq: Int, byteOffset: Long, data: ByteArray): ByteArray {
         require(data.size <= CHUNK_BYTES) { "chunk ${data.size}B exceeds $CHUNK_BYTES" }
         val srcBytes = srcId.toByteArray(StandardCharsets.UTF_8)
         val fidBytes = fid.toByteArray(StandardCharsets.UTF_8)
-        // 固定头 13B：magic3+ver1+kind1+srcLen1+fidLen1+seq4+len2
-        val buf = ByteBuffer.allocate(13 + srcBytes.size + fidBytes.size + data.size)
+        // 固定头 21B：magic3+ver1+kind1+srcLen1+fidLen1+seq4+byteOffset8+len2
+        val buf = ByteBuffer.allocate(21 + srcBytes.size + fidBytes.size + data.size)
         buf.put(MAGIC.toByteArray(StandardCharsets.US_ASCII))
-        buf.put(VER.toByte())
+        buf.put(VER2.toByte())
         buf.put(KIND_CHUNK.toByte())
         buf.put(srcBytes.size.toByte())
         buf.put(srcBytes)
         buf.put(fidBytes.size.toByte())
         buf.put(fidBytes)
         buf.putInt(seq)
+        buf.putLong(byteOffset)
         buf.putShort(data.size.toShort())
         buf.put(data)
         return buf.array()
@@ -117,7 +132,8 @@ object File3 {
     fun parse(payload: ByteArray): Frame? {
         if (!isFile3(payload)) return null
         if (payload.size < 6) return null
-        if (payload[3] != VER.toByte()) return null
+        val ver = payload[3].toInt()
+        if (ver != VER.toInt() && ver != VER2.toInt()) return null
         val kind = payload[4].toInt()
         var pos = 5
         val srcLen = payload[pos].toInt() and 0xFF; pos++
@@ -131,11 +147,19 @@ object File3 {
             KIND_CHUNK -> {
                 if (pos + 6 > payload.size) return null
                 val seq = ByteBuffer.wrap(payload, pos, 4).int; pos += 4
+                val byteOffset: Long
+                if (ver == VER2.toInt()) {
+                    // v2：seq 后是 8B byteOffset（显式写盘定位，块大小动态），再 len2
+                    if (pos + 10 > payload.size) return null
+                    byteOffset = ByteBuffer.wrap(payload, pos, 8).long; pos += 8
+                } else {
+                    byteOffset = -1L
+                }
                 val len = ByteBuffer.wrap(payload, pos, 2).short.toInt() and 0xFFFF; pos += 2
                 if (len > CHUNK_BYTES || pos + len > payload.size) return null
                 val data = ByteArray(len)
                 System.arraycopy(payload, pos, data, 0, len)
-                Frame.ChunkFrame(Chunk(srcId, fid, seq, data))
+                Frame.ChunkFrame(Chunk(srcId, fid, seq, data, byteOffset))
             }
             KIND_START -> {
                 if (pos + 13 > payload.size) return null

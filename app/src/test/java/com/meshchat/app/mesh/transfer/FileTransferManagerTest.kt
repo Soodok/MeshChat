@@ -387,12 +387,13 @@ class FileTransferManagerTest {
 
     @Test
     fun `file3 frames fit BLE single-frame budget`() {
-        // v1.1.28 FILE3 二进制帧：CHUNK（53B 头含完整 UUID fid + 456B 数据）与长文件名 START 都必须 ≤ MTU 512 可用载荷 509B。
-        // **必须用 36 字符完整 UUID 当 fid**——v1.1.28 用 8 字符短 fid 测试（头 25B+480B=505B 通过），
-        // 生产 fid=完整 UUID → 头 53B+480B=533B 超 509B → 真机每帧失败 0 块（v1.1.35 修复：块 480→456）。
+        // v1.1.36 v2 CHUNK：61B 头（含 36 字符完整 UUID fid + 8B byteOffset）+ 448B 数据 = 509B ≤ MTU 512 载荷。
+        // 历史教训：v1.1.28 用 8 字符短 fid 测试漏网（头 25B），生产 fid=完整 UUID 头超预算 → 真机 0 块；
+        // v1.1.35 块 480→456（53B 头 + 456B = 509B）贴着上限，但真机 MTU 常协商不足 512 → 仍 write FAILED，
+        // v1.1.36 起发送端按 currentMtu() 动态降块（此测试断言 MTU=512 上限情形）。
         val fullFid = "12345678-1234-1234-1234-123456789012"   // 36 字符（与 UUID.randomUUID().toString() 同长，无前缀）
-        val chunk = File3.encodeChunk("AB12", fullFid, 0, ByteArray(File3.CHUNK_BYTES) { 1 })
-        println("DIAG FILE3 CHUNK bytes=${chunk.size} budget=509")
+        val chunk = File3.encodeChunk("AB12", fullFid, 0, 0L, ByteArray(File3.CHUNK_BYTES) { 1 })
+        println("DIAG FILE3 CHUNK v2 bytes=${chunk.size} budget=509")
         assertTrue("FILE3 CHUNK 帧 ${chunk.size}B 超 509B", chunk.size <= 509)
 
         val start = File3.encodeStart(
@@ -402,6 +403,21 @@ class FileTransferManagerTest {
         )
         println("DIAG FILE3 START bytes=${start.size} budget=509")
         assertTrue("FILE3 START 帧 ${start.size}B 超 509B", start.size <= 509)
+    }
+
+    @Test
+    fun `chunk bytes adapt to negotiated mtu`() {
+        // v1.1.36 动态块大小：MTU 协商不足 512 时块自动变小，帧 ≤ mtu-3 载荷（防 write FAILED/0 块）
+        val max = FileTransferManager.dynamicChunkBytes(-1)     // 未知/测试替身 → 按 512
+        assertEquals(File3.CHUNK_BYTES, max)
+        assertTrue(File3.encodeChunk("AB12", "12345678-1234-1234-1234-123456789012", 0, 0L, ByteArray(max) { 1 }).size <= 512 - 3)
+        val mtu497 = FileTransferManager.dynamicChunkBytes(497)
+        assertTrue("MTU 497 块应 < 上限", mtu497 < File3.CHUNK_BYTES)
+        assertTrue(File3.encodeChunk("AB12", "12345678-1234-1234-1234-123456789012", 0, 0L, ByteArray(mtu497) { 1 }).size <= 497 - 3)
+        val mtu247 = FileTransferManager.dynamicChunkBytes(247)
+        assertTrue("MTU 247 块应显著变小", mtu247 < mtu497)
+        assertTrue(File3.encodeChunk("AB12", "12345678-1234-1234-1234-123456789012", 0, 0L, ByteArray(mtu247) { 1 }).size <= 247 - 3)
+        assertTrue("块下限 64", FileTransferManager.dynamicChunkBytes(120) >= 64)
     }
 
     @Test
