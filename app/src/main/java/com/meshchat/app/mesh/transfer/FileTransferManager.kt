@@ -220,7 +220,12 @@ class FileTransferManager(
                         updateProgress(s, TransferStatus.RUNNING)
                         break
                     }
-                    for (i in need) broadcastChunk(s, i, cache[i]!!, totalChunks, s.fileName, s.mime, s.size)
+                    // 补发缺失块：必须与初发同样 30ms 节流——BLE 广播连发触发系统丢弃，
+                    // 零节流突发补发（曾达 180 p/s）会丢得更狠 → missing 不收敛 → retries 秒级爆到上限 FAILED
+                    for (i in need) {
+                        broadcastChunk(s, i, cache[i]!!, totalChunks, s.fileName, s.mime, s.size)
+                        delay(BROADCAST_INTERVAL_MS)
+                    }
                     if (need.size >= s.lastMissingCount) retries++ else retries = 0
                     s.lastMissingCount = need.size
                     if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
