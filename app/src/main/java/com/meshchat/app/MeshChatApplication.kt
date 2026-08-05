@@ -18,6 +18,7 @@ import com.meshchat.app.mesh.service.MeshChatService
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.service.NotificationHelper
 import com.meshchat.app.mesh.service.SharedPrefsSessionStore
+import com.meshchat.app.mesh.storage.EncryptedMeshStore
 import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
 import com.meshchat.app.mesh.transfer.AndroidFileSaver
@@ -40,7 +41,8 @@ class MeshChatApplication : Application() {
         getSystemService(BluetoothManager::class.java)
     }
 
-    val store by lazy { RoomMeshStore(MeshDatabase.build(this)) }
+    /** 消息存储：落库加密装饰器（v1.1.24）——正文/文件元数据/outbox 信封 AES-GCM + Keystore，Room schema 不动。 */
+    val store by lazy { EncryptedMeshStore(RoomMeshStore(MeshDatabase.build(this)), this) }
 
     /** 权限/能力状态集中管理；只读系统状态，绝不在应用启动时弹出可选安全能力的授权框。 */
     val securityCapabilityManager by lazy {
