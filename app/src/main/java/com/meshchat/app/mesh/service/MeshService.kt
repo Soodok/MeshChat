@@ -4,6 +4,7 @@ import android.util.Log
 import com.meshchat.app.mesh.debug.DebugControl
 import com.meshchat.app.mesh.debug.DebugStats
 import com.meshchat.app.mesh.debug.FileStats
+import com.meshchat.app.mesh.debug.DebugLogBuffer
 import com.meshchat.app.mesh.debug.FrameKind
 import com.meshchat.app.mesh.debug.PeerDebugInfo
 import com.meshchat.app.mesh.debug.RouteDecision
@@ -905,6 +906,7 @@ class MeshService(
                 // v1.1.28 FILE3 二进制文件帧（MC3 魔数）：纯二进制载荷，旁路 JSON 解析直交文件传输层
                 if (File3.isFile3(frame.payload)) {
                     debugStats.recordReceived(FrameKind.FILE_CHUNK, frame.payload.size)
+                    DebugLogBuffer.log("MeshSvc", "recv FILE3 frame ${frame.payload.size}B")
                     handleFile3Frame(frame.payload)
                     return
                 }

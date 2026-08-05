@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -31,8 +32,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import android.content.ContentValues
+import android.content.Context
+import android.provider.MediaStore
 import com.meshchat.app.mesh.debug.DebugSnapshot
 import com.meshchat.app.mesh.debug.FrameKind
 import com.meshchat.app.ui.MeshChatViewModel
@@ -59,6 +65,8 @@ fun DebugCenterScreen(
     onControl: (com.meshchat.app.mesh.debug.DebugControl) -> Unit,
     onResetControls: () -> Unit,
     oscHistory: List<MeshChatViewModel.OscPoint>,
+    debugLogLines: List<String>,
+    onClearLogs: () -> Unit,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
@@ -89,6 +97,7 @@ fun DebugCenterScreen(
             if (settings.showRoutes) RoutesCard(snapshot)
             if (settings.showDelivery) DeliveryCard(snapshot)
             if (settings.showFile) FileCard(snapshot)
+            if (settings.showLog) LogCard(debugLogLines, onClearLogs)
             // 底部系统栏（常驻）——内存为本进程指标：Java 堆已用/上限 + PSS 真实占用
             Text(
                 "运行 ${snapshot.system.uptimeMs / 1000}s · 服务 ${if (snapshot.system.serviceStarted) "ON" else "OFF"} · " +
@@ -272,6 +281,7 @@ private fun toggleSection(s: MeshChatViewModel.DebugSettings, label: String): Me
     "信号" -> s.copy(showRoutes = !s.showRoutes)
     "送达" -> s.copy(showDelivery = !s.showDelivery)
     "文件" -> s.copy(showFile = !s.showFile)
+    "日志" -> s.copy(showLog = !s.showLog)
     else -> s
 }
 
@@ -411,4 +421,52 @@ private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
             drawCircle(Cyan, 3.5f, androidx.compose.ui.geometry.Offset(w, yOf(history.last().sentRate)))
         }
     }
+}
+
+/** 诊断日志板块（v1.1.34）：显示最近事件 + 一键导出 Download（真机免 adb，文件管理器取出发回分析）。 */
+@Composable
+private fun LogCard(logs: List<String>, onClear: () -> Unit) {
+    val context = LocalContext.current
+    var exported by remember { mutableStateOf<String?>(null) }
+    SectionCard("诊断日志 · 导出") {
+        Text(
+            "记录 MeshBle/MeshFile/MeshSvc 关键事件（内存 3000 条，重启清零）。传文件失败后点「导出」，" +
+                "用文件管理器取 Download/meshchat_debug_log.txt 发回分析（免连电脑）。",
+            color = TextSecondary, style = monoStyle(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 6.dp)) {
+            TextButton(onClick = { exported = exportDebugLogToDownloads(context) }) { Text("导出到 Download") }
+            TextButton(onClick = onClear) { Text("清空") }
+        }
+        exported?.let { Text("已导出：$it", color = MeshGreen, style = monoStyle()) }
+        Text("最近 ${logs.size} 条：", color = TextSecondary, style = monoStyle(), modifier = Modifier.padding(top = 4.dp))
+        Column(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState()),
+        ) {
+            logs.forEach { line ->
+                Text(line, color = TextSecondary, style = monoStyle(), fontSize = 9.sp, maxLines = Int.MAX_VALUE)
+            }
+            if (logs.isEmpty()) Text("（暂无日志——先发送/接收文件）", color = TextSecondary, style = monoStyle())
+        }
+    }
+}
+
+/** 导出诊断日志到公共 Download（MediaStore，API 29+ 免权限）。 */
+private fun exportDebugLogToDownloads(context: Context): String {
+    val content = com.meshchat.app.mesh.debug.DebugLogBuffer.dump()
+    if (content.isBlank()) return "日志为空（先传一次文件）"
+    return runCatching {
+        val name = "meshchat_debug_log.txt"
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return "导出失败（MediaStore 不可用）"
+        context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+        val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+        context.contentResolver.update(uri, done, null, null)
+        "meshchat_debug_log.txt"
+    }.getOrElse { "导出失败：$it" }
 }

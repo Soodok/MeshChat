@@ -1,6 +1,7 @@
 package com.meshchat.app.mesh.transfer
 
 import android.util.Log
+import com.meshchat.app.mesh.debug.DebugLogBuffer
 import com.meshchat.app.mesh.debug.FrameKind
 import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileAckBody
@@ -209,6 +210,7 @@ class FileTransferManager(
             fileName = fileName, mime = mime, size = size,
         )
         Log.d(TAG, "sendFile start fileId=${session.fileId} size=$size chunks=${(size + CHUNK_BYTES - 1) / CHUNK_BYTES} name=$fileName")
+        DebugLogBuffer.log(TAG, "sendFile start size=$size name=$fileName")
         sending = session
         senderJob = scope.launch { runSender(session) }
         return session.fileId
@@ -218,6 +220,7 @@ class FileTransferManager(
         // v1.1.28 预处理：压缩（不可压缩回退原样）→ dataFile，确定总块数（压缩后字节数 / File3.CHUNK_BYTES）
         if (!prepareData(s)) {
             Log.e(TAG, "prepareData failed for ${s.fileId}")
+            DebugLogBuffer.log(TAG, "prepareData FAILED size=${s.size}")
             finish(s, TransferStatus.FAILED)
             return
         }
@@ -235,6 +238,7 @@ class FileTransferManager(
                 s.expectStart = windowStart
                 s.expectEnd = windowStart + inWindow - 1
                 Log.d(TAG, "send window ${s.fileId} [$windowStart..${s.expectEnd}]/${totalChunks} frames=${inWindow} chunkBytes=$CHUNK_BYTES")
+                DebugLogBuffer.log(TAG, "send window [$windowStart..${s.expectEnd}]/$totalChunks frames=$inWindow")
                 broadcastWindow(s, cache)
                 var retries = 0
                 while (true) {
@@ -248,6 +252,7 @@ class FileTransferManager(
                     if (ack == null) {
                         retries++
                         Log.w(TAG, "window timeout ${s.fileId} [$windowStart..${s.expectEnd}] retry=$retries")
+                        DebugLogBuffer.log(TAG, "window timeout [$windowStart..${s.expectEnd}] retry=$retries")
                         if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
                         debugStats.recordFileWindowRetry()
                         broadcastWindow(s, cache)
@@ -255,6 +260,7 @@ class FileTransferManager(
                     }
                     val need = ack.missing.filter { it in s.expectStart..s.expectEnd }
                     Log.d(TAG, "ack ${s.fileId} missing=${ack.missing.size} inWindow=${need.size}")
+                    DebugLogBuffer.log(TAG, "recv FILE_ACK missing=${ack.missing.size} inWindow=${need.size}")
                     if (need.isEmpty()) {
                         windowStart += inWindow
                         s.lastMissingCount = Int.MAX_VALUE
@@ -402,6 +408,8 @@ class FileTransferManager(
             sending = null
             senderJob = null
         }
+        if (status == TransferStatus.FAILED) DebugLogBuffer.log(TAG, "send FAILED size=${s.size}")
+        if (status == TransferStatus.DONE) DebugLogBuffer.log(TAG, "send DONE size=${s.size}")
         // 清理预处理产物（压缩/复制数据文件）
         s.dataFile?.delete()
         s.dataFile = null
@@ -579,6 +587,7 @@ class FileTransferManager(
             tmp.delete()
             if (payloadFile !== tmp) payloadFile.delete()
             receivers.remove(s.fileId)
+            DebugLogBuffer.log(TAG, "recv FAILED size mismatch expected=${s.size} got=${payloadFile.length()}")
             updateReceiveProgress(s, TransferStatus.FAILED)
             return
         }

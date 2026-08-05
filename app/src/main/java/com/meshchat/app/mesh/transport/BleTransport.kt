@@ -24,6 +24,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import com.meshchat.app.mesh.debug.DebugLogBuffer
 import com.meshchat.app.mesh.debug.DebugStats
 import com.meshchat.app.mesh.protocol.MeshFrame
 import java.util.UUID
@@ -128,6 +129,7 @@ class BleTransport(
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             Log.d(TAG, "server mtu[${device.address}] mtu=$mtu")
+            DebugLogBuffer.log(TAG, "server mtu[${device.address}] mtu=$mtu")
         }
 
         override fun onCharacteristicWriteRequest(
@@ -358,6 +360,7 @@ class BleTransport(
                                 debugStats.recordGattConnectSuccess()
                                 connectAttempts.remove(device.address)
                                 servicesDiscovered = false
+                                DebugLogBuffer.log(TAG, "connect[${device.address}] CONNECTED status=$status")
                                 runCatching { gatt.requestMtu(512) }
                                     .onFailure { Log.w(TAG, "requestMtu failed: $it") }
                                 // v1.1.27 曾加 setPreferredPhy(2M)+requestConnectionPriority(HIGH)（吞吐优化）——
@@ -367,6 +370,7 @@ class BleTransport(
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
                                 debugStats.recordGattDisconnect()
+                                DebugLogBuffer.log(TAG, "connect[${device.address}] DISCONNECTED status=$status")
                                 // 移除连接记录：持续扫描重新发现时会自动重连（受冷却限制）
                                 discoverTimer?.let { mainHandler.removeCallbacks(it) }
                                 gatt.close()
@@ -398,6 +402,7 @@ class BleTransport(
 
                     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                         Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
+                        DebugLogBuffer.log(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
                         if (status == BluetoothGatt.GATT_SUCCESS) debugStats.recordMtu(mtu)
                     }
 
@@ -425,6 +430,7 @@ class BleTransport(
                         if (status == BluetoothGatt.GATT_SUCCESS) {
                             debugStats.recordServicesDiscovered(true)
                             Log.d(TAG, "services discovered[${device.address}]")
+                            DebugLogBuffer.log(TAG, "services discovered[${device.address}] status=$status")
                             // 订阅对端 notify（写 CCCD），对端即可通过 server→central 通道回传帧
                             val char = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
                             if (char != null) {
@@ -484,6 +490,7 @@ class BleTransport(
                 if (queued.size >= 32) queued.removeAt(0)
                 queued.add(now to frame)
                 Log.w(TAG, "service not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
+                DebugLogBuffer.log(TAG, "service NOT ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
             }
         }
     }
@@ -516,6 +523,7 @@ class BleTransport(
             )
             if (!okNoAck) {
                 Log.w(TAG, "writeNoAck failed, fallback to acknowledged write (${frame.type}, ${frame.payload.size}B)")
+                DebugLogBuffer.log(TAG, "writeNoAck FAILED, fallback (${frame.type}, ${frame.payload.size}B)")
                 val ok = writeCharacteristicCompat(
                     gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
                 )
@@ -529,7 +537,10 @@ class BleTransport(
             gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         )
         debugStats.recordGattWrite(ok)
-        if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
+        if (!ok) {
+            Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
+            DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
+        }
         return ok
     }
 
@@ -555,6 +566,7 @@ class BleTransport(
                 debugStats.recordNotify(ok)
                 if (!ok) {
                     Log.w(TAG, "notify failed for $address")
+                    DebugLogBuffer.log(TAG, "notify FAILED for $address (${bytes.size}B)")
                     // 对端连接可能已死/未真正订阅：移除登记，避免持续对死连接空发 notify；
                     // 对端下次写帧时（onCharacteristicWriteRequest）会自动重新登记
                     subscribedDevices.remove(address)

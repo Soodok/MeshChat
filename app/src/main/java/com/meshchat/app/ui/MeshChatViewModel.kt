@@ -80,6 +80,7 @@ class MeshChatViewModel(
         val showControl: Boolean = true,   // 主动控制板块显隐
         val showFailure: Boolean = true,   // 失败包板块显隐
         val showOsc: Boolean = true,       // 示波器板块显隐
+        val showLog: Boolean = true,       // 诊断日志板块显隐（v1.1.34）
         val sortBy: String = "rssi",   // rssi / name / recent
         val paused: Boolean = false,
     )
@@ -88,6 +89,17 @@ class MeshChatViewModel(
     val debugSettings: StateFlow<DebugSettings> = _debugSettings.asStateFlow()
     private val _debugSnapshot = MutableStateFlow<com.meshchat.app.mesh.debug.DebugSnapshot>(com.meshchat.app.mesh.debug.DebugSnapshot())
     val debugSnapshot: StateFlow<com.meshchat.app.mesh.debug.DebugSnapshot> = _debugSnapshot.asStateFlow()
+
+    // ---- 调试中心·诊断日志（v1.1.34）：内存环形缓冲 + 导出 Download（真机免 adb 抓日志）----
+    private val _debugLogLines = MutableStateFlow<List<String>>(emptyList())
+    val debugLogLines: StateFlow<List<String>> = _debugLogLines.asStateFlow()
+    fun refreshDebugLogs() {
+        _debugLogLines.value = com.meshchat.app.mesh.debug.DebugLogBuffer.recent(120)
+    }
+    fun clearDebugLogs() {
+        com.meshchat.app.mesh.debug.DebugLogBuffer.clear()
+        _debugLogLines.value = emptyList()
+    }
 
     // ---- 调试中心·主动控制（内存态，重启回默认）----
     /** 当前生效控制档位/暂停标记/上次手动 PING 时刻。 */
@@ -163,6 +175,7 @@ class MeshChatViewModel(
                 try {
                     val s = _debugSettings.value
                     if (!s.paused) {
+                        refreshDebugLogs()
                         val snap = debugStats.snapshot(s.windowMs)
                         _debugSnapshot.value = snap.copy(peers = when (s.sortBy) {
                             "name" -> snap.peers.sortedBy { it.displayName }
