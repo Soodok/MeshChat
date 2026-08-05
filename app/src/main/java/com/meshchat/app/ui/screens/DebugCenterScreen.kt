@@ -1,4 +1,4 @@
-﻿package com.meshchat.app.ui.screens
+package com.meshchat.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +52,9 @@ fun DebugCenterScreen(
     onSettingsChange: (MeshChatViewModel.DebugSettings) -> Unit,
     onReset: () -> Unit,
     onBack: () -> Unit,
+    controlState: MeshChatViewModel.DebugControlState,
+    onControl: (com.meshchat.app.mesh.debug.DebugControl) -> Unit,
+    onResetControls: () -> Unit,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
@@ -75,6 +78,7 @@ fun DebugCenterScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (settings.showFrames) FramesCard(snapshot, settings.perMinute)
+            if (settings.showControl) ControlCard(controlState, onControl, onResetControls)
             if (settings.showBle) BleCard(snapshot)
             if (settings.showRoutes) RoutesCard(snapshot)
             if (settings.showDelivery) DeliveryCard(snapshot)
@@ -223,7 +227,7 @@ private fun DebugSettingsPanel(
         Text("板块", color = TextSecondary, style = monoStyle(), modifier = Modifier.padding(top = 8.dp))
         Row {
             listOf(
-                "收发包" to s.showFrames, "BLE" to s.showBle, "信号" to s.showRoutes,
+                "收发包" to s.showFrames, "控制" to s.showControl, "BLE" to s.showBle, "信号" to s.showRoutes,
                 "送达" to s.showDelivery, "文件" to s.showFile,
             ).forEach { (label, on) ->
                 FilterChip(
@@ -245,9 +249,67 @@ private fun DebugSettingsPanel(
 
 private fun toggleSection(s: MeshChatViewModel.DebugSettings, label: String): MeshChatViewModel.DebugSettings = when (label) {
     "收发包" -> s.copy(showFrames = !s.showFrames)
+    "控制" -> s.copy(showControl = !s.showControl)
     "BLE" -> s.copy(showBle = !s.showBle)
     "信号" -> s.copy(showRoutes = !s.showRoutes)
     "送达" -> s.copy(showDelivery = !s.showDelivery)
     "文件" -> s.copy(showFile = !s.showFile)
     else -> s
+}
+
+@Composable
+private fun ControlCard(
+    s: MeshChatViewModel.DebugControlState,
+    onControl: (com.meshchat.app.mesh.debug.DebugControl) -> Unit,
+    onResetControls: () -> Unit,
+) {
+    SectionCard("主动控制") {
+        StatRow("心跳频率", "${s.heartbeatMs}ms · 失联阈值 ${s.lostMs}ms", Cyan)
+        Row {
+            listOf(500L to "0.5s", 1_000L to "1s", 2_000L to "2s", 5_000L to "5s").forEach { (v, label) ->
+                FilterChip(
+                    selected = s.heartbeatMs == v,
+                    onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.SetHeartbeat(v, v * 2)) },
+                    label = { Text(label) },
+                    modifier = Modifier.padding(end = 6.dp),
+                )
+            }
+        }
+        Text("重发退避", color = TextSecondary, style = monoStyle(), modifier = Modifier.padding(top = 8.dp))
+        Row {
+            listOf(
+                3_000L to "基础3s·封顶30s",
+                10_000L to "基础10s·封顶60s",
+                30_000L to "基础30s·封顶120s",
+            ).forEach { (v, label) ->
+                FilterChip(
+                    selected = s.resendBaseMs == v,
+                    onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.SetResendPolicy(v, when (v) { 3_000L -> 30_000L; 10_000L -> 60_000L; else -> 120_000L })) },
+                    label = { Text(label) },
+                    modifier = Modifier.padding(end = 6.dp),
+                )
+            }
+        }
+        Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = s.signalingSuspended,
+                onClick = {
+                    onControl(
+                        if (s.signalingSuspended) com.meshchat.app.mesh.debug.DebugControl.ResumeSignaling
+                        else com.meshchat.app.mesh.debug.DebugControl.SuspendSignaling,
+                    )
+                },
+                label = { Text(if (s.signalingSuspended) "恢复广播+扫描" else "暂停广播+扫描") },
+            )
+            FilterChip(
+                selected = false,
+                onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.BroadcastPing) },
+                label = { Text("发 PING") },
+            )
+            TextButton(onClick = onResetControls) { Text("恢复默认") }
+        }
+        if (s.lastPingAtMs >= 0) {
+            StatRow("上次手动 PING", "${(System.currentTimeMillis() - s.lastPingAtMs).coerceAtLeast(0)}ms 前")
+        }
+    }
 }

@@ -25,6 +25,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val localSecuritySnapshot by viewModel.localSecuritySnapshot.collectAsStateWithLifecycle()
     val debugSnapshot by viewModel.debugSnapshot.collectAsStateWithLifecycle()
     val debugSettings by viewModel.debugSettings.collectAsStateWithLifecycle()
+    val debugControlState by viewModel.debugControlState.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         viewModel.recordSecurityCapabilityResult(SecurityCapability.NOTIFICATIONS, granted)
@@ -88,6 +89,9 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             debugSettings = debugSettings,
             onUpdateDebugSettings = { settings -> viewModel.updateDebugSettings { settings } },
             onResetDebugStats = viewModel::resetDebugStats,
+            debugControlState = debugControlState,
+            onDebugControl = viewModel::sendDebugControl,
+            onResetDebugControls = viewModel::resetDebugControls,
         )
     }
 }

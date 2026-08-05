@@ -93,6 +93,9 @@ fun MeshChatHome(
     debugSettings: MeshChatViewModel.DebugSettings,
     onUpdateDebugSettings: (MeshChatViewModel.DebugSettings) -> Unit,
     onResetDebugStats: () -> Unit,
+    debugControlState: MeshChatViewModel.DebugControlState,
+    onDebugControl: (com.meshchat.app.mesh.debug.DebugControl) -> Unit,
+    onResetDebugControls: () -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -190,6 +193,9 @@ fun MeshChatHome(
                 onSettingsChange = onUpdateDebugSettings,
                 onReset = onResetDebugStats,
                 onBack = { profileDetail = null },
+                controlState = debugControlState,
+                onControl = onDebugControl,
+                onResetControls = onResetDebugControls,
             )
             "security" -> SecurityCenterScreen(
                 statuses = securityCapabilities,
