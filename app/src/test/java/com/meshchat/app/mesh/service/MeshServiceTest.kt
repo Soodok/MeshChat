@@ -1182,4 +1182,25 @@ class MeshServiceTest {
         val peer = service.peers.value.first { it.shortId == "PEER" }
         assertEquals(0.5, peer.signalRatio, 1e-9)          // 1 收 ÷ (1 收 + 1 失败)
     }
+
+    @Test
+    fun `direct peer takes precedence over relay entry and deduplicates`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        // 先经中继学到 C（C 未直连）
+        service.handleFrame(pingFrame("B", "小B", relays = listOf("C")))
+        assertTrue("应先以中继可达出现", service.peers.value.any { it.shortId == "C" && it.relayVia == "B" })
+        // C 直接出现（扫描帧）→ foundPeers collector 更新 peerEntries（lastSeen 新鲜）；collector 异步，等待其写入
+        transport.emitPeer(MeshPeerInfo(shortId = "C", deviceAddress = "AA:BB:CC", rssi = -60))
+        Thread.sleep(200)
+        service.heartbeatTick(System.currentTimeMillis())
+        val c = service.peers.value.filter { it.shortId == "C" }
+        assertEquals("同 id 只保留一条", 1, c.size)
+        assertTrue("一跳直连优先（relayVia 清空）", c.first().relayVia.isBlank())
+        service.stop()
+    }
 }

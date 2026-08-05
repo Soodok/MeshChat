@@ -835,19 +835,28 @@ class MeshService(
 
     /**
      * 刷新 peers 流：一跳节点（peerEntries，presence 由状态机裁决）+ 2 跳节点（routeEntries 合成，
-     * relayVia 非空，presence 恒 ONLINE——UI 层据此显示"经中继可达"）。
+     * relayVia 非空）。**同 id 只保留一条**：一跳在线 → 一跳优先（忽略 2 跳条目）；
+     * 一跳失联但经中继仍可达 → 用 2 跳版本覆盖（显示"经中继可达"，而非灰色离线——修复聊天列表/节点
+     * 列表对失联后隔墙可达节点显示陈旧 OFFLINE 的问题，且避免同 id 重复条目让 UI firstOrNull 取到旧状态）。
      */
     private fun refreshPeers() {
-        val twoHop = routeEntries.entries.map { (peerId, r) ->
-            MeshPeerInfo(
-                shortId = peerId, deviceAddress = "", rssi = 0, hops = r.hops,
-                displayName = "", lost = false, presence = PeerPresence.ONLINE,
-                relayVia = r.via, lastSeenAt = r.lastSeenAt,
-            )
+        val now = System.currentTimeMillis()
+        val signal = debugStats.receiveSuccessRate()  // 信号强度 = 全局接收成功率（用户指定算法）
+        val result = LinkedHashMap<String, MeshPeerInfo>()
+        peerEntries.values.forEach { e -> result[e.info.shortId] = e.info.copy(signalRatio = signal) }
+        routeEntries.forEach { (peerId, r) ->
+            val direct = peerEntries[peerId]
+            val directOnline = direct != null && now - direct.lastSeen <= lostHeartbeatMs
+            if (!directOnline) {
+                result[peerId] = MeshPeerInfo(
+                    shortId = peerId, deviceAddress = "", rssi = 0, hops = r.hops,
+                    displayName = direct?.info?.displayName ?: "",  // 保留已学昵称
+                    lost = false, presence = PeerPresence.ONLINE,
+                    relayVia = r.via, lastSeenAt = r.lastSeenAt,
+                )
+            }
         }
-        // 信号强度 = 全局接收成功率（接收包 ÷ (接收包+失败包)，用户指定算法）：一跳节点统一反映当前网络健壮度
-        val signal = debugStats.receiveSuccessRate()
-        _peers.value = peerEntries.values.map { it.info.copy(signalRatio = signal) } + twoHop
+        _peers.value = result.values.toList()
     }
 
     /**

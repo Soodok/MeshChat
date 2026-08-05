@@ -174,6 +174,8 @@ private fun ConversationHeader(
             // 会话建立状态 + 对端网络状况合并为一行（圆点 + 文字），不再单独占内容空间
             val presence = peerPresence ?: com.meshchat.app.mesh.transport.PeerPresence.SEARCHING
             val statusColor = when {
+                // v1.1.0 经中继可达：绿色（消息可送达，仅路径不同）
+                relayVia.isNotBlank() -> MeshGreen
                 !connected -> MeshAmber
                 presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
                 presence == com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
