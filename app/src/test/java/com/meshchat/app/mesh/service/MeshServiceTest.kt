@@ -403,6 +403,64 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `removePeer removes node from peers flow and store`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        store.upsertPeer("B", "Bob", System.currentTimeMillis(), 1)
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        // 启动恢复的已知节点在 peers 流中
+        assertEquals("B", service.peers.value.firstOrNull { it.shortId == "B" }?.shortId)
+        // 删除对话的配套动作：removePeer 应从内存表 + 持久化 + 流中移除节点
+        service.removePeer("B")
+        assertEquals("删除后 peers 流不应再含该节点", null, service.peers.value.firstOrNull { it.shortId == "B" })
+        assertTrue("节点应从持久化缓存移除", store.loadPeers().none { it.shortId == "B" })
+        // 再次收到该节点帧 → 重新入表（物理在线会重新被发现，属预期）
+        service.handleFrame(pingFrame("B", "Bob"))
+        assertEquals("再次收到帧应重新入表", "B", service.peers.value.firstOrNull { it.shortId == "B" }?.shortId)
+        service.stop()
+    }
+
+    @Test
+    fun `debug stats records sent and received frames`() {
+        val transport = CountingTransport()
+        val stats = com.meshchat.app.mesh.debug.DebugStats()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"),
+            dedup = DedupCache(), debugStats = stats,
+        )
+        service.start()
+        service.handleFrame(pingFrame("B", "Bob"))          // 收 PING → 回 PONG
+        val snap = stats.snapshot(5_000)
+        assertEquals(1, snap.frames.getValue(com.meshchat.app.mesh.debug.FrameKind.PING).received)
+        assertEquals(1, snap.frames.getValue(com.meshchat.app.mesh.debug.FrameKind.PONG).sent)
+        service.stop()
+    }
+
+    @Test
+    fun `debug stats delivery confirmed increments on receipt`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val stats = com.meshchat.app.mesh.debug.DebugStats()
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"),
+            dedup = DedupCache(), debugStats = stats,
+        )
+        service.start()
+        service.sendText("conv-B", "B", "hi")
+        val msgId = store.queryMessages("conv-B").single().id
+        // 模拟对端回 RECEIPT（id 与消息一致）
+        val receipt = "{\"id\":\"$msgId\",\"srcId\":\"B\",\"dstId\":\"ME\"}"
+        service.handleFrame(MeshFrame(FrameType.RECEIPT, receipt.toByteArray()))
+        val snap = stats.snapshot(5_000)
+        assertEquals(1, snap.delivery.confirmed)
+        assertEquals(0, snap.delivery.pending)   // 确认后待确认队列已清空
+        service.stop()
+    }
+
+    @Test
     fun `ping replies pong and records peer name`() {
         val transport = CountingTransport()
         val service = MeshService(

@@ -39,6 +39,8 @@ class FileTransferManager(
     private val onSaved: (convId: String, fileId: String, fileName: String, mime: String, size: Long, uri: String?) -> Unit = { _, _, _, _, _, _ -> },
     /** 文件帧发送通道：RFCOMM 连接时走 sendTo，否则回退 broadcast（由 MeshService 注入）。 */
     private val sendFrame: (dstId: String, frame: MeshFrame) -> Unit = { _, frame -> transport.broadcast(frame) },
+    /** 调试统计内核（透传 MeshService 注入）。 */
+    private val debugStats: com.meshchat.app.mesh.debug.DebugStats = com.meshchat.app.mesh.debug.DebugStats(),
 ) {
     companion object {
         private const val TAG = "MeshFile"

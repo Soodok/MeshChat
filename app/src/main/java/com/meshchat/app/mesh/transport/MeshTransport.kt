@@ -37,4 +37,7 @@ interface MeshTransport {
 
     /** 广播数据变化（收到新消息）后刷新，让对端尽快从扫描读到确认键。默认空实现。 */
     fun refreshAdvertising() {}
+
+    /** 蓝牙开关状态（调试中心快照用；默认 false，实现覆盖）。 */
+    fun bluetoothEnabled(): Boolean = false
 }

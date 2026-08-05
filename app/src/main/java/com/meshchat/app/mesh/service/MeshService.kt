@@ -1,6 +1,11 @@
 package com.meshchat.app.mesh.service
 
 import android.util.Log
+import com.meshchat.app.mesh.debug.DebugStats
+import com.meshchat.app.mesh.debug.FileStats
+import com.meshchat.app.mesh.debug.FrameKind
+import com.meshchat.app.mesh.debug.PeerDebugInfo
+import com.meshchat.app.mesh.debug.RouteDecision
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
@@ -10,6 +15,7 @@ import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
 import com.meshchat.app.mesh.protocol.PresenceBody
 import com.meshchat.app.mesh.protocol.TextBody
+import com.meshchat.app.mesh.quality.BluetoothQuality
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.routing.ForwardDecision
 import com.meshchat.app.mesh.routing.ForwardingDecision
@@ -101,6 +107,8 @@ class MeshService(
     private val onIncomingMessage: (fromId: String, fromName: String, text: String) -> Unit = { _, _, _ -> },
     /** 文件接收完成回调（fileName）：通知「文件已保存」。 */
     private val onFileSaved: (fileName: String) -> Unit = {},
+    /** 调试统计内核（默认独立实例，生产由 Application 注入共享单例）。 */
+    private val debugStats: DebugStats = DebugStats(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -115,6 +123,7 @@ class MeshService(
         transport = transport, shortId = identity.shortId, saver = fileSaver,
         scope = scope, tmpDirProvider = tmpDir,
         sendFrame = { dstId, frame -> sendFrame(dstId, frame) },
+        debugStats = debugStats,
         onProgress = { p ->
             // 终态同步落库状态（fileId 即消息 id）
             when (p.status) {
@@ -248,6 +257,39 @@ class MeshService(
                 transfer.tick(now)
             }
         }
+        // 调试中心快照数据源（纯读取，不参与收发逻辑）
+        debugStats.attachProviders(
+            pending = { pendingReceipts.size },
+            peers = {
+                peerEntries.entries.map { (id, e) ->
+                    val info = e.info
+                    PeerDebugInfo(
+                        shortId = id, displayName = info.displayName,
+                        rssi = info.rssi, bars = BluetoothQuality.bars(info.rssi),
+                        presence = info.presence.name, hops = info.hops,
+                        relayVia = routeEntries[id]?.via,
+                        lastSeenAgoMs = if (info.lastSeenAt > 0) (System.currentTimeMillis() - info.lastSeenAt).coerceAtLeast(0) else -1,
+                    )
+                }
+            },
+            routeEntries = { routeEntries.size },
+            sessions = { _sessions.value.size },
+            pendingInvites = { _pendingInvites.value.size },
+            fileStats = {
+                val p = transfer.progress.value
+                if (p == null) FileStats(windowRetries = debugStats.windowRetriesSnapshot())
+                else FileStats(
+                    activeTransfer = true, direction = p.direction.name,
+                    fileName = p.fileName,
+                    chunksTotal = ((p.totalBytes + 49) / 50).toInt().coerceAtLeast(0),
+                    chunksProgress = ((p.transferredBytes + 49) / 50).toInt().coerceAtLeast(0),
+                    percent = if (p.totalBytes > 0) ((p.transferredBytes * 100) / p.totalBytes).toInt() else 0,
+                    windowRetries = debugStats.windowRetriesSnapshot(),
+                )
+            },
+            serviceStarted = { started },
+            bluetoothEnabled = { runCatching { transport.bluetoothEnabled() }.getOrDefault(false) },
+        )
     }
 
     /** 移除可再生的持久化缓存（过期 outbox、长期未见节点）；聊天记录与已存文件保留。 */
@@ -327,8 +369,17 @@ class MeshService(
 
     /** 文件帧发送路由：RFCOMM 已连接则走高速通道，否则 BLE broadcast 兜底。 */
     private fun sendFrame(dstId: String, frame: MeshFrame) {
+        recordSentFrame(frame)
         if (rfcomm != null && rfcomm.isConnectedTo(dstId)) rfcomm.sendTo(dstId, frame)
         else transport.broadcast(frame)
+    }
+
+    /** 发送统计（统一出口）：RECEIPT 帧按 RECEIPT 计，DATA 帧按信封 kind 计。 */
+    private fun recordSentFrame(frame: MeshFrame) {
+        val kind = if (frame.type == FrameType.RECEIPT) FrameKind.RECEIPT
+            else runCatching { DebugStats.kindOfEnvelope(MeshJson.decodeEnvelope(frame.payloadText).kind) }
+                .getOrDefault(FrameKind.OTHER)
+        debugStats.recordSent(kind, frame.payload.size)
     }
 
     /** 会话建立后按 BLE 扫描到的对端 MAC 发起 RFCOMM 连接（配对弹窗由系统处理，失败静默回退 BLE）。 */
@@ -377,23 +428,23 @@ class MeshService(
 
     /** 发送对话接受确认帧。 */
     private fun sendInviteAck(peerId: String) {
-        transport.broadcast(
-            MeshFrame(
-                FrameType.DATA,
-                MeshJson.encodeEnvelope(
-                    MeshEnvelope(
-                        id = UUID.randomUUID().toString(),
-                        kind = "INVITE_ACK",
-                        srcId = identity.shortId,
-                        dstId = peerId,
-                        convId = "conv-$peerId",
-                        ttl = DEFAULT_TTL,
-                        ts = System.currentTimeMillis(),
-                        body = TextBody("已接受"),
-                    ),
-                ).toByteArray(),
-            ),
+        val frame = MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(
+                MeshEnvelope(
+                    id = UUID.randomUUID().toString(),
+                    kind = "INVITE_ACK",
+                    srcId = identity.shortId,
+                    dstId = peerId,
+                    convId = "conv-$peerId",
+                    ttl = DEFAULT_TTL,
+                    ts = System.currentTimeMillis(),
+                    body = TextBody("已接受"),
+                ),
+            ).toByteArray(),
         )
+        recordSentFrame(frame)
+        transport.broadcast(frame)
     }
 
     /**
@@ -511,7 +562,10 @@ class MeshService(
             p.retries++
             p.lastSentAt = now
             Log.w(TAG, "resend text $id retry=${p.retries}${if (pingTriggered) " (ping-triggered)" else ""}")
-            transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(p.envelope).toByteArray()))
+            debugStats.recordResend(id)
+            val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(p.envelope).toByteArray())
+            recordSentFrame(frame)
+            transport.broadcast(frame)
         }
     }
 
@@ -532,7 +586,9 @@ class MeshService(
             ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
             body = PresenceBody(identity.displayName, relays = relays),
         )
-        transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray()))
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray())
+        recordSentFrame(frame)
+        transport.broadcast(frame)
     }
 
     /** 本机一跳邻居 shortId 列表（lastSeen 距今 ≤ RELAY_FRESH_WINDOW_MS 的新鲜节点；上限 8 个控帧预算）。 */
@@ -592,6 +648,7 @@ class MeshService(
             if (p.ackKey.contentEquals(key)) {
                 it.remove()
                 store.updateMessageStatus(id, MessageStatus.DELIVERED)
+                debugStats.recordConfirmed(id)
                 Log.d(TAG, "delivery confirmed by broadcast ack msg=$id")
             }
         }
@@ -665,14 +722,40 @@ class MeshService(
         _invites.update { it - peerId }
     }
 
+    /** Removes the local conversation relationship without blocking future incoming messages. */
+    fun removeSession(peerId: String) {
+        _sessions.update { it - peerId }
+        sessionStore.save(_sessions.value)
+        _pendingInvites.update { it - peerId }
+        _invites.update { it - peerId }
+        _ackRetries.update { it - peerId }
+    }
+
+    /**
+     * 遗忘节点：从内存表（peerEntries）+ 2 跳路由表 + peers 持久化缓存中移除，UI 立即消失、重启不恢复。
+     * 若节点物理仍在附近，扫描/心跳会在数百毫秒内重新发现（这是真实存在，不是缓存残留）。
+     */
+    fun removePeer(peerId: String) {
+        peerEntries.remove(peerId)
+        routeEntries.remove(peerId)
+        runCatching { store.deletePeer(peerId) }
+        refreshPeers()
+    }
+
     fun handleFrame(frame: MeshFrame) {
         when (frame.type) {
             FrameType.DATA -> {
                 val envelope = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }
-                    .getOrNull() ?: return
+                    .getOrNull()
+                if (envelope == null) {
+                    debugStats.recordReceived(FrameKind.OTHER, frame.payload.size)
+                    return
+                }
+                debugStats.recordReceived(DebugStats.kindOfEnvelope(envelope.kind), frame.payload.size)
                 handleEnvelope(envelope)
             }
             FrameType.RECEIPT -> {
+                debugStats.recordReceived(FrameKind.RECEIPT, frame.payload.size)
                 // v1.1.0 中继转发：确认沿网络泛洪回传（A←B←C 双向可及）——"receipt-$id" 去重键防环。
                 // 中间节点（非发送方）收到未见过回执转发一次；发送方收到自己的回执只确认不转发
                 // （泛洪终点，停止重发，避免无谓的多一跳广播）。
@@ -776,7 +859,9 @@ class MeshService(
                     ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
                     body = PresenceBody(identity.displayName, ackIds = ackIdsFor(envelope.srcId)),
                 )
-                transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(pong).toByteArray()))
+                val pongFrame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(pong).toByteArray())
+                recordSentFrame(pongFrame)
+                transport.broadcast(pongFrame)
             }
             "PONG" -> {
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
@@ -785,6 +870,7 @@ class MeshService(
                 (envelope.body as? PresenceBody)?.ackIds?.forEach { id ->
                     if (pendingReceipts.remove(id) != null) {
                         store.updateMessageStatus(id, MessageStatus.DELIVERED)
+                        debugStats.recordConfirmed(id)
                     }
                 }
                 // 对方确认本机心跳 → 立即重发仍未确认的消息（PING/PONG 双触发，确认机会翻倍）
@@ -845,6 +931,7 @@ class MeshService(
     private fun route(envelope: MeshEnvelope, jitter: Boolean = false) {
         when (val decision = ForwardingDecision(identity.shortId, dedup).decide(envelope)) {
             ForwardDecision.Deliver -> {
+                debugStats.recordRoute(RouteDecision.DELIVER)
                 Log.d(TAG, "deliver kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId}")
                 store.insertMessage(envelope.toStoredMessage())
                 store.updateMessageStatus(envelope.id, MessageStatus.DELIVERED)
@@ -865,6 +952,8 @@ class MeshService(
                 }
             }
             is ForwardDecision.Forward -> {
+                debugStats.recordRoute(RouteDecision.FORWARD)
+                debugStats.recordRelayed()
                 val forwarded = envelope.copy(ttl = decision.ttl)
                 Log.d(TAG, "forward kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId} ttl=${decision.ttl}")
                 store.enqueueOutbox(
@@ -886,6 +975,7 @@ class MeshService(
                 }
             }
             ForwardDecision.Drop -> {
+                debugStats.recordRoute(RouteDecision.DROP)
                 // 重复 TEXT（发送方超时重发等确认）：本机已投递过，补发回执让发送方收敛，不再重复落库
                 if (envelope.kind == "TEXT") sendReceipt(envelope)
             }
@@ -894,6 +984,7 @@ class MeshService(
 
     /** 广播 DATA 帧（转发/重发共用出口）。 */
     private fun broadcastData(envelope: MeshEnvelope) {
+        debugStats.recordSent(DebugStats.kindOfEnvelope(envelope.kind), MeshJson.encodeEnvelope(envelope).toByteArray().size)
         transport.broadcast(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray()))
     }
 
@@ -901,6 +992,7 @@ class MeshService(
         // 本机发出的回执登记去重：广播回环时不再当转发帧处理（回执泛洪仅由中间节点转发）
         dedup.mark("receipt-${envelope.id}")
         val receipt = "{\"id\":\"${envelope.id}\",\"srcId\":\"${envelope.srcId}\",\"dstId\":\"${envelope.dstId}\"}"
+        debugStats.recordSent(FrameKind.RECEIPT, receipt.toByteArray().size)
         transport.broadcast(MeshFrame(FrameType.RECEIPT, receipt.toByteArray()))
     }
 
@@ -909,6 +1001,7 @@ class MeshService(
         val id = Regex("\"id\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: return
         store.updateMessageStatus(id, MessageStatus.DELIVERED)
         pendingReceipts.remove(id)
+        debugStats.recordConfirmed(id)
     }
 
     private fun MeshEnvelope.toStoredMessage(): StoredMessage {
