@@ -596,8 +596,8 @@ git commit -m "feat: 调试中心主动控制面板 ControlCard——心跳/重�
 - [ ] **步骤 3：AI_CONTEXT.md 更新**
 
 ① 版本行：`**当前版本：v1.1.8（versionCode 70...` → `**当前版本：v1.1.9（versionCode 71，构建时间 2026-08-05）**`
-② 进度区追加 v1.1.9 条目（DebugControl 控制总线/volatile 参数/6 控制方法/ControlCard 面板/测试 122）
-③ 已验证内容追加 v1.1.9（122/122 + assembleDebug SUCCESS + APK）
+② 进度区追加 v1.1.9 条目（DebugControl 控制总线/volatile 参数/6 控制方法/ControlCard 面板/测试 121）
+③ 已验证内容追加 v1.1.9（121/121 + assembleDebug SUCCESS + APK）
 ④ 当前阻塞更新（v1.1.9 加入待验证列表）
 ⑤ 下一步首要任务更新（v1.1.9 真机验证，含主动控制面板操作验证）
 ⑥ 本次涉及的关键文件追加 v1.1.9 条目
@@ -605,8 +605,8 @@ git commit -m "feat: 调试中心主动控制面板 ControlCard——心跳/重�
 - [ ] **步骤 4：全量验证**
 
 运行：`.\gradlew.bat testDebugUnitTest assembleDebug --console=plain`
-预期：BUILD SUCCESSFUL；测试 **122/122**（DebugStatsTest 6 + MeshServiceTest 45 + 其余回归）
-核对：`app/build/test-results/testDebugUnitTest/` 各 XML `failures="0" errors="0"`，总数 122
+预期：BUILD SUCCESSFUL；测试 **121/121**（DebugStatsTest 6 + MeshServiceTest 45 + 其余回归）
+核对：`app/build/test-results/testDebugUnitTest/` 各 XML `failures="0" errors="0"`，总数 121
 
 - [ ] **步骤 5：复制 APK**
 

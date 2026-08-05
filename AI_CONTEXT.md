@@ -169,11 +169,11 @@ app/src/main/java/com/meshchat/app/
   - **发现层暂停/恢复**：MeshTransport 接口加 `suspendDiscovery/resumeDiscovery` 默认方法；BleTransport 覆写（只停/启 advertise+scan，保留 GATT server/clients 与已建立连接收发）；InMemoryTransport 覆写 + discoverySuspended 断言位。
   - **UI ControlCard**（DebugCenterScreen 第六板块「主动控制」）：心跳 0.5s/1s/2s/5s（失联阈值联动×2）、重发基础 3s/10s/30s（封顶 30s/60s/120s）、暂停/恢复切换、手动发 PING + 上次发送反馈、恢复默认；板块显隐可调。
   - **心跳↔失联联动**：`lostMs = intervalMs * 2`，UI 下发成对命令；对端未同步调节时状态显示不对称（调试场景可接受，恢复默认兜底）。
-  - **测试**：DebugStatsTest +1（issue 转发）+ MeshServiceTest +3（心跳间隔/重发退避/暂停恢复），总 **122/122 通过**。
+  - **测试**：DebugStatsTest +1（issue 转发）+ MeshServiceTest +3（心跳间隔/重发退避/暂停恢复），总 **121/121 通过**。
   - **约束**：协议/路由/存储零改动；全部内存态重启回默认。
 
 ### 已验证内容
-- **v1.1.9 调试中心主动控制验证**：`testDebugUnitTest` **122/122 通过，0 失败**（DebugStatsTest 6 + MeshServiceTest 45 + 其余回归）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 71 / versionName 1.1.9）；APK `MeshChat-v1.1.9-debug.apk`。⚠️ 待用户真机验证：主动控制面板各项调节生效（心跳/重发/暂停恢复/手动 PING/恢复默认）。
+- **v1.1.9 调试中心主动控制验证**：`testDebugUnitTest` **121/121 通过，0 失败**（DebugStatsTest 6 + MeshServiceTest 45 + 其余回归）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 71 / versionName 1.1.9）；APK `MeshChat-v1.1.9-debug.apk`。⚠️ 待用户真机验证：主动控制面板各项调节生效（心跳/重发/暂停恢复/手动 PING/恢复默认）。
 - **v1.1.8 启动崩溃真根因修复验证（决定性）**：`testDebugUnitTest` **117/117 通过，0 失败**；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 70 / versionName 1.1.8）；**Android 16（API 36）headless 模拟器实测**：v1.1.7 同镜像安装启动 → 复现 NPE 崩溃栈（`startDebugLoop$1` 113 行）；v1.1.8 安装启动 → **无 FATAL EXCEPTION + 进程持续存活**，App 正常进入权限请求/主界面。APK `MeshChat-v1.1.8-debug.apk`。⚠️ 用户真机已确认正常（"OK，正常了"）。
 - **v1.1.7 启动崩溃中间排查验证**：`testDebugUnitTest` **117/117 通过**；`assembleDebug` SUCCESS（versionCode 69）。⚠️ 模拟器验证发现非根因（见 v1.1.8），改动（ConcurrentHashMap 等）保留。
 - **v1.1.6 启动崩溃修复验证**：`testDebugUnitTest` **117/117 通过，0 失败**；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 68 / versionName 1.1.6，merged manifest 确认含 FOREGROUND_SERVICE + FOREGROUND_SERVICE_CONNECTED_DEVICE）；APK `MeshChat-v1.1.6-debug.apk`。⚠️ 用户实测仍崩（真根因在 v1.1.7 已修，权限修复本身保留）。
