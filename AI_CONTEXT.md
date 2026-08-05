@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.33（versionCode 95，构建时间 2026-08-05）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.34（versionCode 96，构建时间 2026-08-05）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -259,8 +259,8 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **⚠️ 推送阻塞（网络）重新出现**：`github.com:443` 连接失败（2026-08-05）。**待推送**：v1.1.31 `9d41865`/v1.1.32（`e3b016e` 后）+ v1.1.33 `8337781`（含 AI_CONTEXT 更新）。网络恢复后 `git push origin main`。
-- **推送阻塞（网络）已解除**：`github.com:443` 恢复，v1.1.30 积压（`3822e27`/`dd64f50`）+ v1.1.31 `9d41865` 全部推送成功（`dd64f50..9d41865`），本地与 origin/main 同步。
+- **⚠️ 文件传输 0 块未解决（用户 Android 13/16 真机，v1.1.28-33 全部 0 块）**：已排除 prepareData/openSource（v1.1.29）、写 API 单参/三参（git 证明 v1.1.26 本就单参）、无确认写（v1.1.31 回退确认写仍 0 块）、2M PHY/高优先级（v1.1.33 移除仍 0 块）。**下一步必须靠 v1.1.34 的调试中心诊断日志定位**（用户无法连电脑，用文件管理器导出 Download/meshchat_debug_log.txt 发回）。重点看：发送端 write FAILED/notify FAILED/service NOT ready、接收端 recv FILE3 帧大小、MeshFile recv FILE_ACK。
+- **推送阻塞（网络）已解除**：v1.1.31~33 积压 + v1.1.34 已全部推送成功（`e3b016e..7257614`），本地与 origin/main 同步。
 - **⚠️ 推送阻塞（网络）已解除**：此前 `github.com:443` connection reset/超时导致的推送积压（v1.1.24 `26d4343` / v1.1.25 `05dff98` / v1.1.26 `dffc92d` / v1.1.27 `509ef32`）已全部推送成功（`6fd9557..509ef32`），本地与 origin/main 同步。
 - **推送已成功**：commit `1b1e999`（v1.1.3~v1.1.20 积压 + README 中英双语/免责声明）已推送 origin/main（`75b691b..1b1e999`，2026-08-05 第 5 次重试成功）。本地与远程同步，工作区干净。
 - **⚠️ 推送阻塞（网络）已解除**：此前 `github.com:443` TCP reset/超时导致的推送积压（v1.0.25 `9d0f373` + v1.1.0 `9d7c62c`）已全部推送成功，本地与 origin/main 同步。GitHub Release（挂 APK）仍可后续用 gh CLI 或网页：仓库 https://github.com/Soodok/MeshChat 的 Releases 页上传 `MeshChat-v1.1.1-debug.apk`。
@@ -289,7 +289,7 @@ app/src/main/java/com/meshchat/app/
   - 单测 +7（规格 12.1 全部覆盖），72/72 通过。范围外：文件/握手/群组多跳、3 跳+、加密、路由持久化。
 
 ### 下一步首要任务
-0. **v1.1.33 真机复测（当前版本）——移除 2M PHY/高优先级**：双方安装 `MeshChat-v1.1.33-debug.apk`，传图片/视频。**若仍 0 块：立即抓 logcat**（不要再盲测）——两台设备 adb logcat -s MeshBle MeshFile MeshSvc，发送文件期间录制，发回分析。重点看：① 发送端 `MeshBle` 是否有 `writeCharacteristic failed`/`notify failed`/`service not ready` ② 接收端 `MeshBle` 是否出现 ~500B 的 write request/notify ③ `MeshFile` 的 recv FILE_ACK 是否出现。logcat 将一次性区分：写失败/通道不通/接收端解析/MTU 四类根因。
+0. **v1.1.34 真机复测 + 导出诊断日志（当前版本）**：双方安装 `MeshChat-v1.1.34-debug.apk` → 设置 → 调试中心 → 底部「诊断日志」板块：① 先点「清空」② 传一次文件（失败）③ 回到调试中心看日志（发送端应有 sendFile start / send window / 可能的 write FAILED 或 recv FILE_ACK；接收端应有 recv FILE3 frame）④ 点「导出到 Download」⑤ 文件管理器取 **Download/meshchat_debug_log.txt**，把**两台**的日志发回。日志将一次性区分：写失败/通道不通/接收端解析/MTU 四类根因，不再盲猜。
 1. **v1.1.0 真机验证——多跳中继三机验收**：按规格 §12.2 排布 A—B—C（相邻两两可达、A 与 C 互不可见）：① A 的 Mesh 页/拓扑图看到 C"经 B 可达 · 2跳"（Cyan 小节点）② A 给 C 发 TEXT → C 收到、A 状态翻"已送达"（RECEIPT 经 B 回传），消息文案带"· 经中继" ③ C 回 TEXT → A 收到（对称）④ 会话页 Header 显示"经 B 可达 · 消息经中继送达" ⑤ B 删后台 → A 的路由重新学习，B 不在线期间 outbox 重发兜底 ⑥ 关 B 蓝牙 → A 侧 C 路由移除。其余回归：一跳直连收发/送达确认、蓝牙关→开自动恢复（v1.0.24）、拓扑图、文件传输。
 2. **v1.0.13 蓝牙重搜验证**：安装 `MeshChat-v1.0.13-debug.apk`，重点复现蓝牙重搜路径：两机先关蓝牙进软件 → 开蓝牙 → 点"重新发现" → 应互相搜到（不再需要重进）。其余回归：Mesh 页拓扑图（力导向/拖拽/三色）、送达确认、滚动、文件传输。
 3. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
