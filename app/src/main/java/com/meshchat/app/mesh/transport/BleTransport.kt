@@ -401,6 +401,8 @@ class BleTransport(
                     private var discoverRetries = 0
                     private var servicesDiscovered = false
                     private var discoverTimer: Runnable? = null
+                    /** v1.1.44：MTU 协商超时重试定时器（onMtuChanged 3s 未到 → 重发 requestMtu）。 */
+                    private var mtuTimer: Runnable? = null
 
                     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                         Log.d(TAG, "connect[${device.address}] newState=$newState status=$status")
@@ -410,8 +412,9 @@ class BleTransport(
                                 connectAttempts.remove(device.address)
                                 servicesDiscovered = false
                                 DebugLogBuffer.log(TAG, "connect[${device.address}] CONNECTED status=$status")
-                                runCatching { gatt.requestMtu(512) }
-                                    .onFailure { Log.w(TAG, "requestMtu failed: $it") }
+                                // v1.1.44：**requestMtu 移到 onServicesDiscovered 成功之后**——部分蓝牙栈在服务发现
+                                // 完成前请求 MTU 会被忽略/失败，导致该连接 MTU 停在 23 → 所有大帧"大小不接受"
+                                // （用户日志大量写失败真根因）。服务就绪后再协商 MTU，协商成功率大幅提升。
                                 // v1.1.27 曾加 setPreferredPhy(2M)+requestConnectionPriority(HIGH)（吞吐优化）——
                                 // v1.1.33 移除：该组合在部分 Android 13+/16 设备上致连接参数异常、大帧（~500B）ATT 写
                                 // 静默失败（v1.1.26 无此调用时文件传输正常 30 块/s，v1.1.27 起全 0 块，回退验证）。
@@ -424,6 +427,7 @@ class BleTransport(
                                 DebugLogBuffer.log(TAG, "connect[${device.address}] DISCONNECTED status=$status")
                                 // 移除连接记录：持续扫描重新发现时会自动重连（受冷却限制）
                                 discoverTimer?.let { mainHandler.removeCallbacks(it) }
+                                mtuTimer?.let { mainHandler.removeCallbacks(it) }
                                 gatt.close()
                                 gattClients.remove(device.address)
                                 gattMtu.remove(gatt)
@@ -458,6 +462,7 @@ class BleTransport(
                     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                         Log.d(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
                         DebugLogBuffer.log(TAG, "mtu[${device.address}] mtu=$mtu status=$status")
+                        mtuTimer?.let { mainHandler.removeCallbacks(it) }
                         if (status == BluetoothGatt.GATT_SUCCESS) {
                             debugStats.recordMtu(mtu)
                             negotiatedMtu = mtu
@@ -465,6 +470,16 @@ class BleTransport(
                             gattMtu[gatt] = mtu
                             // MTU 就绪后补写排队帧（服务可能早已发现、帧因超 MTU 滞留——v1.1.36 关键补写点）
                             tryFlush(device.address)
+                        } else {
+                            // v1.1.44：协商失败也重试（3s 后）
+                            val retry = object : Runnable {
+                                override fun run() {
+                                    Log.w(TAG, "mtu negotiation failed(status=$status) for ${device.address}, retry")
+                                    runCatching { gatt.requestMtu(512) }
+                                }
+                            }
+                            mtuTimer = retry
+                            mainHandler.postDelayed(retry, 3_000L)
                         }
                     }
 
@@ -493,6 +508,22 @@ class BleTransport(
                             debugStats.recordServicesDiscovered(true)
                             Log.d(TAG, "services discovered[${device.address}]")
                             DebugLogBuffer.log(TAG, "services discovered[${device.address}] status=$status")
+                            // v1.1.44：服务就绪后再协商 MTU（CONNECTED 时请求太早会被部分栈忽略/失败 → 大帧大小不接受）。
+                            // onMtuChanged 成功后 tryFlush 会把排队帧按新 MTU 补写。
+                            runCatching { gatt.requestMtu(512) }
+                                .onFailure { Log.w(TAG, "requestMtu failed: $it") }
+                            // v1.1.44：MTU 协商超时兜底——3s 内 onMtuChanged 未更新该连接 MTU → 重发 requestMtu
+                            mtuTimer?.let { mainHandler.removeCallbacks(it) }
+                            val mtuRetry = object : Runnable {
+                                override fun run() {
+                                    if (!gattMtu.containsKey(gatt)) {
+                                        Log.w(TAG, "mtu negotiation timeout for ${device.address}, retry")
+                                        runCatching { gatt.requestMtu(512) }
+                                    }
+                                }
+                            }
+                            mtuTimer = mtuRetry
+                            mainHandler.postDelayed(mtuRetry, 3_000L)
                             // 订阅对端 notify（写 CCCD），对端即可通过 server→central 通道回传帧
                             val char = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
                             if (char != null) {
@@ -543,9 +574,10 @@ class BleTransport(
                     // 服务尚未发现 / 连接非 CONNECTED：暂存，待就绪后补写；超时帧丢弃防永久滞留
                     queueFrame(address, frame)
                 frame.payload.size > connMtu - 3 ->
-                    // v1.1.43：帧超该连接 MTU 载荷（真机"大小不接受"）——MTU 协商一次性，排队/重试无意义，
-                    // 跳过不写（心跳/消息由上层重发兜底，文件帧已按 MTU 动态块不会超）；限频日志防刷屏
-                    logOversize(address, frame.payload.size, connMtu)
+                    // v1.1.44：帧超该连接当前 MTU（"大小不接受"）——MTU 协商是异步的，服务发现后 requestMtu(512)
+                    // 会经 onMtuChanged 把 MTU 变大（23→512），**排队等 MTU 就绪后补写送达**（不跳过不丢帧）；
+                    // 30s 超时兜底清理（对端真不支持大 MTU 时不再硬发）。v1.1.43 的"跳过"治标不治本——帧到不了对端。
+                    queueFrame(address, frame)
                 else -> {
                     if (!writeTo(gatt, frame, unreliable)) {
                         // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
