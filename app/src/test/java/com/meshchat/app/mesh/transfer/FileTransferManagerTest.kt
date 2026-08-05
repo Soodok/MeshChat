@@ -385,6 +385,61 @@ class FileTransferManagerTest {
         assertEquals(TransferStatus.DONE, manager.progress.value?.status)
     }
 
+    /** 前 dropFrames 帧全部丢弃（模拟链路卡顿期：START+整窗多次重发全被吞），之后正常转发——验证窗口重试/退避收敛而非过早 FAILED。 */
+    private class DropUntilTransport(
+        private val inner: InMemoryTransport,
+        private val dropFrames: Int,
+    ) : MeshTransport {
+        private var dropped = 0
+        override val incoming = inner.incoming
+        override val foundPeers = inner.foundPeers
+        override fun start() = inner.start()
+        override fun stop() = inner.stop()
+        override fun sendTo(peerId: String, frame: MeshFrame) = inner.sendTo(peerId, frame)
+        override fun broadcast(frame: MeshFrame) {
+            if (dropped < dropFrames) { dropped++; return }   // 卡顿期静默丢弃
+            inner.broadcast(frame)
+        }
+    }
+
+    @Test
+    fun `mid-transfer stall recovers via retries instead of failing`() = runTest {
+        // v1.1.37 用户"文件过大或中途卡顿直接传失败"回归：旧 MAX_WINDOW_RETRIES=5，卡顿 >5s（≥6 次窗口超时）即 FAILED。
+        // 此处丢弃 54 帧（≈6 轮 START+8 块整窗重发），单窗口需重试 6 次才通过——旧上限 5 必失败，新上限 12 收敛 DONE。
+        val inner = InMemoryTransport()
+        val dirB = kotlin.io.path.createTempDirectory("stallB").toFile()
+        val a = FileTransferManager(
+            transport = DropUntilTransport(inner, 54), shortId = "A",
+            saver = FakeSaver(kotlin.io.path.createTempDirectory("stallA").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 12,
+        )
+        val b = FileTransferManager(
+            transport = inner, shortId = "B", saver = FakeSaver(dirB),
+            scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 12,
+        )
+        val relay = backgroundScope.launch {
+            inner.incoming.collect { frame ->
+                if (File3.isFile3(frame.payload)) {
+                    when (File3.parse(frame.payload)) {
+                        is File3.Frame.ChunkFrame, is File3.Frame.StartFrame -> b.onFile3Frame(frame.payload)
+                        null -> Unit
+                    }
+                } else {
+                    val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@collect
+                    if (env.body is FileAckBody && env.dstId == "A") a.onFileAck(env)
+                }
+            }
+        }
+        val bytes = randomBytes(File3.CHUNK_BYTES * 16)   // 16 块 = 2 窗口
+        a.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "stall.bin", "application/octet-stream", bytes.size.toLong())
+        awaitDone(a)
+        relay.cancel()
+        assertEquals("卡顿期重试后应收敛而非 FAILED", TransferStatus.DONE, a.progress.value?.status)
+        val saved = File(dirB, "stall.bin")
+        assertTrue("B 应落盘完整文件", saved.exists())
+        assertEquals("文件字节一致", bytes.toList(), saved.readBytes().toList())
+    }
+
     @Test
     fun `file3 frames fit BLE single-frame budget`() {
         // v1.1.36 v2 CHUNK：61B 头（含 36 字符完整 UUID fid + 8B byteOffset）+ 448B 数据 = 509B ≤ MTU 512 载荷。

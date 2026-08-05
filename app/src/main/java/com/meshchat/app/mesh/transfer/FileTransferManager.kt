@@ -58,7 +58,13 @@ class FileTransferManager(
         // 窗口 8 块：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
         const val WINDOW = 8
         const val WINDOW_TIMEOUT_MS = 1_000L    // ACK 全丢时的兜底：每块 ACK 模式下窗口往返 ~500ms，1s 足够；越短丢 ACK 恢复越快
-        const val MAX_WINDOW_RETRIES = 5
+        /**
+         * 单窗口重试上限（v1.1.37：5→12）：窗口超时/无进展累计超过即 FAILED。总容错 ≈ 12s 超时 + 退避 ~20s。
+         * v1.1.36 前 5 次容错 ~5s，BLE 链路卡顿（蓝牙调度/干扰/拥塞）或大文件长传中的偶发连续丢 ACK 超过 5s
+         * 就整窗失败——用户反馈"文件过大或中途卡顿直接传失败"。12 次 + 退避让链路恢复期能熬过去；
+         * 配合 ACK 重发频率提高（ACK_FLUSH_MS 150ms）双管齐下。
+         */
+        const val MAX_WINDOW_RETRIES = 12
         const val RECV_STALL_TIMEOUT_MS = 60_000L
         /**
          * 窗口内逐帧间隔（v1.1.28）：2ms——文件帧走 GATT WRITE_NO_RESPONSE 无确认写（v1.1.27 起），
@@ -79,8 +85,11 @@ class FileTransferManager(
          * 40 项时代 ACK 帧 ~300B、60 个/s（每块回）→ ACK 洪泛挤占 BLE 带宽超过数据本身；8 项 → 帧 ~120B。
          */
         const val MAX_ACK_MISSING = WINDOW
-        /** 接收端 ACK 合并兜底：距上次 ACK 超过该时长仍有未确认新块 → 立即回（最后不足整窗的收尾不拖到窗口超时）。 */
-        const val ACK_FLUSH_MS = 300L
+        /**
+         * 接收端 ACK 合并兜底：距上次 ACK 超过该时长仍有未确认新块 → 立即回（最后不足整窗的收尾不拖到窗口超时）。
+         * v1.1.37：300→150ms——ACK 是窗口超时主因（单帧易丢），提高重发频率让发送端更快收敛；120B 小帧带宽占比可忽略。
+         */
+        const val ACK_FLUSH_MS = 150L
 
         /**
          * 发送端数据块大小（v1.1.36，MTU 感知动态）：块 + 61B v2 CHUNK 帧头必须 ≤ 协商 MTU 载荷（mtu-3）。
@@ -279,6 +288,9 @@ class FileTransferManager(
                         DebugLogBuffer.log(TAG, "window timeout [$windowStart..${s.expectEnd}] retry=$retries")
                         if (retries > maxWindowRetries) { finish(s, TransferStatus.FAILED); return }
                         debugStats.recordFileWindowRetry()
+                        // v1.1.37 退避：连续超时说明链路正卡顿，重发前等 300ms×retries（封顶 2s）给链路恢复时间，
+                        // 避免在蓝牙栈忙/干扰期密集重发加剧拥塞（v1.1.36 前 1s 连发 5 次即放弃，卡顿 >5s 必失败）
+                        delay(minOf(2_000L, 300L * retries))
                         broadcastWindow(s, cache)
                         continue
                     }
