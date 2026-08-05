@@ -9,7 +9,9 @@ class InMemoryTransport : MeshTransport {
     private val _incoming = MutableSharedFlow<MeshFrame>(replay = 32, extraBufferCapacity = 64)
     override val incoming: SharedFlow<MeshFrame> = _incoming
 
-    private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 16)
+    // Keep the latest discovery event so tests and newly started consumers do not lose a peer
+    // merely because their collector has not been scheduled yet.
+    private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(replay = 1, extraBufferCapacity = 16)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
     override fun start() = Unit
@@ -24,5 +26,17 @@ class InMemoryTransport : MeshTransport {
     /** 测试辅助：模拟扫描发现节点（可携带广播确认键）。 */
     fun emitPeer(info: MeshPeerInfo) {
         _foundPeers.tryEmit(info)
+    }
+
+    /** 发现层暂停标志（suspendSignaling/resumeSignaling 测试断言用）。 */
+    @Volatile
+    var discoverySuspended = false
+
+    override fun suspendDiscovery() {
+        discoverySuspended = true
+    }
+
+    override fun resumeDiscovery() {
+        discoverySuspended = false
     }
 }

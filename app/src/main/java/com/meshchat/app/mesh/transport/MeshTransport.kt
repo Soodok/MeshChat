@@ -40,4 +40,10 @@ interface MeshTransport {
 
     /** 蓝牙开关状态（调试中心快照用；默认 false，实现覆盖）。 */
     fun bluetoothEnabled(): Boolean = false
+
+    /** 暂停发现层（广播+扫描）；默认无操作，BleTransport 覆写。 */
+    fun suspendDiscovery() = Unit
+
+    /** 恢复发现层（广播+扫描）；默认无操作，BleTransport 覆写。 */
+    fun resumeDiscovery() = Unit
 }
