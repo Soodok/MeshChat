@@ -58,6 +58,14 @@ class BleTransport(
     @Volatile
     private var negotiatedMtu = 23
 
+    /** v1.1.42 写失败容错状态：address -> 连续写失败次数（成功清零，≥5 触发连接重建自愈）。 */
+    private val failStreak = HashMap<String, Int>()
+    /** v1.1.42 补写重试退避指数：address -> 当前退避档（200ms×2^n，封顶 2s）。 */
+    private val flushBackoff = HashMap<String, Int>()
+    /** v1.1.42 write FAILED 日志限频（3s 内只打一条，防重试刷屏）。 */
+    @Volatile
+    private var lastWriteFailLogAt = 0L
+
     private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
@@ -68,6 +76,8 @@ class BleTransport(
         const val PENDING_FRAME_TIMEOUT_MS = 30_000L
         const val CONNECT_RETRY_COOLDOWN_MS = 5_000L
         const val DISCOVER_TIMEOUT_MS = 5_000L
+        /** 写失败连续次数阈值（v1.1.42）：连接显示 CONNECTED 但写持续失败 → 写通道疑似坏死，强制重建连接自愈。 */
+        const val MAX_WRITE_FAIL_STREAK = 5
         /** 客户端特征配置描述符（CCCD）标准 UUID，用于订阅 notify。 */
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
         /** 扫描响应携带的送达确认键 Service Data UUID：对端扫描即读到，无需 GATT 连接。 */
@@ -403,6 +413,9 @@ class BleTransport(
                                 gatt.close()
                                 gattClients.remove(device.address)
                                 // v1.1.41：**保留 pendingFrames**——连接抖动期排队的帧等重连后补写（30s 超时兜底清理）
+                                // v1.1.42：断开即重建起点，失败计数/退避清零
+                                failStreak.remove(device.address)
+                                flushBackoff.remove(device.address)
                             }
                         }
                     }
@@ -503,9 +516,7 @@ class BleTransport(
         gattClients.keys.toList().forEach { address ->
             val gatt = gattClients[address] ?: return@forEach
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
-            // v1.1.41 可写条件 = 服务已发现 && 连接 CONNECTED && 帧 ≤ MTU 载荷：
-            // 连接非 CONNECTED（GATT 抖动/重建窗口）时单参写必返回 false → 231B 心跳大量 write FAILED
-            // （用户实测丢包与频率无关、全是写入失败）——不满足即排队，等连接恢复/MTU 就绪后补写。
+            // 可写条件 = 服务已发现 && 连接 CONNECTED && 帧 ≤ MTU 载荷；不满足即排队等就绪补写。
             val connected = runCatching {
                 bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
             }.getOrDefault(false)
@@ -519,11 +530,16 @@ class BleTransport(
                         Log.w(TAG, "write failed for $address, link dead, drop stale connection")
                         gattClients.remove(address)
                         runCatching { gatt.close() }
+                        failStreak.remove(address)
                     } else {
-                        // 写失败但连接仍 CONNECTED（栈忙/瞬态）：排队 + 短延迟重试（v1.1.41 动态容错，不丢帧）
-                        queueFrame(address, frame)
-                        scheduleFlush(address, 200L)
+                        // 连接显示 CONNECTED 但写仍失败（栈层写被拒/并发在途）：排队 + 退避重试（帧不丢）；
+                        // 连续失败 ≥5 次 → 连接写通道已坏死，强制重建自愈
+                        recordWriteFailure(address, frame)
                     }
+                } else {
+                    // 写成功：清零失败计数与退避
+                    failStreak.remove(address)
+                    flushBackoff.remove(address)
                 }
             } else {
                 // 服务尚未发现 / 连接非 CONNECTED / MTU 未就绪：暂存，待就绪后补写；超时帧丢弃防永久滞留
@@ -539,13 +555,41 @@ class BleTransport(
         queued.removeAll { now - it.first > PENDING_FRAME_TIMEOUT_MS }
         if (queued.size >= 32) queued.removeAt(0)
         queued.add(now to frame)
-        Log.w(TAG, "queue frame for $address (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
-        DebugLogBuffer.log(TAG, "queue frame for $address (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
+        Log.d(TAG, "queue frame for $address (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
     }
 
-    /** 写失败（连接仍 CONNECTED，栈忙）后的短延迟重试（v1.1.41）。 */
-    private fun scheduleFlush(address: String, delayMs: Long) {
+    /** 记录一次写失败：入队保帧 + 退避重试；连续失败达阈值强制重建连接（v1.1.42 自愈）。 */
+    private fun recordWriteFailure(address: String, frame: MeshFrame) {
+        val streak = (failStreak[address] ?: 0) + 1
+        failStreak[address] = streak
+        queueFrame(address, frame)
+        if (streak >= MAX_WRITE_FAIL_STREAK) {
+            Log.w(TAG, "write failed $streak times consecutively for $address, force reconnect to recover")
+            DebugLogBuffer.log(TAG, "force RECONNECT $address (${streak} consecutive write failures)")
+            failStreak.remove(address)
+            flushBackoff.remove(address)
+            forceReconnect(address)
+        } else {
+            scheduleFlush(address)
+        }
+    }
+
+    /** 补写重试退避（v1.1.42）：200ms×2^n 封顶 2s——写通道瞬态故障时给栈恢复时间，避免高频重试加剧失败。 */
+    private fun scheduleFlush(address: String) {
+        val attempt = (flushBackoff[address] ?: 0).coerceAtMost(4)
+        flushBackoff[address] = attempt + 1
+        val delayMs = minOf(2_000L, 200L * (1 shl attempt))
         mainHandler.postDelayed({ tryFlush(address) }, delayMs)
+    }
+
+    /** 强制重建到对端的连接（v1.1.42）：写通道连续失败疑似坏死——close 旧 gatt + 绕过冷却立即重连。 */
+    private fun forceReconnect(address: String) {
+        val old = gattClients.remove(address) ?: return
+        runCatching { old.disconnect() }
+        runCatching { old.close() }
+        connectAttempts.remove(address)   // 绕过冷却，立即重建
+        val device = runCatching { bluetoothAdapter?.getRemoteDevice(address) }.getOrNull() ?: return
+        mainHandler.post { connectTo(device) }
     }
 
     /** 服务发现成功/MTU 就绪/连接恢复后补写排队帧；仍不满足条件的（连接未回/MTU 未到）留队等下次触发。 */
@@ -554,6 +598,7 @@ class BleTransport(
         val now = System.currentTimeMillis()
         val pending = pendingFrames.remove(address) ?: return
         val keep = mutableListOf<Pair<Long, MeshFrame>>()
+        var failed = false
         for ((ts, frame) in pending) {
             if (now - ts > PENDING_FRAME_TIMEOUT_MS) continue   // 超时帧丢弃（对端长期不可达，不再硬发）
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
@@ -561,14 +606,33 @@ class BleTransport(
                 bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
             }.getOrDefault(false)
             if (characteristic != null && connected && frame.payload.size <= negotiatedMtu - 3) {
-                writeTo(gatt, frame)
+                if (writeTo(gatt, frame)) {
+                    failStreak.remove(address)
+                    flushBackoff.remove(address)
+                } else {
+                    failed = true
+                    keep.add(ts to frame)   // 写失败：帧不丢，重新入队等下次退避重试
+                }
             } else {
                 keep.add(ts to frame)
             }
         }
         if (keep.isNotEmpty()) {
-            Log.d(TAG, "flush $address: ${keep.size} frames still waiting")
             pendingFrames[address] = keep
+            if (failed) {
+                // 有写失败：计数 + 退避重试（或连续失败重建）
+                val streak = (failStreak[address] ?: 0) + 1
+                failStreak[address] = streak
+                if (streak >= MAX_WRITE_FAIL_STREAK) {
+                    Log.w(TAG, "flush write failed $streak times for $address, force reconnect")
+                    DebugLogBuffer.log(TAG, "force RECONNECT $address (flush, $streak consecutive failures)")
+                    failStreak.remove(address)
+                    flushBackoff.remove(address)
+                    forceReconnect(address)
+                } else {
+                    scheduleFlush(address)
+                }
+            }
         }
     }
 
@@ -621,8 +685,13 @@ class BleTransport(
         )
         debugStats.recordGattWrite(ok)
         if (!ok) {
-            Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
-            DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
+            // v1.1.42 日志限频：写失败由退避重试/重建自愈兜底（帧不丢），不再每条失败都刷日志
+            val now = System.currentTimeMillis()
+            if (now - lastWriteFailLogAt > 3_000) {
+                lastWriteFailLogAt = now
+                Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
+                DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
+            }
         }
         return ok
     }
