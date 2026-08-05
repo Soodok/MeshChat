@@ -79,6 +79,7 @@ class MeshChatViewModel(
         val showFile: Boolean = true,
         val showControl: Boolean = true,   // 主动控制板块显隐
         val showFailure: Boolean = true,   // 失败包板块显隐
+        val showOsc: Boolean = true,       // 示波器板块显隐
         val sortBy: String = "rssi",   // rssi / name / recent
         val paused: Boolean = false,
     )
@@ -99,6 +100,14 @@ class MeshChatViewModel(
         val lastPingAtMs: Long = -1L,   // -1 = 尚未手动发过
         val manualPingCount: Int = 0,   // 手动 PING 累计次数
     )
+
+    // ---- 调试中心·示波器（采样历史，内存态；随刷新循环追加，重启清零）----
+    /** 单次采样点：发送/接收总速率 + 本轮失败事件脉冲强度（0-3）。 */
+    data class OscPoint(val sentRate: Double, val recvRate: Double, val failurePulse: Int)
+
+    private val _oscHistory = MutableStateFlow<List<OscPoint>>(emptyList())
+    val oscHistory: StateFlow<List<OscPoint>> = _oscHistory.asStateFlow()
+    private var prevFailureTotal = 0L   // 上次采样时失败累计（解码失败 + BLE 写/notify 失败）
 
     private val _debugControlState = MutableStateFlow(DebugControlState())
     val debugControlState: StateFlow<DebugControlState> = _debugControlState.asStateFlow()
@@ -158,6 +167,18 @@ class MeshChatViewModel(
                             "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
                             else -> snap.peers.sortedByDescending { it.rssi }
                         })
+                        // 示波器采样：总收发速率 + 失败事件脉冲（与上次累计的差值）
+                        val f = snap.failures
+                        val failureTotal = f.receivedDecodeFailures + f.bleWriteFailed + f.bleNotifyFailed
+                        val pulse = (failureTotal - prevFailureTotal).toInt().coerceIn(0, 3)
+                        prevFailureTotal = failureTotal
+                        _oscHistory.value = (
+                            _oscHistory.value + OscPoint(
+                                sentRate = snap.frames.values.sumOf { it.sentRatePerSec },
+                                recvRate = snap.frames.values.sumOf { it.receivedRatePerSec },
+                                failurePulse = pulse,
+                            )
+                            ).takeLast(OSC_MAX_POINTS)
                     }
                 } catch (t: Throwable) {
                     android.util.Log.w("MeshChatVM", "debug loop iteration failed", t)
@@ -165,6 +186,10 @@ class MeshChatViewModel(
                 delay(_debugSettings.value.refreshIntervalMs)
             }
         }
+    }
+
+    private companion object {
+        const val OSC_MAX_POINTS = 96   // 示波器横轴采样点数（刷新间隔 × 96 = 时间窗口）
     }
 
     /** 文件传输进度（发送/接收统一）。 */

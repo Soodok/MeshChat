@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -28,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -55,6 +57,7 @@ fun DebugCenterScreen(
     controlState: MeshChatViewModel.DebugControlState,
     onControl: (com.meshchat.app.mesh.debug.DebugControl) -> Unit,
     onResetControls: () -> Unit,
+    oscHistory: List<MeshChatViewModel.OscPoint>,
 ) {
     var settingsOpen by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
@@ -78,6 +81,7 @@ fun DebugCenterScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (settings.showFrames) FramesCard(snapshot, settings.perMinute)
+            if (settings.showOsc) OscilloscopeCard(oscHistory)
             if (settings.showFailure) FailureCard(snapshot)
             if (settings.showControl) ControlCard(controlState, onControl, onResetControls)
             if (settings.showBle) BleCard(snapshot)
@@ -228,7 +232,7 @@ private fun DebugSettingsPanel(
         Text("板块", color = TextSecondary, style = monoStyle(), modifier = Modifier.padding(top = 8.dp))
         Row {
             listOf(
-                "收发包" to s.showFrames, "失败包" to s.showFailure, "控制" to s.showControl, "BLE" to s.showBle, "信号" to s.showRoutes,
+                "收发包" to s.showFrames, "示波器" to s.showOsc, "失败包" to s.showFailure, "控制" to s.showControl, "BLE" to s.showBle, "信号" to s.showRoutes,
                 "送达" to s.showDelivery, "文件" to s.showFile,
             ).forEach { (label, on) ->
                 FilterChip(
@@ -250,6 +254,7 @@ private fun DebugSettingsPanel(
 
 private fun toggleSection(s: MeshChatViewModel.DebugSettings, label: String): MeshChatViewModel.DebugSettings = when (label) {
     "收发包" -> s.copy(showFrames = !s.showFrames)
+    "示波器" -> s.copy(showOsc = !s.showOsc)
     "失败包" -> s.copy(showFailure = !s.showFailure)
     "控制" -> s.copy(showControl = !s.showControl)
     "BLE" -> s.copy(showBle = !s.showBle)
@@ -327,5 +332,73 @@ private fun FailureCard(snap: DebugSnapshot) {
         StatRow("送达不可确认", "${f.unconfirmed} 包", if (f.unconfirmed > 0) MeshAmber else MeshGreen)
         StatRow("BLE 写失败", f.bleWriteFailed.toString(), if (f.bleWriteFailed > 0) MeshAmber else TextSecondary)
         StatRow("BLE notify 失败", f.bleNotifyFailed.toString(), if (f.bleNotifyFailed > 0) MeshAmber else TextSecondary)
+    }
+}
+
+/** 示波器：横轴=最近 96 个采样点（时间窗口随刷新间隔），绿=发送速率、蓝=接收速率、琥珀竖线=失败脉冲。 */
+@Composable
+private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
+    val last = history.lastOrNull()
+    val pulseTotal = history.sumOf { it.failurePulse.toLong() }
+    SectionCard("示波器") {
+        StatRow(
+            "实时速率",
+            "↑${"%.1f/s".format(last?.sentRate ?: 0.0)} ↓${"%.1f/s".format(last?.recvRate ?: 0.0)} · 脉冲 ${pulseTotal}",
+            Cyan,
+        )
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.5f)),
+        ) {
+            val w = size.width
+            val h = size.height
+            if (w <= 0f || h <= 0f) return@Canvas
+            // 网格（示波器风格）
+            val grid = Cyan.copy(alpha = 0.12f)
+            for (i in 1 until 12) {
+                val x = w * i / 12f
+                drawLine(grid, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, h), 1f)
+            }
+            for (i in 1 until 4) {
+                val y = h * i / 4f
+                drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(w, y), 1f)
+            }
+            if (history.size < 2) return@Canvas
+            // y 轴动态缩放：以历史峰值速率为满量程，波形始终可见
+            val maxRate = history.maxOf { maxOf(it.sentRate, it.recvRate) }.coerceAtLeast(0.1)
+            val n = history.size
+            val step = w / 95f
+            fun yOf(rate: Double): Float = (h - (rate / maxRate * h).toFloat()).coerceIn(0f, h)
+            fun trace(selector: (MeshChatViewModel.OscPoint) -> Double): androidx.compose.ui.graphics.Path {
+                val p = androidx.compose.ui.graphics.Path()
+                history.forEachIndexed { i, pt ->
+                    val x = w - (n - 1 - i) * step   // 最新采样在右端
+                    val y = yOf(selector(pt))
+                    if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+                }
+                return p
+            }
+            // 发送绿线 / 接收蓝线
+            drawPath(trace { it.sentRate }, MeshGreen, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            drawPath(trace { it.recvRate }, Cyan, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            // 失败脉冲：琥珀竖线自底升起，高度 ∝ 脉冲强度（1-3）
+            history.forEachIndexed { i, pt ->
+                if (pt.failurePulse > 0) {
+                    val x = w - (n - 1 - i) * step
+                    val ph = h * 0.25f * minOf(pt.failurePulse, 3)
+                    drawLine(
+                        MeshAmber.copy(alpha = 0.85f),
+                        androidx.compose.ui.geometry.Offset(x, h),
+                        androidx.compose.ui.geometry.Offset(x, h - ph),
+                        2f,
+                    )
+                }
+            }
+            // 扫描头：最新发送速率亮点（history.size >= 2 已保证 last 非空）
+            drawCircle(Cyan, 3.5f, androidx.compose.ui.geometry.Offset(w, yOf(history.last().sentRate)))
+        }
     }
 }
