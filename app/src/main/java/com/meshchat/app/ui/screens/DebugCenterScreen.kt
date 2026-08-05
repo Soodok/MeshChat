@@ -266,7 +266,8 @@ private fun ControlCard(
     onResetControls: () -> Unit,
 ) {
     SectionCard("主动控制") {
-        StatRow("心跳频率", "${s.heartbeatMs}ms · 失联阈值 2s（固定）", Cyan)
+        // 当前生效配置汇总（高密度终端风格）
+        StatRow("心跳", "${s.heartbeatMs}ms · 失联阈值 ${s.lostMs}ms（固定）", Cyan)
         Row {
             listOf(50L to "0.05s", 100L to "0.1s", 200L to "0.2s", 400L to "0.4s").forEach { (v, label) ->
                 FilterChip(
@@ -277,12 +278,12 @@ private fun ControlCard(
                 )
             }
         }
-        Text("重发退避", color = TextSecondary, style = monoStyle(), modifier = Modifier.padding(top = 8.dp))
+        StatRow("重发退避", "基础 ${s.resendBaseMs}ms · 封顶 ${s.resendMaxMs}ms")
         Row {
             listOf(
-                3_000L to "基础3s·封顶30s",
-                10_000L to "基础10s·封顶60s",
-                30_000L to "基础30s·封顶120s",
+                3_000L to "3s",
+                10_000L to "10s",
+                30_000L to "30s",
             ).forEach { (v, label) ->
                 FilterChip(
                     selected = s.resendBaseMs == v,
@@ -310,9 +311,11 @@ private fun ControlCard(
             )
             TextButton(onClick = onResetControls) { Text("恢复默认") }
         }
-        if (s.lastPingAtMs >= 0) {
-            StatRow("上次手动 PING", "${(System.currentTimeMillis() - s.lastPingAtMs).coerceAtLeast(0)}ms 前")
-        }
+        StatRow(
+            "手动 PING",
+            if (s.lastPingAtMs >= 0) "${(System.currentTimeMillis() - s.lastPingAtMs).coerceAtLeast(0)}ms 前 · 共 ${s.manualPingCount} 次"
+            else "未发送",
+        )
     }
 }
 

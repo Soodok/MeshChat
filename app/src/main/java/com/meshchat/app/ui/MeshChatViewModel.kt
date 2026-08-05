@@ -97,6 +97,7 @@ class MeshChatViewModel(
         val resendMaxMs: Long = 30_000L,
         val signalingSuspended: Boolean = false,
         val lastPingAtMs: Long = -1L,   // -1 = 尚未手动发过
+        val manualPingCount: Int = 0,   // 手动 PING 累计次数
     )
 
     private val _debugControlState = MutableStateFlow(DebugControlState())
@@ -109,7 +110,10 @@ class MeshChatViewModel(
             is DebugControl.SetResendPolicy -> _debugControlState.value.copy(resendBaseMs = cmd.baseMs, resendMaxMs = cmd.maxMs)
             DebugControl.SuspendSignaling -> _debugControlState.value.copy(signalingSuspended = true)
             DebugControl.ResumeSignaling -> _debugControlState.value.copy(signalingSuspended = false)
-            DebugControl.BroadcastPing -> _debugControlState.value.copy(lastPingAtMs = System.currentTimeMillis())
+            DebugControl.BroadcastPing -> _debugControlState.value.copy(
+                lastPingAtMs = System.currentTimeMillis(),
+                manualPingCount = _debugControlState.value.manualPingCount + 1,
+            )
             DebugControl.ResetControls -> DebugControlState()
         }
     }
