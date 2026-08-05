@@ -10,6 +10,7 @@ import com.meshchat.app.mesh.debug.RouteDecision
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
+import com.meshchat.app.mesh.protocol.FileBodyV2
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
@@ -1034,30 +1035,42 @@ class MeshService(
                 // 对方确认本机心跳 → 立即重发仍未确认的消息（PING/PONG 双触发，确认机会翻倍）
                 resendPendingReceipts(System.currentTimeMillis(), pingTriggered = true)
             }
-            "FILE" -> {
-                // 一跳帧（同握手帧）：仅处理发往本机；非本机忽略（ACK 一跳语义下多跳无法回传）
+            "FILE", "FILE2" -> {
+                // 一跳帧（同握手帧）：仅处理发往本机；非本机忽略（ACK 一跳语义下多跳无法回传）。
+                // FILE2（v1.1.27）多块合并传输，fileId 取 FileBodyV2.fid；老版本对端 decode FILE2 失败自动丢帧。
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
-                val body = envelope.body as? FileBody ?: return
+                val body = envelope.body
+                val fileId = when (body) {
+                    is FileBody -> body.fileId
+                    is FileBodyV2 -> body.fid
+                    else -> return
+                }
                 // 先落库占位（按 fileId 去重；upsert 幂等），再收块——收齐回调会置 DELIVERED，顺序不能反
-                if (receivedFiles.add(body.fileId)) {
+                if (receivedFiles.add(fileId)) {
                     // 重启后对端重传已保存文件：不重复落盘，仅回发完成 ACK（移植队友 v1.0.12）
                     val alreadySaved = store.queryMessages("conv-${envelope.srcId}").any {
-                        it.id == body.fileId && it.status == MessageStatus.DELIVERED
+                        it.id == fileId && it.status == MessageStatus.DELIVERED
                     }
                     if (alreadySaved) {
                         transfer.acknowledgeCompletedFile(
-                            fileId = body.fileId,
+                            fileId = fileId,
                             convId = "conv-${envelope.srcId}",
                             senderId = envelope.srcId,
-                            totalChunks = body.totalChunks,
+                            totalChunks = (body as? FileBody)?.totalChunks
+                                ?: (body as FileBodyV2).tot,
                         )
                         return
                     }
+                    val (name, mime, size) = when (body) {
+                        is FileBody -> Triple(body.fileName, body.mime, body.size)
+                        is FileBodyV2 -> Triple(body.n, body.m, body.sz)
+                        else -> return
+                    }
                     store.insertMessage(
                         StoredMessage(
-                            id = body.fileId, convId = "conv-${envelope.srcId}", kind = "FILE",
-                            srcId = envelope.srcId, dstId = envelope.dstId, text = body.fileName,
-                            fileMeta = fileMetaJson(body.fileName, body.mime, body.size, null),
+                            id = fileId, convId = "conv-${envelope.srcId}", kind = "FILE",
+                            srcId = envelope.srcId, dstId = envelope.dstId, text = name,
+                            fileMeta = fileMetaJson(name, mime, size, null),
                             status = MessageStatus.SENDING, ts = envelope.ts,
                         ),
                     )

@@ -187,8 +187,15 @@ class BleTransport(
 
     override fun broadcast(frame: MeshFrame) {
         debugStats.recordBleBroadcast(frame.payload.size)
-        writeToConnectedClients(frame)   // 通道1：本机 central → 已连接的对端（写特征）
+        writeToConnectedClients(frame)   // 通道1：本机 central → 已连接的对端（写特征，可靠确认写）
         notifySubscribers(frame)          // 通道2：已连入本机的对端（server 连接，notify 回传）
+    }
+
+    /** 无确认写（v1.1.27，仅文件数据块）：GATT WRITE_NO_RESPONSE 不等待应答 → 突破确认写往返（~30/s）瓶颈。 */
+    override fun writeUnreliable(frame: MeshFrame) {
+        debugStats.recordBleBroadcast(frame.payload.size)
+        writeToConnectedClients(frame, unreliable = true)
+        notifySubscribers(frame)
     }
 
     override fun sendTo(peerId: String, frame: MeshFrame) { /* 按 peerId 解析地址后写入 */ }
@@ -227,7 +234,10 @@ class BleTransport(
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         val characteristic = BluetoothGattCharacteristic(
             charUuid,
-            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            // WRITE_NO_RESPONSE 属性（v1.1.27）：文件数据块走无确认写突破往返瓶颈；老版本对端无此属性时客户端回退确认写
+            BluetoothGattCharacteristic.PROPERTY_WRITE or
+                BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or
+                BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
         // CCCD：对端 central 订阅 notify，server 即可向其回传帧（不依赖本机主动连接）
@@ -350,6 +360,16 @@ class BleTransport(
                                 servicesDiscovered = false
                                 runCatching { gatt.requestMtu(512) }
                                     .onFailure { Log.w(TAG, "requestMtu failed: $it") }
+                                // v1.1.27 吞吐优化：2M PHY（BLE 5.0 手机物理吞吐×2）+ 高优先级连接（短连接间隔）
+                                runCatching {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        gatt.setPreferredPhy(
+                                            BluetoothDevice.PHY_LE_2M, BluetoothDevice.PHY_LE_2M,
+                                            BluetoothDevice.PHY_OPTION_NO_PREFERRED,
+                                        )
+                                    }
+                                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                                }.onFailure { Log.w(TAG, "setPreferredPhy/priority failed: $it") }
                                 discoverServicesWithTimeout(gatt)
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
@@ -446,14 +466,14 @@ class BleTransport(
         }
     }
 
-    private fun writeToConnectedClients(frame: MeshFrame) {
+    private fun writeToConnectedClients(frame: MeshFrame, unreliable: Boolean = false) {
         val now = System.currentTimeMillis()
         // 快照 key 再遍历：写失败会移除死连接，不能在 forEach 中改 map
         gattClients.keys.toList().forEach { address ->
             val gatt = gattClients[address] ?: return@forEach
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
             if (characteristic != null) {
-                if (!writeTo(gatt, frame)) {
+                if (!writeTo(gatt, frame, unreliable)) {
                     // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
                     val state = runCatching {
                         bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT)
@@ -475,9 +495,25 @@ class BleTransport(
         }
     }
 
-    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame): Boolean {
+    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame, unreliable: Boolean = false): Boolean {
         val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return false
         characteristic.value = frame.encode()
+        if (unreliable) {
+            // 无确认写（文件数据块）：不等待对端 GATT 应答 → 写往返消失。丢帧由应用层窗口重传兜底。
+            // 对端特性无 WRITE_NO_RESPONSE 属性（老版本）→ 写失败回退可靠确认写。
+            val okNoAck: Boolean = runCatching {
+                // 统一走 writeType 字段 + 单参写：API 33+ 单参重载内部即使用 characteristic.writeType
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                gatt.writeCharacteristic(characteristic)
+            }.getOrDefault(false)
+            if (!okNoAck) {
+                Log.w(TAG, "writeNoAck failed, fallback to acknowledged write (${frame.type}, ${frame.payload.size}B)")
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                return runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
+            }
+            debugStats.recordGattWrite(true)
+            return true
+        }
         val ok = runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
         debugStats.recordGattWrite(ok)
         if (!ok) Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")

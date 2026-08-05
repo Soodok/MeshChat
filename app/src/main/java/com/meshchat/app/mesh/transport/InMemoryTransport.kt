@@ -22,6 +22,10 @@ class InMemoryTransport : MeshTransport {
     override fun sendTo(peerId: String, frame: MeshFrame) {
         _incoming.tryEmit(frame)
     }
+    /** 测试替身：无确认写 = 普通广播（回环到 incoming 供断言）。 */
+    override fun writeUnreliable(frame: MeshFrame) {
+        _incoming.tryEmit(frame)
+    }
 
     /** 测试辅助：模拟扫描发现节点（可携带广播确认键）。 */
     fun emitPeer(info: MeshPeerInfo) {

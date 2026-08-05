@@ -53,6 +53,11 @@ class MeshServiceTest {
             inner.broadcast(frame)
         }
         override fun sendTo(peerId: String, frame: MeshFrame) = inner.sendTo(peerId, frame)
+        /** 文件数据块走无确认写（v1.1.27）：测试替身 = 普通广播（记录 + 回环）。 */
+        override fun writeUnreliable(frame: MeshFrame) {
+            frames.add(frame)
+            inner.broadcast(frame)
+        }
         /** 测试辅助：模拟扫描发现节点（可携带广播确认键）。 */
         fun emitPeer(info: MeshPeerInfo) = inner.emitPeer(info)
     }
@@ -312,7 +317,7 @@ class MeshServiceTest {
     }
 
     @Test
-    fun `file chunk goes through rfcomm sendTo when connected`() = runTest {
+    fun `file chunks go through writeUnreliable even when rfcomm connected`() = runTest {
         val identity = LocalIdentity(shortId = "ME")
         val transport = CountingTransport()
         val store = InMemoryMeshStore()
@@ -330,10 +335,14 @@ class MeshServiceTest {
             rfcomm = rfcomm,
         )
         service.sendFile("conv-OTHER", "OTHER", { java.io.ByteArrayInputStream(ByteArray(100) { 1 }) }, "f.txt", "text/plain", 100)
+        // v1.1.27：文件数据块统一走 writeUnreliable（无确认写），不再经 rfcomm/sendFrame。
+        // MeshService 内部 scope 为 Dispatchers.Default（真实 30ms 节流）→ 用真实等待而非测试虚拟时钟
         var guard = 0
-        while (rfcommSent.isEmpty() && transport.broadcastCount == 0 && guard++ < 100) kotlinx.coroutines.delay(20)
-        assertTrue("RFCOMM 连接时应走 sendTo 而非 BLE broadcast", rfcommSent.isNotEmpty())
-        assertEquals("OTHER", rfcommSent.first().first)
+        fun isFile2(frame: MeshFrame) = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }
+            .getOrNull()?.kind == "FILE2"
+        while (transport.frames.none(::isFile2) && guard++ < 100) Thread.sleep(20)
+        assertTrue("文件块应经 writeUnreliable 发出（FILE2 帧）", transport.frames.any(::isFile2))
+        assertEquals("数据块不再走 rfcomm sendTo", 0, rfcommSent.size)
         service.stop()
     }
 

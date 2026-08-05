@@ -2,6 +2,7 @@ package com.meshchat.app.mesh.transfer
 
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
+import com.meshchat.app.mesh.protocol.FileBodyV2
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
@@ -34,6 +35,11 @@ class FileTransferManagerTest {
             inner.broadcast(frame)
         }
         override fun sendTo(peerId: String, frame: MeshFrame) = inner.sendTo(peerId, frame)
+        /** 文件数据块走无确认写（v1.1.27）：测试替身 = 普通广播（记录 + 回环）。 */
+        override fun writeUnreliable(frame: MeshFrame) {
+            frames.add(frame)
+            inner.broadcast(frame)
+        }
     }
 
     private class FakeSaver(private val dir: File) : FileSaver {
@@ -44,12 +50,19 @@ class FileTransferManagerTest {
         }
     }
 
-    /** 从广播帧里取出 FILE 块体。 */
-    private fun fileChunks(frames: List<MeshFrame>): List<FileBody> =
+    /** 块视图（统一 FILE 单块 / FILE2 多块）。 */
+    private data class ChunkView(val fileId: String, val chunkIndex: Int)
+
+    /** 从广播帧里取出 FILE/FILE2 块。 */
+    private fun fileChunks(frames: List<MeshFrame>): List<ChunkView> =
         frames.mapNotNull { frame ->
-            val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull()
-            env?.body as? FileBody
-        }
+            val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@mapNotNull null
+            when (val b = env.body) {
+                is FileBody -> listOf(ChunkView(b.fileId, b.chunkIndex))
+                is FileBodyV2 -> b.chunks.indices.map { ChunkView(b.fid, b.start + it) }
+                else -> null
+            }
+        }.flatten()
 
     /** 从广播帧里取出 FILE_ACK 体。 */
     private fun ackBodies(frames: List<MeshFrame>): List<FileAckBody> =
@@ -197,22 +210,41 @@ class FileTransferManagerTest {
     }
 
     @Test
+    fun `file2 frame with two chunks fits BLE single-frame budget`() {
+        // v1.1.27 多块合并帧：CHUNKS_PER_FRAME 块 + FILE2 短字段头，必须 < MTU 512 可用载荷（509B）
+        val body = FileBodyV2(
+            fid = "f-12345678-1234-1234-1234-123456789012", n = "项目周报-第三季度-终版.pdf",
+            m = "application/vnd.openxmlformats-officedoc",
+            sz = 100000, tot = 1700, start = 0,
+            chunks = List(FileTransferManager.CHUNKS_PER_FRAME) {
+                Base64.getEncoder().encodeToString(ByteArray(FileTransferManager.CHUNK_BYTES) { 1 })
+            },
+        )
+        val env = MeshEnvelope(
+            id = "f123456789012-0", kind = "FILE2",
+            srcId = "AB12", dstId = "CD34", convId = "conv-CD34", ttl = 8, ts = 1234567890, body = body,
+        )
+        val size = MeshJson.encodeEnvelope(env).toByteArray().size
+        println("DIAG FILE2 frame bytes=$size budget=509")
+        assertTrue("FILE2 帧 ${size}B 超 MTU 512 可用载荷 509B", size <= 509)
+    }
+
+    @Test
     fun `file chunk frame fits BLE single-frame budget`() {
-        // 帧必须 < MTU 512 的可用载荷（509B）：
-        // 生产路径已截断 fileName(16 字符)/mime(30 字符)，此处模拟截断后的最坏输入 + 90B 块（整帧 ~505B）
+        // 老 FILE 格式（v1.1.27 起仅接收老版本设备帧，本机发送已改 FILE2）：老版本块大小 90B → 整帧 ~505B
         val body = FileBody(
             fileId = "f-12345678-1234-1234-1234-123456789012", fileName = "项目周报-第三季度-终版.pdf",
             mime = "application/vnd.openxmlformats-officedoc",
             size = 100000, totalChunks = 1700, chunkIndex = 0,
-            chunkData = Base64.getEncoder().encodeToString(ByteArray(FileTransferManager.CHUNK_BYTES) { 1 }),
+            chunkData = Base64.getEncoder().encodeToString(ByteArray(90) { 1 }),   // 老版本 v1.1.26 块 90B
         )
         val env = MeshEnvelope(
             id = "e-12345678-1234-1234-1234-123456789012", kind = "FILE",
             srcId = "AB12", dstId = "CD34", convId = "conv-CD34", ttl = 8, ts = 1234567890, body = body,
         )
         val size = MeshJson.encodeEnvelope(env).toByteArray().size
-        println("DIAG frame bytes=$size budget=509")
-        assertTrue("帧 ${size}B 超 MTU 512 可用载荷 509B", size <= 509)
+        println("DIAG FILE(old) frame bytes=$size budget=509")
+        assertTrue("老 FILE 帧 ${size}B 超 MTU 512 可用载荷 509B", size <= 509)
     }
 
     @Test
@@ -260,7 +292,7 @@ class FileTransferManagerTest {
             transport.incoming.collect { frame ->
                 val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull() ?: return@collect
                 when (env.body) {
-                    is FileBody -> if (env.dstId == "B") b.onFileChunk(env)
+                    is FileBody, is FileBodyV2 -> if (env.dstId == "B") b.onFileChunk(env)
                     is FileAckBody -> if (env.dstId == "A") a.onFileAck(env)
                     else -> Unit
                 }
@@ -276,7 +308,7 @@ class FileTransferManagerTest {
     }
 
     @Test
-    fun `chunks are sent through injected sendFrame instead of broadcast`() = runTest {
+    fun `file chunks go through writeUnreliable not injected sendFrame`() = runTest {
         val transport = CountingTransport()
         val sentVia = mutableListOf<Pair<String, MeshFrame>>()
         val manager = FileTransferManager(
@@ -286,11 +318,11 @@ class FileTransferManagerTest {
         )
         val bytes = ByteArray(FileTransferManager.CHUNK_BYTES * 8) { 5 }
         val fileId = manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "f.bin", "application/octet-stream", bytes.size.toLong())!!
+        // 数据块走 writeUnreliable（CountingTransport 记录到 frames）：8 块 = CHUNKS_PER_FRAME(2) × 4 帧
         var guard = 0
-        while (sentVia.size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
-        assertTrue("sendFrame 应被调用 8 次（首窗 8 块）", sentVia.size >= 8)
-        assertTrue("目标应全部为 B", sentVia.all { it.first == "B" })
-        assertTrue("注入 sendFrame 后不应走 broadcast", transport.frames.isEmpty())
+        while (fileChunks(transport.frames).size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
+        assertTrue("首窗 8 块应经 writeUnreliable 到达", fileChunks(transport.frames).size >= 8)
+        assertEquals("数据块不得走注入 sendFrame（仅 ACK 通道）", 0, sentVia.size)
         // 全部窗口完成后停发
         while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 200) {
             manager.onFileAck(ack(fileId, 8, emptyList()))
@@ -309,7 +341,7 @@ class FileTransferManagerTest {
         convId = "conv-A", ts = 1, body = FileAckBody(fileId, total, missing),
     )
 
-    private suspend fun awaitChunks(t: CountingTransport, n: Int): List<FileBody> {
+    private suspend fun awaitChunks(t: CountingTransport, n: Int): List<ChunkView> {
         val before = t.frames.size
         var guard = 0
         while (true) {

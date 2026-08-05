@@ -23,6 +23,23 @@ data class FileBody(
     val chunkData: String,     // base64，每块原始 200B → ~268B
 ) : EnvelopeBody
 
+/**
+ * 文件传输 v2（v1.1.27，仅文件传输）：短字段名 + 多块合并，突破 BLE 吞吐瓶颈。
+ * 每帧携带多块（start..start+chunks.size-1），把 JSON 信封头摊薄到多块上；
+ * 老版本 decode 时 @SerialName("FILE2") 不在多态类型表 → 反序列化失败 → 帧被丢弃（双方需同时升级，消息/心跳零影响）。
+ */
+@Serializable
+@SerialName("FILE2")
+data class FileBodyV2(
+    val fid: String,           // fileId（完整 UUID，接收去重/落库关联）
+    val n: String,             // fileName（发送方已截断 ≤16）
+    val m: String,             // mime（发送方已截断 ≤30）
+    val sz: Long,              // size
+    val tot: Int,              // totalChunks
+    val start: Int,            // 本帧首块索引
+    val chunks: List<String>,  // 本帧块数据（base64，1~CHUNKS_PER_FRAME 个）
+) : EnvelopeBody
+
 @Serializable
 @SerialName("FILE_ACK")
 data class FileAckBody(

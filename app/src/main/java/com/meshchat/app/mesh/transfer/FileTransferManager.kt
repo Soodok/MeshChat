@@ -4,6 +4,7 @@ import android.util.Log
 import com.meshchat.app.mesh.debug.FrameKind
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
+import com.meshchat.app.mesh.protocol.FileBodyV2
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
@@ -45,17 +46,23 @@ class FileTransferManager(
 ) {
     companion object {
         private const val TAG = "MeshFile"
-        // 块 90B（base64 120B）→ 整帧 ~505B < MTU 512 可用载荷 509B。50B 时每帧 453B 里 403B 是信封开销
-        //（数据占比仅 11%），90B 把数据占比提到 ~18%、总帧数降 44%——BLE 写往返（~20-30ms）是硬瓶颈，
-        // 帧数少一半 = 同样往返次数传 1.8 倍数据（实测瓶颈：30 write/s 上限）。再大（>90B）会超 509B 载荷。
-        const val CHUNK_BYTES = 90
-        // 窗口 8 块（~720B/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
+        // 块 120B（base64 160B）→ FILE2 单块帧 ~498B < MTU 512 可用载荷 509B（DIAG 实测）。
+        // 数据占比 120/498 = 24%（vs FILE 90B 块 505B 帧 18%）。大块单块优于小块多块：
+        // base64 固定 +4/3 膨胀且信封头 ~310B 固定，多块合并摊薄头需要头 ≤269B（当前头装不下 2 块），
+        // 块越大每字节数据的头开销越小。无确认写（writeUnreliable）后写次数不再是瓶颈，每帧数据量决定吞吐。
+        const val CHUNK_BYTES = 120
+        // 窗口 8 块（~960B/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
         const val WINDOW = 8
         const val WINDOW_TIMEOUT_MS = 1_000L    // ACK 全丢时的兜底：每块 ACK 模式下窗口往返 ~500ms，1s 足够；越短丢 ACK 恢复越快
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
-        /** 窗口内逐块广播的间隔：BLE notify 连发会触发系统丢弃，30ms 节流显著降丢帧（初发与补发都必须节流）。 */
+        /** 窗口内逐帧广播的间隔：BLE notify 连发会触发系统丢弃，30ms 节流显著降丢帧（初发与补发都必须节流）。 */
         const val BROADCAST_INTERVAL_MS = 30L
+        /**
+         * 每帧携带块数（v1.1.27）：固定 1——FILE2 信封头 ~310B 使 2 块（2×120 base64 320B）超 MTU，
+         * 而块大小与块数在 base64 下等价（数据量×4/3），大块单块的头摊薄效果最佳。头压缩（fid 短化等）后可改 2+。
+         */
+        const val CHUNKS_PER_FRAME = 1
         /**
          * ACK 缺失列表截断上限：发送端只 filter 当前窗口内缺失（窗口 8 块），
          * 更早窗口已收齐才推进（need 空），故窗口内缺失必位于全文件缺失列表前部，
@@ -231,7 +238,7 @@ class FileTransferManager(
                     // 补发缺失块：必须与初发同样 30ms 节流——BLE 广播连发触发系统丢弃，
                     // 零节流突发补发（曾达 180 p/s）会丢得更狠 → missing 不收敛 → retries 秒级爆到上限 FAILED
                     for (i in need) {
-                        broadcastChunk(s, i, cache[i]!!, totalChunks, s.fileName, s.mime, s.size)
+                        broadcastFrameV2(s, listOf(i to cache[i]!!), totalChunks, s.fileName, s.mime, s.size)
                         delay(BROADCAST_INTERVAL_MS)
                     }
                     if (need.size >= s.lastMissingCount) retries++ else retries = 0
@@ -266,32 +273,47 @@ class FileTransferManager(
         cache
     }.getOrNull()
 
-    /** 广播窗口全部块：块间 30ms 节流，避免 BLE notify 连发触发系统丢弃（runTest 虚拟时间下 delay 跳过）。 */
+    /** 广播窗口全部块（每帧 CHUNKS_PER_FRAME 块，块间 30ms 节流，避免 BLE notify 连发触发系统丢弃）。 */
     private suspend fun broadcastWindow(s: SendSession, cache: Map<Int, String>) {
         val total = ((s.size + CHUNK_BYTES - 1) / CHUNK_BYTES).toInt()
         var first = true
-        for ((index, data) in cache) {
+        cache.keys.sorted().chunked(CHUNKS_PER_FRAME).forEach { frame ->
             if (!first) delay(BROADCAST_INTERVAL_MS)
             first = false
-            broadcastChunk(s, index, data, total, s.fileName, s.mime, s.size)
+            broadcastFrameV2(s, frame.map { it to cache[it]!! }, total, s.fileName, s.mime, s.size)
         }
     }
 
-    private fun broadcastChunk(s: SendSession, index: Int, data: String, totalChunks: Int, name: String, mime: String, size: Long) {
+    /**
+     * 广播 FILE2 帧（v1.1.27 多块合并 + 无确认写）：
+     * 每帧带 1~CHUNKS_PER_FRAME 块，数据块走 transport.writeUnreliable（GATT WRITE_NO_RESPONSE，
+     * 无写往返瓶颈）；丢帧由窗口重传兜底。ACK/普通消息仍走可靠写。老版本对端 decode FILE2 失败自动丢帧。
+     */
+    private fun broadcastFrameV2(
+        s: SendSession,
+        chunks: List<Pair<Int, String>>,
+        totalChunks: Int,
+        name: String,
+        mime: String,
+        size: Long,
+    ) {
         val envelope = MeshEnvelope(
-            id = UUID.randomUUID().toString(),
-            kind = "FILE",
+            // 块帧信封 id 短化（dedup 唯一即可，省 20+ 字符）
+            id = "f${s.fileId.take(12)}-${chunks.first().first}",
+            kind = "FILE2",
             srcId = shortId,
             dstId = s.dstId,
             convId = s.convId,
             ttl = 8,
             ts = System.currentTimeMillis(),
-            body = FileBody(fileId = s.fileId, fileName = name, mime = mime, size = size,
-                totalChunks = totalChunks, chunkIndex = index, chunkData = data),
+            body = FileBodyV2(
+                fid = s.fileId, n = name, m = mime, sz = size, tot = totalChunks,
+                start = chunks.first().first, chunks = chunks.map { it.second },
+            ),
         )
         val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray())
         debugStats.recordSent(FrameKind.FILE_CHUNK, frame.payload.size)
-        sendFrame(s.dstId, frame)
+        transport.writeUnreliable(frame)
     }
 
     private fun updateProgress(s: SendSession, status: TransferStatus) {
@@ -317,34 +339,58 @@ class FileTransferManager(
     // ---- 接收端 ----
 
     fun onFileChunk(envelope: MeshEnvelope) {
-        val body = envelope.body as? FileBody ?: return
-        if (body.size <= 0 || body.totalChunks <= 0) return
-        val session = receivers.getOrPut(body.fileId) {
+        when (val body = envelope.body) {
+            is FileBody -> handleChunks(
+                envelope, body.fileId, body.fileName, body.mime, body.size, body.totalChunks,
+                listOf(body.chunkIndex to body.chunkData),
+            )
+            is FileBodyV2 -> handleChunks(
+                envelope, body.fid, body.n, body.m, body.sz, body.tot,
+                body.chunks.mapIndexed { i, data -> (body.start + i) to data },
+            )
+            else -> return
+        }
+    }
+
+    /** 统一处理块到达（老 FileBody 单块 / 新 FileBodyV2 多块）：写盘 + ACK 合并（每窗口一次/重复块立即回/tick 兜底）。 */
+    private fun handleChunks(
+        envelope: MeshEnvelope,
+        fileId: String,
+        fileName: String,
+        mime: String,
+        size: Long,
+        totalChunks: Int,
+        chunks: List<Pair<Int, String>>,
+    ) {
+        if (size <= 0 || totalChunks <= 0) return
+        val session = receivers.getOrPut(fileId) {
             ReceiveSession(
-                fileId = body.fileId, convId = "conv-${envelope.srcId}", senderId = envelope.srcId,
-                fileName = body.fileName, mime = body.mime, size = body.size,
-                totalChunks = body.totalChunks,
-                tmpFile = File(tmpDir(), "${body.fileId}.part"),
+                fileId = fileId, convId = "conv-${envelope.srcId}", senderId = envelope.srcId,
+                fileName = fileName, mime = mime, size = size,
+                totalChunks = totalChunks,
+                tmpFile = File(tmpDir(), "${fileId}.part"),
                 received = mutableSetOf(), lastActivity = System.currentTimeMillis(),
             )
         }
         session.lastActivity = System.currentTimeMillis()
-        val data = runCatching { Base64.getDecoder().decode(body.chunkData) }.getOrNull() ?: return
-        debugStats.recordReceived(FrameKind.FILE_CHUNK, data.size)
-        val isNew = session.writeChunk(body.chunkIndex, data)   // 重复块内部幂等跳过并返回 false
-        session.ackDirty = true
-        updateReceiveProgress(session, TransferStatus.RUNNING)
-
-        if (session.isComplete) {
-            completeReceive(session)
-        } else if (!isNew) {
-            // 重复块 = 发送端正在等确认/超时重发：立即回 ACK 让其收敛，不等窗口边界
-            sendAck(session)
-        } else if (session.ackCounter++ % WINDOW == 0) {
-            // ACK 合并：每收满一窗口回一次，避免逐块 ACK 洪泛（60 个/s × 300B 挤占带宽超过数据本身）
-            sendAck(session)
+        for ((index, dataStr) in chunks) {
+            val data = runCatching { Base64.getDecoder().decode(dataStr) }.getOrNull() ?: continue
+            debugStats.recordReceived(FrameKind.FILE_CHUNK, data.size)
+            val isNew = session.writeChunk(index, data)   // 重复块内部幂等跳过并返回 false
+            session.ackDirty = true
+            if (session.isComplete) {
+                completeReceive(session)
+                return  // 已收齐：后续块（含本帧剩余）忽略，防重建已删除的 tmpFile
+            } else if (!isNew) {
+                // 重复块 = 发送端正在等确认/超时重发：立即回 ACK 让其收敛，不等窗口边界
+                sendAck(session)
+            } else if (session.ackCounter++ % WINDOW == 0) {
+                // ACK 合并：每收满一窗口回一次，避免逐块 ACK 洪泛（60 个/s × 300B 挤占带宽超过数据本身）
+                sendAck(session)
+            }
         }
         // 不足整窗口的收尾由 tick 的 ACK_FLUSH_MS 兜底回 ACK（不拖到发送端 1s 窗口超时）
+        updateReceiveProgress(session, TransferStatus.RUNNING)
     }
 
     fun onFileAck(envelope: MeshEnvelope) {

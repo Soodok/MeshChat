@@ -36,6 +36,12 @@ interface MeshTransport {
     fun broadcast(frame: MeshFrame)
     fun sendTo(peerId: String, frame: MeshFrame)
 
+    /**
+     * 无确认写（v1.1.27，仅文件数据块用）：GATT WRITE_NO_RESPONSE，不等待对端应答 → 突破确认写往返
+     * （30 write/s）瓶颈。丢帧由应用层窗口重传兜底。默认等同 broadcast（可靠），实现方覆盖。
+     */
+    fun writeUnreliable(frame: MeshFrame) { broadcast(frame) }
+
     /** 注入"本机已收到消息的确认键"提供器（MeshService 提供），供广播扫描响应携带。默认空实现（内存/测试替身不关心）。 */
     fun setAckProvider(provider: () -> List<ByteArray>) {}
 
