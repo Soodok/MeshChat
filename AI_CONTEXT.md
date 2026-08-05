@@ -256,7 +256,8 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **无推送阻塞**：v1.1.28 代码提交 `5b5128b` 待推送（本次会话随 AI_CONTEXT 一起 push）；此前积压已全部同步，本地与 origin/main 同步。
+- **⚠️ 推送阻塞（网络）重新出现**：`github.com:443` connection reset/超时（2026-08-05，连续 3 次失败）。**待推送积压**：v1.1.28 代码 `5b5128b` + AI_CONTEXT `e690b06`。网络恢复后 `git push origin main` 即可（本地与远程差距 2 个 commit）。
+- **无推送阻塞**：此前积压已全部同步，本地与 origin/main 同步。
 - **⚠️ 推送阻塞（网络）已解除**：此前 `github.com:443` connection reset/超时导致的推送积压（v1.1.24 `26d4343` / v1.1.25 `05dff98` / v1.1.26 `dffc92d` / v1.1.27 `509ef32`）已全部推送成功（`6fd9557..509ef32`），本地与 origin/main 同步。
 - **推送已成功**：commit `1b1e999`（v1.1.3~v1.1.20 积压 + README 中英双语/免责声明）已推送 origin/main（`75b691b..1b1e999`，2026-08-05 第 5 次重试成功）。本地与远程同步，工作区干净。
 - **⚠️ 推送阻塞（网络）已解除**：此前 `github.com:443` TCP reset/超时导致的推送积压（v1.0.25 `9d0f373` + v1.1.0 `9d7c62c`）已全部推送成功，本地与 origin/main 同步。GitHub Release（挂 APK）仍可后续用 gh CLI 或网页：仓库 https://github.com/Soodok/MeshChat 的 Releases 页上传 `MeshChat-v1.1.1-debug.apk`。
