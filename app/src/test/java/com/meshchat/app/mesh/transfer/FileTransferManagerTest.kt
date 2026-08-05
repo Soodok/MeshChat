@@ -327,7 +327,7 @@ class FileTransferManagerTest {
     }
 
     @Test
-    fun `file chunks go through writeUnreliable not injected sendFrame`() = runTest {
+    fun `file chunks go through broadcast not injected sendFrame`() = runTest {
         val transport = CountingTransport()
         val sentVia = mutableListOf<Pair<String, MeshFrame>>()
         val manager = FileTransferManager(
@@ -337,11 +337,11 @@ class FileTransferManagerTest {
         )
         val bytes = randomBytes(File3.CHUNK_BYTES * 8)
         val fileId = manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "f.bin", "application/octet-stream", bytes.size.toLong())!!
-        // 数据块走 writeUnreliable（CountingTransport 记录到 frames）：8 块 + START 帧
+        // 数据块走 broadcast（CountingTransport 记录到 frames，v1.1.31 起无确认写改确认写 broadcast）：8 块 + START 帧
         var guard = 0
         while (fileChunks(transport.frames).size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
-        assertTrue("首窗 8 块应经 writeUnreliable 到达", fileChunks(transport.frames).size >= 8)
-        assertTrue("START 元数据帧应经 writeUnreliable 发出", transport.frames.any {
+        assertTrue("首窗 8 块应经 broadcast 到达", fileChunks(transport.frames).size >= 8)
+        assertTrue("START 元数据帧应经 broadcast 发出", transport.frames.any {
             File3.isFile3(it.payload) && File3.parse(it.payload) is File3.Frame.StartFrame
         })
         assertEquals("数据块不得走注入 sendFrame（仅 ACK 通道）", 0, sentVia.size)

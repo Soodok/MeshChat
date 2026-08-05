@@ -356,7 +356,11 @@ class FileTransferManager(
         }
     }
 
-    /** START 元数据帧（v1.1.28）：文件名/mime/原始大小/压缩标志/总块数。每窗口重发保证到达（幂等）。 */
+    /**
+     * START 元数据帧（v1.1.28）：文件名/mime/原始大小/压缩标志/总块数。每窗口重发保证到达（幂等）。
+     * v1.1.31 起走确认写 broadcast：模拟器+真机复现 WRITE_NO_RESPONSE 无确认写返回 true 但被蓝牙栈
+     * 静默丢弃（不回调无法感知失败），文件帧全丢、接收端 0 块——文件帧回退确认写（与心跳同路径，可靠）。
+     */
     private fun broadcastStart3(s: SendSession) {
         val payload = File3.encodeStart(
             srcId = shortId, fid = s.fileId, totalChunks = s.totalChunks,
@@ -364,19 +368,20 @@ class FileTransferManager(
         )
         val frame = MeshFrame(FrameType.DATA, payload)
         debugStats.recordSent(FrameKind.FILE_CHUNK, payload.size)
-        transport.writeUnreliable(frame)
+        transport.broadcast(frame)
     }
 
     /**
-     * 数据块帧（v1.1.28 FILE3）：纯二进制（无 base64/JSON 膨胀，数据占比 ~95%），
-     * 走 transport.writeUnreliable（GATT WRITE_NO_RESPONSE，无写往返瓶颈，无节流）；
-     * 丢帧由窗口重传兜底。老版本对端 decode MC3 帧失败自动丢帧。
+     * 数据块帧（v1.1.28 FILE3）：纯二进制（无 base64/JSON 膨胀，数据占比 ~95%）。
+     * v1.1.31 起走确认写 broadcast：无确认写（WRITE_NO_RESPONSE）在 Android 蓝牙栈静默丢帧
+     * （返回 true 但实际未送达、无回调），文件帧回退确认写保证可靠；丢帧仍由窗口重传兜底。
+     * 老版本对端 decode MC3 帧失败自动丢帧。
      */
     private fun broadcastChunk3(s: SendSession, seq: Int, data: ByteArray) {
         val payload = File3.encodeChunk(shortId, s.fileId, seq, data)
         val frame = MeshFrame(FrameType.DATA, payload)
         debugStats.recordSent(FrameKind.FILE_CHUNK, payload.size)
-        transport.writeUnreliable(frame)
+        transport.broadcast(frame)
     }
 
     private fun updateProgress(s: SendSession, status: TransferStatus) {

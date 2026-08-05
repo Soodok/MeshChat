@@ -508,6 +508,9 @@ class BleTransport(
     ): Boolean {
         characteristic.writeType = writeType
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // API 33+：单参重载内部使用 characteristic.writeType + characteristic.value——必须先设 value！
+            // （v1.1.30 重构遗漏设 value → 发送空/旧数据 → 接收端 decode 失败，回归）
+            characteristic.value = bytes
             runCatching { gatt.writeCharacteristic(characteristic) }.getOrDefault(false)
         } else {
             // API 26-32：三参重载（单参会 NoSuchMethodError）。编译期返回类型是 int（SDK 36 定义），
