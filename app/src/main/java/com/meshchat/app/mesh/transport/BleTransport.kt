@@ -216,14 +216,17 @@ class BleTransport(
     override fun currentMtu(): Int = negotiatedMtu
 
     /**
-     * 对端 GATT 连接是否存活（v1.1.38 文件传输无上限重试的停止条件）：
-     * 查本机 central 连接表——连接断开时 DISCONNECTED 回调已移除 gattClients 记录 → false。
+     * 对端是否有活跃 GATT 连接（v1.1.39 修正）：**central 与 server 侧连接都算**——
+     * 聊天/传输实际靠双通道（本机 central 写对端 + 对端连入本机后 notify 回传），
+     * 本机 GATT server 服务可有可无（"聊天已把 gatt 服务扔了"），且对端可能只以 server 侧连入。
+     * 只查 central 连接表会误杀仅 notify 通道可达的场景 → 文件传输错误停止。
+     * 用 BluetoothManager.getConnectionState（全局，不分角色）判定：任一条 GATT 连接存活即可传。
      */
     override fun isConnectedTo(peerId: String): Boolean {
         val address = peerIds.entries.firstOrNull { it.value == peerId }?.key ?: return false
-        val gatt = gattClients[address] ?: return false
         return runCatching {
-            bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+            val device = bluetoothAdapter?.getRemoteDevice(address) ?: return false
+            bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
         }.getOrDefault(false)
     }
 

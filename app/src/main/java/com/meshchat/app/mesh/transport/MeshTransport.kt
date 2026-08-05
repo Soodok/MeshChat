@@ -67,8 +67,10 @@ interface MeshTransport {
     fun currentMtu(): Int = -1
 
     /**
-     * 与对端（shortId）的 GATT 连接是否存活（v1.1.38）：文件传输发送端据此停止无上限重试——
-     * 重连/重发次数不设限（零容错），仅链路断开才放弃。默认 true（内存/测试替身假定始终连接）。
+     * 与对端（shortId）是否有活跃 GATT 连接（v1.1.38 文件传输无上限重试的停止条件）：
+     * **central 与 server 侧连接都算**（聊天双通道：本机写对端 / 对端连入后 notify 回传）。
+     * 重连/重发次数不设限（零容错），仅对端完全断开（无任何 GATT 连接）才停止。
+     * 默认 true（内存/测试替身假定始终连接）。
      */
     fun isConnectedTo(peerId: String): Boolean = true
 }
