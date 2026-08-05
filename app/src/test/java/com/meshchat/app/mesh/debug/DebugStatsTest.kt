@@ -97,6 +97,25 @@ class DebugStatsTest {
     }
 
     @Test
+    fun `received decode failures aggregate in failed stats`() {
+        val clock = FakeClock()
+        val stats = DebugStats(clock.tick)
+        stats.recordReceivedFailure()
+        clock.now = 500
+        stats.recordReceivedFailure()
+        stats.recordGattWrite(false)
+        stats.recordNotify(false)
+        val snap = stats.snapshot(5_000)
+        assertEquals(2, snap.failures.receivedDecodeFailures)
+        assertEquals(2.0 / 5.0, snap.failures.receivedDecodeRatePerSec, 1e-9)
+        assertEquals(1, snap.failures.bleWriteFailed)
+        assertEquals(1, snap.failures.bleNotifyFailed)
+        stats.reset()
+        val after = stats.snapshot(5_000)
+        assertEquals(0, after.failures.receivedDecodeFailures)
+    }
+
+    @Test
     fun `issue forwards control commands to attached handler`() {
         val stats = DebugStats()
         var received: DebugControl? = null

@@ -48,6 +48,15 @@ data class SystemStats(
     val totalMemoryKb: Long = 0, val freeMemoryKb: Long = 0,
 )
 
+/** 失败包统计（信息不可确认/不完整包）：接收解码失败 + 送达不可确认 + BLE 发送失败。 */
+data class FailedStats(
+    val receivedDecodeFailures: Long = 0,       // 收到但无法解析的帧累计数
+    val receivedDecodeRatePerSec: Double = 0.0, // 窗口内解码失败速率
+    val unconfirmed: Int = 0,                    // 发出后尚未收到确认的包（pending）
+    val bleWriteFailed: Long = 0,                // BLE 写特征失败累计
+    val bleNotifyFailed: Long = 0,               // BLE notify 失败累计
+)
+
 data class DebugSnapshot(
     val timestampMs: Long = 0,
     val frames: Map<FrameKind, FrameStat> = emptyMap(),
@@ -57,6 +66,7 @@ data class DebugSnapshot(
     val delivery: DeliveryStats = DeliveryStats(),
     val file: FileStats = FileStats(),
     val system: SystemStats = SystemStats(),
+    val failures: FailedStats = FailedStats(),
 )
 
 /** 路由决策分类（route() 三分支）。 */
@@ -137,6 +147,17 @@ class DebugStats(
         recvQ.computeIfAbsent(kind) { EventQueue() }.push(now, bytes)
         recvTotal.compute(kind) { _, v -> (v ?: 0) + 1 }
         recvBytesTotal.compute(kind) { _, v -> (v ?: 0) + bytes }
+    }
+
+    // ---- 失败包（信息不可确认/不完整包）----
+    private val receivedFailuresQ = EventQueue()
+    private var receivedFailures = 0L
+
+    /** 收到但无法解析的帧（解码失败/不完整包）。 */
+    fun recordReceivedFailure() {
+        val now = clock()
+        receivedFailuresQ.push(now, 0)
+        receivedFailures++
     }
 
     // ---- BLE ----
@@ -272,6 +293,17 @@ class DebugStats(
             )
         }
         val runtime = Runtime.getRuntime()
+        val failuresWin = receivedFailuresQ.statsSince(now, windowMs)
+        val failed: FailedStats
+        synchronized(bleLock) {
+            failed = FailedStats(
+                receivedDecodeFailures = receivedFailures,
+                receivedDecodeRatePerSec = failuresWin[0] / (windowMs / 1000.0),
+                unconfirmed = del.pending,
+                bleWriteFailed = writeFailed,
+                bleNotifyFailed = notifyFailed,
+            )
+        }
         return DebugSnapshot(
             timestampMs = now,
             frames = frames,
@@ -290,6 +322,7 @@ class DebugStats(
                 totalMemoryKb = runtime.totalMemory() / 1024,
                 freeMemoryKb = runtime.freeMemory() / 1024,
             ),
+            failures = failed,
         )
     }
 
@@ -298,6 +331,7 @@ class DebugStats(
         recvQ.values.forEach { it.reset() }; recvQ.clear()
         sentTotal.clear(); sentBytesTotal.clear(); recvTotal.clear(); recvBytesTotal.clear()
         broadcastQ.reset()
+        receivedFailuresQ.reset(); receivedFailures = 0
         synchronized(bleLock) {
             broadcastCount = 0; broadcastBytes = 0; scanResultCount = 0; scanStartedCount = 0
             gattConnectAttempts = 0; gattConnectSuccess = 0; gattDisconnects = 0; gattCurrent = 0; mtu = 0
