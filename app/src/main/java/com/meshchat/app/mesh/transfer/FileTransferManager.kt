@@ -45,21 +45,26 @@ class FileTransferManager(
 ) {
     companion object {
         private const val TAG = "MeshFile"
-        // 块 50B（base64 68B）→ 整帧 ~453B，须 < MTU 512 可用载荷 509B（实测 200B 块整帧 661-684B 必超，对端一个块都收不到）
-        const val CHUNK_BYTES = 50
-        // 窗口 8 块（~4KB/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
+        // 块 90B（base64 120B）→ 整帧 ~505B < MTU 512 可用载荷 509B。50B 时每帧 453B 里 403B 是信封开销
+        //（数据占比仅 11%），90B 把数据占比提到 ~18%、总帧数降 44%——BLE 写往返（~20-30ms）是硬瓶颈，
+        // 帧数少一半 = 同样往返次数传 1.8 倍数据（实测瓶颈：30 write/s 上限）。再大（>90B）会超 509B 载荷。
+        const val CHUNK_BYTES = 90
+        // 窗口 8 块（~720B/窗）：32 块（16KB/窗）超 BLE 实际吞吐（1-5KB/s），15s 内收不齐 → 整窗重发恶性循环
         const val WINDOW = 8
         const val WINDOW_TIMEOUT_MS = 1_000L    // ACK 全丢时的兜底：每块 ACK 模式下窗口往返 ~500ms，1s 足够；越短丢 ACK 恢复越快
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
-        /** 窗口内逐块广播的间隔：BLE notify 连发会触发系统丢弃，30ms 节流显著降丢帧。 */
+        /** 窗口内逐块广播的间隔：BLE notify 连发会触发系统丢弃，30ms 节流显著降丢帧（初发与补发都必须节流）。 */
         const val BROADCAST_INTERVAL_MS = 30L
         /**
-         * ACK 缺失列表截断上限：全文件缺失列表随文件膨胀（1000 块缺失 ~4KB 帧）会超 MTU，
-         * 发送端只关心当前窗口内缺失——更早窗口已收齐（ACK 推进前提），
-         * 当前窗口缺失必然位于缺失列表前部。须 > WINDOW（8）才能覆盖窗口内全部缺失且整帧 < 470B。
+         * ACK 缺失列表截断上限：发送端只 filter 当前窗口内缺失（窗口 8 块），
+         * 更早窗口已收齐才推进（need 空），故窗口内缺失必位于全文件缺失列表前部，
+         * take(WINDOW) 恰好覆盖。= WINDOW 强耦合，改 WINDOW 必须同步。
+         * 40 项时代 ACK 帧 ~300B、60 个/s（每块回）→ ACK 洪泛挤占 BLE 带宽超过数据本身；8 项 → 帧 ~120B。
          */
-        const val MAX_ACK_MISSING = 40
+        const val MAX_ACK_MISSING = WINDOW
+        /** 接收端 ACK 合并兜底：距上次 ACK 超过该时长仍有未确认新块 → 立即回（最后不足整窗的收尾不拖到窗口超时）。 */
+        const val ACK_FLUSH_MS = 300L
     }
 
     private val _progress = MutableStateFlow<FileProgress?>(null)
@@ -93,6 +98,9 @@ class FileTransferManager(
         val received: MutableSet<Int>,
         var lastActivity: Long,
         var ackCounter: Int = 0,
+        /** 自上次 ACK 后是否有新块未确认（tick 兜底回 ACK 用）。 */
+        var ackDirty: Boolean = false,
+        var lastAckAt: Long = 0L,
     ) {
         /** 写块；返回是否为新块（重复块幂等跳过并返回 false，用于触发立即回 ACK）。 */
         fun writeChunk(chunkIndex: Int, data: ByteArray): Boolean {
@@ -323,16 +331,20 @@ class FileTransferManager(
         session.lastActivity = System.currentTimeMillis()
         val data = runCatching { Base64.getDecoder().decode(body.chunkData) }.getOrNull() ?: return
         debugStats.recordReceived(FrameKind.FILE_CHUNK, data.size)
-        session.writeChunk(body.chunkIndex, data)   // 重复块内部幂等跳过
+        val isNew = session.writeChunk(body.chunkIndex, data)   // 重复块内部幂等跳过并返回 false
+        session.ackDirty = true
         updateReceiveProgress(session, TransferStatus.RUNNING)
 
-        session.ackCounter++
         if (session.isComplete) {
             completeReceive(session)
-        } else {
-            // 每收一块（新/重复）都回 ACK：发送端收到后立即补缺，无需等满窗口，丢帧恢复从窗口超时降到亚秒级
+        } else if (!isNew) {
+            // 重复块 = 发送端正在等确认/超时重发：立即回 ACK 让其收敛，不等窗口边界
+            sendAck(session)
+        } else if (session.ackCounter++ % WINDOW == 0) {
+            // ACK 合并：每收满一窗口回一次，避免逐块 ACK 洪泛（60 个/s × 300B 挤占带宽超过数据本身）
             sendAck(session)
         }
+        // 不足整窗口的收尾由 tick 的 ACK_FLUSH_MS 兜底回 ACK（不拖到发送端 1s 窗口超时）
     }
 
     fun onFileAck(envelope: MeshEnvelope) {
@@ -355,6 +367,9 @@ class FileTransferManager(
                 s.tmpFile.delete()
                 updateReceiveProgress(s, TransferStatus.FAILED)
                 it.remove()
+            } else if (s.ackDirty && now - s.lastAckAt > ACK_FLUSH_MS) {
+                // ACK 合并兜底：最后不足整窗的收尾/发送端已停的窗口 → 立即回 ACK，避免拖到 1s 窗口超时整窗重发
+                sendAck(s)
             }
         }
     }
@@ -390,6 +405,8 @@ class FileTransferManager(
         )
         val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ack).toByteArray())
         debugStats.recordSent(FrameKind.FILE_ACK, frame.payload.size)
+        s.ackDirty = false
+        s.lastAckAt = System.currentTimeMillis()
         sendFrame(s.senderId, frame)
     }
 

@@ -198,8 +198,8 @@ class FileTransferManagerTest {
 
     @Test
     fun `file chunk frame fits BLE single-frame budget`() {
-        // 帧必须 < MTU 512 的可用载荷（509B）并留余量：
-        // 生产路径已截断 fileName(16 字符)/mime(30 字符)，此处模拟截断后的最坏输入 + 60B 块
+        // 帧必须 < MTU 512 的可用载荷（509B）：
+        // 生产路径已截断 fileName(16 字符)/mime(30 字符)，此处模拟截断后的最坏输入 + 90B 块（整帧 ~505B）
         val body = FileBody(
             fileId = "f-12345678-1234-1234-1234-123456789012", fileName = "项目周报-第三季度-终版.pdf",
             mime = "application/vnd.openxmlformats-officedoc",
@@ -211,8 +211,8 @@ class FileTransferManagerTest {
             srcId = "AB12", dstId = "CD34", convId = "conv-CD34", ttl = 8, ts = 1234567890, body = body,
         )
         val size = MeshJson.encodeEnvelope(env).toByteArray().size
-        println("DIAG frame bytes=$size budget=470")
-        assertTrue("帧 ${size}B 超 BLE 单帧预算 470B", size <= 470)
+        println("DIAG frame bytes=$size budget=509")
+        assertTrue("帧 ${size}B 超 MTU 512 可用载荷 509B", size <= 509)
     }
 
     @Test
@@ -230,7 +230,7 @@ class FileTransferManagerTest {
             size = 50000L, totalChunks = total, chunkIndex = index,
             chunkData = Base64.getEncoder().encodeToString(ByteArray(FileTransferManager.CHUNK_BYTES) { 1 }),
         )
-        // 收 32 块（触发 ackCounter % WINDOW == 0 → 回 ACK）
+        // 收 32 块（每满一窗口 8 块回 ACK → 共 4 次）
         for (i in 0 until 32) manager.onFileChunk(envelope(fileId, chunk(i)))
         val ackFrame = transport.frames.lastOrNull { frame ->
             val env = runCatching { MeshJson.decodeEnvelope(frame.payloadText) }.getOrNull()
