@@ -392,6 +392,8 @@ class BleTransport(
                                 // v1.1.33 移除：该组合在部分 Android 13+/16 设备上致连接参数异常、大帧（~500B）ATT 写
                                 // 静默失败（v1.1.26 无此调用时文件传输正常 30 块/s，v1.1.27 起全 0 块，回退验证）。
                                 discoverServicesWithTimeout(gatt)
+                                // v1.1.41：连接恢复立即补写排队帧（连接抖动期的写不再丢失）
+                                tryFlush(device.address)
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
                                 debugStats.recordGattDisconnect()
@@ -400,7 +402,7 @@ class BleTransport(
                                 discoverTimer?.let { mainHandler.removeCallbacks(it) }
                                 gatt.close()
                                 gattClients.remove(device.address)
-                                pendingFrames.remove(device.address)
+                                // v1.1.41：**保留 pendingFrames**——连接抖动期排队的帧等重连后补写（30s 超时兜底清理）
                             }
                         }
                     }
@@ -501,8 +503,13 @@ class BleTransport(
         gattClients.keys.toList().forEach { address ->
             val gatt = gattClients[address] ?: return@forEach
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
-            // 可写条件 = 服务已发现 && 帧 ≤ 当前 MTU 载荷（v1.1.36 加 MTU 检查：MTU 未协商完成/协商不足时大帧写必失败）
-            if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
+            // v1.1.41 可写条件 = 服务已发现 && 连接 CONNECTED && 帧 ≤ MTU 载荷：
+            // 连接非 CONNECTED（GATT 抖动/重建窗口）时单参写必返回 false → 231B 心跳大量 write FAILED
+            // （用户实测丢包与频率无关、全是写入失败）——不满足即排队，等连接恢复/MTU 就绪后补写。
+            val connected = runCatching {
+                bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+            }.getOrDefault(false)
+            if (characteristic != null && connected && frame.payload.size <= negotiatedMtu - 3) {
                 if (!writeTo(gatt, frame, unreliable)) {
                     // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
                     val state = runCatching {
@@ -512,41 +519,55 @@ class BleTransport(
                         Log.w(TAG, "write failed for $address, link dead, drop stale connection")
                         gattClients.remove(address)
                         runCatching { gatt.close() }
+                    } else {
+                        // 写失败但连接仍 CONNECTED（栈忙/瞬态）：排队 + 短延迟重试（v1.1.41 动态容错，不丢帧）
+                        queueFrame(address, frame)
+                        scheduleFlush(address, 200L)
                     }
                 }
             } else {
-                // 服务尚未发现 或 MTU 尚未协商到容纳该帧：暂存，待就绪（onServicesDiscovered/onMtuChanged）后补写；超时帧丢弃防永久滞留
+                // 服务尚未发现 / 连接非 CONNECTED / MTU 未就绪：暂存，待就绪后补写；超时帧丢弃防永久滞留
                 queueFrame(address, frame)
             }
         }
     }
 
-    /** 暂存待补写帧（服务未发现 / MTU 不足）；超时清理 + 限长防无限增长。 */
+    /** 暂存待补写帧（服务未发现 / 连接非 CONNECTED / MTU 不足 / 栈忙）；超时清理 + 限长防无限增长。 */
     private fun queueFrame(address: String, frame: MeshFrame) {
         val now = System.currentTimeMillis()
         val queued = pendingFrames.getOrPut(address) { mutableListOf() }
         queued.removeAll { now - it.first > PENDING_FRAME_TIMEOUT_MS }
         if (queued.size >= 32) queued.removeAt(0)
         queued.add(now to frame)
-        Log.w(TAG, "service/MTU not ready for $address, queue frame (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
-        DebugLogBuffer.log(TAG, "service/MTU NOT ready for $address, queue frame (${frame.type}, ${frame.payload.size}B)")
+        Log.w(TAG, "queue frame for $address (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
+        DebugLogBuffer.log(TAG, "queue frame for $address (${frame.type}, ${frame.payload.size}B, queued=${queued.size})")
     }
 
-    /** 服务发现成功/MTU 就绪后补写排队帧；仍不满足条件的（MTU 未到）留队等下次触发。 */
+    /** 写失败（连接仍 CONNECTED，栈忙）后的短延迟重试（v1.1.41）。 */
+    private fun scheduleFlush(address: String, delayMs: Long) {
+        mainHandler.postDelayed({ tryFlush(address) }, delayMs)
+    }
+
+    /** 服务发现成功/MTU 就绪/连接恢复后补写排队帧；仍不满足条件的（连接未回/MTU 未到）留队等下次触发。 */
     private fun tryFlush(address: String) {
         val gatt = gattClients[address] ?: return
+        val now = System.currentTimeMillis()
         val pending = pendingFrames.remove(address) ?: return
         val keep = mutableListOf<Pair<Long, MeshFrame>>()
         for ((ts, frame) in pending) {
+            if (now - ts > PENDING_FRAME_TIMEOUT_MS) continue   // 超时帧丢弃（对端长期不可达，不再硬发）
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
-            if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
+            val connected = runCatching {
+                bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+            }.getOrDefault(false)
+            if (characteristic != null && connected && frame.payload.size <= negotiatedMtu - 3) {
                 writeTo(gatt, frame)
             } else {
                 keep.add(ts to frame)
             }
         }
         if (keep.isNotEmpty()) {
-            Log.d(TAG, "flush $address: ${keep.size} frames still waiting for MTU/service")
+            Log.d(TAG, "flush $address: ${keep.size} frames still waiting")
             pendingFrames[address] = keep
         }
     }
