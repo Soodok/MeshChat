@@ -29,6 +29,12 @@ class InMemoryMeshStore : MeshStore {
     override fun observeMessages(convId: String): Flow<List<StoredMessage>> =
         flowOf(queryMessages(convId))
 
+    override fun observeAllMessages(): Flow<List<StoredMessage>> = flowOf(messages.sortedBy { it.ts })
+
+    override fun deleteConversation(convId: String) {
+        messages.removeAll { it.convId == convId }
+    }
+
     override fun enqueueOutbox(entry: OutboxEntry) {
         outbox.removeAll { it.id == entry.id }
         outbox.add(entry)
@@ -49,6 +55,10 @@ class InMemoryMeshStore : MeshStore {
 
     override fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int) {
         peers[shortId] = PeerEntity(shortId, displayName, lastSeen, hops)
+    }
+
+    override fun deletePeer(shortId: String) {
+        peers.remove(shortId)
     }
 
     override fun prunePeersNotSeenSince(cutoff: Long) {

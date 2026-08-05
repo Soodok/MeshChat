@@ -1,12 +1,23 @@
 # MeshChat
 
-面向**无公网 / 弱网极端环境**的近场安全通信 Android 应用。
+> 面向**无公网 / 弱网极端环境**的近场安全通信 Android 应用
+> A near-field secure-communication Android app for **offline / weak-network** environments.
+
+## 免责声明 / Disclaimer
+
+> **开源项目可能被用于恶意用途。** 本项目仅用于学习与合法的应急通信研究。开源代码可被任何个人或组织以任何方式复制、修改与使用，包括但不限于违法犯罪用途；作者对任何滥用、误用或由此产生的后果不承担任何责任。使用者须自行确保其使用方式符合所在国家/地区的法律法规。
+>
+> **Open-source software can be abused.** This project is provided solely for learning and legitimate emergency-communication research. The code may be copied, modified, and used by anyone for any purpose, including illegal ones; the authors assume no liability for any misuse or for the consequences thereof. You are solely responsible for ensuring your usage complies with all applicable laws and regulations.
+
+## 项目简介 / About
 
 不依赖基站、Wi-Fi 路由或任何互联网基础设施，通过蓝牙在设备间自组织形成去中心化网状网络（Mesh）：设备互相发现、建立对话、收发消息与文件。适用于灾后应急、野外作业、地下空间、隔离区等场景。
 
-## 特性
+No cellular base station, Wi-Fi router, or internet infrastructure is required. Devices self-organize into a decentralized mesh over Bluetooth: discovery, conversation setup, and message/file exchange happen directly between devices. Designed for disaster response, field operations, underground spaces, and quarantined areas.
 
-**通信链路（BLE 真机验证）**
+## 特性 / Features
+
+**通信链路（BLE 真机验证）** — *Communication stack (verified on real BLE hardware)*
 
 - 蓝牙发现：Service Data 携带短 ID 识别节点，扫描即持久化恢复
 - 对话握手：INVITE → INVITE_ACK 会话锁定，ACK 持续重发收敛（30s 窗口），杜绝握手丢帧
@@ -22,22 +33,29 @@
 - 调试中心主动控制（v1.1.9）：调节心跳广播频率（0.5s/1s/2s/5s，失联阈值联动×2）、消息重发退避（基础3s/10s/30s·封顶联动）、暂停/恢复广播+扫描（保留已建 GATT 连接）、手动发 PING 链路探测、一键恢复默认（全部内存态重启回默认，未调节时行为零变化）
 - 调试中心高频心跳 + 失败包（v1.1.10）：心跳档位 0.05s/0.1s/0.2s/0.4s 四档（独立心跳协程与 200ms tick 解耦，已连接 GATT 通道真实生效；BLE 广播受系统约 100ms 最小间隔限制；失联阈值固定 2s 不联动）；新增「失败包」板块——接收解码失败（收到但无法解析）、送达不可确认、BLE 写/notify 失败实时统计
 - 调试中心布局修复（v1.1.12）：主动控制面板重发退避 FilterChip 长 label 溢出导致第三个 chip 异常拉伸留白——改短 label（3s/10s/30s）并将封顶值移到汇总行；面板改为高密度「当前生效配置」汇总（心跳/失联/重发基础/封顶）+ 手动 PING 常显统计（次数/时间）
-- 调试中心示波器（v1.1.13）：bitchat 风格实时波形——深色网格 + 绿线发送速率 + 蓝线接收速率 + 琥珀失败脉冲叠加（解码失败/BLE 写与 notify 失败时竖线脉冲）+ 扫描头，y 轴动态缩放，随刷新循环采样（最近 96 点）
+- 调试中心示波器（v1.1.13）：bitchat 风格实时波形——深色网格 + 绿线发送速率 + 蓝线接收速率 + 琥珀失败脉冲叠加（解码失败/BLE 写与 notify 失败时竖线脉冲）+ 扫描头，y 轴动态缩放，随刷新循环采样（最近 96 点；失败脉冲于 v1.1.18 改为红色连续波形）
+- 调试中心内存指标修正（v1.1.14）：底部系统栏内存改显本进程指标——Java 堆已用/上限（used/max）+ Debug PSS 真实占用（原显示 ART 堆 free/total 数值偏小误导，设备级内存对调试无用已弃）
+- 广播功率调节 + TX power 读取（v1.1.15）：调试中心主动控制新增广播发射功率 4 档（1/-7/-15/-21 dBm，默认最高 +1dBm，重启广播生效）；广播包携带 TX power 字段，接收端扫描读到对端发射功率
+- 协议层信号强度（v1.1.16）：PING 心跳携带递增序列号，接收端按序号缺口统计收包成功率/丢包率——信号强度不再依赖系统 RSSI（不同 ROM 校准差异大），信号与路由板块显示 `信号92%(64包)` 并按强弱着色（≥90% 绿 / ≥60% 青 / 弱 琥珀），TX power 保留为参考；基于 RSSI 的距离估算已移除（不可靠）
+- Mesh 页信号强度（v1.1.17）：链路信号 = 从对端收到 PONG 的速率 ÷ 本机 PING 发送速率（协议层双向质量，滑动 5s 窗口）；Mesh 页信号格数由该比值映射（≥60% 满格 / ≥25% 两格 / ≥5% 一格 / 以下零格），dBm 数字替换为信号百分比（对端老版本/样本不足自动回退 dBm）
+- 信号灵敏度 + 示波器红波（v1.1.18）：信号速率窗口 5s → 2s（失联后 ~2s 内信号归零，灵敏度提升 2.5 倍）；示波器失败事件从琥珀脉冲改为**红色连续波形**（本轮失败速率，独立 y 轴缩放），顶部实时值显示"失败 X/s"
+- 示波器失败占比（v1.1.19）：失败示数改为**相对发送包数**的占比（失败事件数 ÷ 发送包数，0-100%），与发送示数同量纲不再"失败比发送还多"；红线波形与顶部数字同步显示 `失败 X%`
+- Mesh 页信号接收成功率（v1.1.20）：信号改为**接收包 ÷ (接收包 + 失败包)**（用户指定算法，失败 = 解码失败 + BLE 写/notify 失败）——只要有失败事件百分比即下降，不再因 PONG 全回恒 100%；各一跳节点统一反映全局网络健壮度
 
-**Mesh 拓扑可视化**
+**Mesh 拓扑可视化** — *Mesh topology visualization*
 
 - 力导向网状布局：库仑斥力 + 弹簧力 + 中心引力，去中心化自然分布
 - 节点可拖拽，松手自动回归物理模拟
 - 状态色制：直连绿 / 可达蓝 / 寻找中黄虚线，失联节点不显示
 - 相对尺寸自适应：节点、连线、字号随画布缩放，不同分辨率表现一致
 
-**工程**
+**工程** — *Engineering*
 
 - 深色高信息密度视觉：墨蓝底色、Mesh 青色强调、终端风格等宽字体
-- 72 项单元测试通过（协议/路由/存储/服务编排/传输/多跳中继）
+- 130 项单元测试通过（协议/路由/存储/服务编排/传输/多跳中继/调试统计/安全中心）
 - 正式签名 + R8 混淆 release 包（约 1.5 MB）
 
-## 架构
+## 架构 / Architecture
 
 ```
 app/src/main/java/com/meshchat/app/
@@ -54,38 +72,44 @@ app/src/main/java/com/meshchat/app/
 ```
 
 设备内嵌去中心化后端：每个节点既是客户端也是中继，消息通过邻居逐跳转发，无中心服务器。
+An embedded decentralized backend: every node acts as both client and relay; messages hop through neighbors. No central server.
 
-## 技术栈
+## 技术栈 / Tech Stack
 
 - Kotlin 2.2.10 · Jetpack Compose · Material3
 - AGP 9.0.0 · Gradle 9.1.0 · KSP · Room 2.7 · kotlinx-serialization
 - minSdk 26（Android 8.0）/ targetSdk 36
 
-## 构建与运行
+## 构建与运行 / Build & Run
 
 ```bash
-# 单元测试
+# 单元测试 / Unit tests
 ./gradlew testDebugUnitTest
 
 # 正式包（R8 混淆 + 签名；需 keystore.properties，见下文）
+# Release (R8 + signing; requires keystore.properties, see below)
 ./gradlew assembleRelease
 ```
 
-- 用 Android Studio 打开工程根目录，同步后运行 `app` 模块
-- 需要真机蓝牙（API 26+）；Android 11 及以下还需开启系统位置服务（BLE 扫描依赖）
-- 正式签名凭证存放在 `keystore.properties`（不入库）。**keystore 与密码务必自行备份，丢失将无法更新已发布版本**
+- 用 Android Studio 打开工程根目录，同步后运行 `app` 模块 / Open the project root in Android Studio and run the `app` module.
+- 需要真机蓝牙（API 26+）；Android 11 及以下还需开启系统位置服务（BLE 扫描依赖）/ Requires real-device Bluetooth (API 26+); Android 11 and below also need the system location service enabled (BLE scanning depends on it).
+- 正式签名凭证存放在 `keystore.properties`（不入库）。**keystore 与密码务必自行备份，丢失将无法更新已发布版本** / Signing credentials live in `keystore.properties` (not committed). **Back up the keystore and passwords — losing them makes it impossible to update released builds.**
 
-## 边界
+## 边界 / Limitations
 
-- 端到端加密当前为演示级占位（Cipher 接口预留），未接入真实密钥协商
-- 多跳中继的路由学习与 UI 显示当前支持 2 跳（一跳直连 + 二跳经单一中继），2 跳以上不显示路由
-- Wi-Fi Direct 高速载体、群聊为规划项
-- 蓝牙传输有效范围受设备与遮挡影响，空旷室内通常为数十米内（实测以机型为准）
+- 端到端加密当前为演示级占位（Cipher 接口预留），未接入真实密钥协商 / E2E encryption is a demo-grade placeholder (Cipher interface reserved); no real key agreement yet.
+- 多跳中继的路由学习与 UI 显示当前支持 2 跳（一跳直连 + 二跳经单一中继），2 跳以上不显示路由 / Multi-hop routing supports 2 hops (direct + one relay); beyond 2 hops routes are not displayed.
+- Wi-Fi Direct 高速载体、群聊为规划项 / Wi-Fi Direct transport and group chat are planned.
+- 蓝牙传输有效范围受设备与遮挡影响，空旷室内通常为数十米内（实测以机型为准） / Effective BLE range depends on device and obstacles; typically tens of meters indoors in open space (verify per device).
 
-## 设计基准
+## 设计基准 / Design Baseline
 
 视觉基准图见 `design/meshchat-visual-baseline.png`：墨蓝底色、青色强调、绿色连接、高信息密度终端风格。
+Visual baseline: `design/meshchat-visual-baseline.png` — ink-blue background, cyan accents, green links, high-density terminal style.
 
-## 许可
+## 许可 / License
 
 MIT License
+
+本软件按"现状"提供，无任何明示或暗示担保。详见 `LICENSE`。
+This software is provided "as is", without warranty of any kind, express or implied. See `LICENSE`.

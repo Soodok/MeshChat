@@ -59,6 +59,13 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
     override fun observeMessages(convId: String): Flow<List<StoredMessage>> =
         db.messageDao().observeByConv(convId).map { list -> list.map { it.toDomain() } }
 
+    override fun observeAllMessages(): Flow<List<StoredMessage>> =
+        db.messageDao().observeAll().map { list -> list.map { it.toDomain() } }
+
+    override fun deleteConversation(convId: String) = runBlocking {
+        db.messageDao().deleteConversation(convId)
+    }
+
     override fun enqueueOutbox(entry: OutboxEntry) = runBlocking {
         db.outboxDao().insert(entry.toEntity())
     }
@@ -77,6 +84,10 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
 
     override fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int) = runBlocking {
         db.peerDao().upsert(PeerEntity(shortId = shortId, displayName = displayName, lastSeen = lastSeen, hops = hops))
+    }
+
+    override fun deletePeer(shortId: String) = runBlocking {
+        db.peerDao().remove(shortId)
     }
 
     override fun prunePeersNotSeenSince(cutoff: Long) = runBlocking {

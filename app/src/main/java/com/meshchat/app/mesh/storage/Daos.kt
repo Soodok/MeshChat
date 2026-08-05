@@ -20,6 +20,12 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE convId = :convId ORDER BY ts ASC")
     fun observeByConv(convId: String): Flow<List<MessageEntity>>
 
+    @Query("SELECT * FROM messages ORDER BY ts ASC")
+    fun observeAll(): Flow<List<MessageEntity>>
+
+    @Query("DELETE FROM messages WHERE convId = :convId")
+    suspend fun deleteConversation(convId: String)
+
     @Query("SELECT * FROM messages WHERE status = 'SENDING' AND kind = 'TEXT'")
     suspend fun undeliveredTexts(): List<MessageEntity>
 

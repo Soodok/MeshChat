@@ -10,6 +10,8 @@ sealed class DebugControl {
     data object SuspendSignaling : DebugControl()
     /** 恢复广播+扫描。 */
     data object ResumeSignaling : DebugControl()
+    /** 广播发射功率档(dBm)：仅限 -21/-15/-7/1（Android 四档，越高覆盖越远但越耗电）。 */
+    data class SetTxPower(val txPowerDbm: Int) : DebugControl()
     /** 立即广播一轮 PING（链路探测）。 */
     data object BroadcastPing : DebugControl()
     /** 恢复全部默认。 */

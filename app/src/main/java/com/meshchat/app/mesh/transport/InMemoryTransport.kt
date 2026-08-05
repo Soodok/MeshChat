@@ -32,11 +32,19 @@ class InMemoryTransport : MeshTransport {
     @Volatile
     var discoverySuspended = false
 
+    /** 最近一次广播功率档（setTxPowerLevel 测试断言用；默认 1dBm HIGH）。 */
+    @Volatile
+    var lastTxPowerLevel = 1
+
     override fun suspendDiscovery() {
         discoverySuspended = true
     }
 
     override fun resumeDiscovery() {
         discoverySuspended = false
+    }
+
+    override fun setTxPowerLevel(power: Int) {
+        lastTxPowerLevel = power
     }
 }

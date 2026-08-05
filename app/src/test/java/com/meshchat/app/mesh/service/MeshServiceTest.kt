@@ -1045,4 +1045,141 @@ class MeshServiceTest {
         service.resumeSignaling()
         assertTrue(!transport.discoverySuspended)
     }
+
+    @Test
+    fun `tx power can be adjusted via debug control and reset to default`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+
+        // 默认 +1dBm HIGH
+        assertEquals(1, transport.lastTxPowerLevel)
+
+        // 合法四档：1/-7/-15/-21
+        service.setTxPower(-7)
+        assertEquals(-7, transport.lastTxPowerLevel)
+        service.setTxPower(-15)
+        assertEquals(-15, transport.lastTxPowerLevel)
+        service.setTxPower(-21)
+        assertEquals(-21, transport.lastTxPowerLevel)
+
+        // 非法档忽略
+        service.setTxPower(0)
+        assertEquals("非法档不应生效", -21, transport.lastTxPowerLevel)
+        service.setTxPower(5)
+        assertEquals("非法档不应生效", -21, transport.lastTxPowerLevel)
+
+        // 恢复默认回 +1dBm
+        service.resetDebugControls()
+        assertEquals(1, transport.lastTxPowerLevel)
+    }
+
+    // ===== v1.1.16 协议层信号强度（PING seq 缺口统计）=====
+
+    @Test
+    fun `link quality window computes success rate from ping seq gaps`() {
+        val w = MeshService.LinkQualityWindow()
+        assertEquals(-1.0, w.rate(), 1e-9)                 // 无样本
+        assertEquals(-1.0, w.onPing(0), 1e-9)              // 老版本 seq=0 忽略
+        assertEquals(-1.0, w.onPing(5), 1e-9)              // 首样本，仅记录
+        assertEquals(1.0, w.onPing(6), 1e-9)               // 连续 → 100%
+        assertEquals(1.0, w.onPing(7), 1e-9)
+        assertEquals(0.8, w.onPing(9), 1e-9)               // 丢 seq8：5 判定 4 收到 → 80%
+        assertEquals(5.0 / 6.0, w.onPing(10), 1e-9)        // 6 判定 5 收到
+        assertEquals(5.0 / 6.0, w.onPing(7), 1e-9)         // 重复 seq 忽略
+        assertEquals(5.0 / 6.0, w.onPing(3), 1e-9)         // 过期 seq 忽略
+    }
+
+    @Test
+    fun `link quality window rebuilds on large seq jump`() {
+        val w = MeshService.LinkQualityWindow()
+        w.onPing(1)
+        w.onPing(2)
+        w.onPing(3)
+        // 大幅跳变（对端重启/长期失联）→ 重建窗口，返回 -1
+        assertEquals(-1.0, w.onPing(200), 1e-9)
+        // 重建后从 200 重新累计
+        assertEquals(1.0, w.onPing(201), 1e-9)
+    }
+
+    @Test
+    fun `received ping seq updates peer link quality`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val stats = com.meshchat.app.mesh.debug.DebugStats()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+            debugStats = stats,
+        )
+        service.start()
+
+        fun ping(seq: Int) = MeshEnvelope(
+            id = UUID.randomUUID().toString(), kind = "PING",
+            srcId = "PEER", dstId = "", convId = "conv-PEER",
+            ttl = 8, ts = System.currentTimeMillis(),
+            body = PresenceBody(displayName = "peer", seq = seq),
+        )
+        // 对端心跳 seq 1,2,4（3 丢失）
+        service.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ping(1)).toByteArray()))
+        service.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ping(2)).toByteArray()))
+        service.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(ping(4)).toByteArray()))
+
+        val snap = stats.snapshot(1_000)
+        val peer = snap.peers.first { it.shortId == "PEER" }
+        assertEquals(0.75, peer.linkSuccessRate, 1e-9)     // 3 收 1 丢
+        assertEquals(4, peer.linkSamples)
+    }
+
+    @Test
+    fun `outgoing ping carries incrementing seq`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+        transport.frames.clear()
+        val t0 = System.currentTimeMillis()
+        service.sendPingIfDue(t0)
+        assertEquals(1, transport.frames.size)
+        val env1 = MeshJson.decodeEnvelope(transport.frames[0].payloadText)
+        val seq1 = (env1.body as PresenceBody).seq
+        assertTrue("PING 应带递增 seq", seq1 > 0)
+        service.sendPingIfDue(t0 + 10)                       // 心跳间隔内节流，不重复发
+        assertEquals(1, transport.frames.size)
+        service.sendPingIfDue(t0 + 1_100)                    // 下个心跳周期
+        assertEquals(2, transport.frames.size)
+        val env2 = MeshJson.decodeEnvelope(transport.frames[1].payloadText)
+        assertEquals("seq 应递增", seq1 + 1, (env2.body as PresenceBody).seq)
+    }
+
+    // ===== v1.1.20 Mesh 页信号 = 全局接收成功率（接收包 ÷ (接收包+失败包)）=====
+
+    @Test
+    fun `mesh peer signal ratio equals global receive success rate`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val stats = com.meshchat.app.mesh.debug.DebugStats()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+            debugStats = stats,
+        )
+        service.start()
+
+        // 先制造 1 次失败事件，再收 1 个对端 PING（接收包 +1 并触发 refreshPeers）
+        stats.recordReceivedFailure()
+        val pingFromPeer = MeshEnvelope(
+            id = UUID.randomUUID().toString(), kind = "PING",
+            srcId = "PEER", dstId = "", convId = "conv-PEER",
+            ttl = 8, ts = System.currentTimeMillis(),
+            body = PresenceBody(displayName = "peer", seq = 1),
+        )
+        service.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(pingFromPeer).toByteArray()))
+
+        val peer = service.peers.value.first { it.shortId == "PEER" }
+        assertEquals(0.5, peer.signalRatio, 1e-9)          // 1 收 ÷ (1 收 + 1 失败)
+    }
 }

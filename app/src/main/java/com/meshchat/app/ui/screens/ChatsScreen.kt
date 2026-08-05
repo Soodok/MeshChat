@@ -13,9 +13,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,11 +42,15 @@ fun ChatsScreen(
     modifier: Modifier = Modifier,
     conversations: List<ChatPreview>,
     onChatSelected: (String) -> Unit,
+    onToggleArchived: (String) -> Unit,
+    onDeleteConversation: (String) -> Unit,
 ) {
-    val reachable = conversations.filter { it.reachability == Reachability.REACHABLE }
-    val queued = conversations.filter { it.reachability == Reachability.QUEUED }
+    val active = conversations.filterNot { it.archived }
+    val reachable = active.filter { it.reachability == Reachability.REACHABLE }
+    val queued = active.filter { it.reachability == Reachability.QUEUED }
+    val archived = conversations.filter { it.archived }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 8.dp)) {
-        if (conversations.isEmpty()) {
+        if (active.isEmpty() && archived.isEmpty()) {
             item {
                 Text(
                     text = "暂无对话",
@@ -49,13 +63,19 @@ fun ChatsScreen(
             if (reachable.isNotEmpty()) {
                 item { SectionLabel("最近对话") }
                 items(reachable, key = { it.id }) { chat ->
-                    ChatRow(chat, onClick = { onChatSelected(chat.id) })
+                    ChatRow(chat, onClick = { onChatSelected(chat.id) }, onToggleArchived = { onToggleArchived(chat.id) }, onDelete = { onDeleteConversation(chat.id) })
                 }
             }
             if (queued.isNotEmpty()) {
                 item { SectionLabel("等待路由", topPadding = 22.dp) }
                 items(queued, key = { it.id }) { chat ->
-                    ChatRow(chat, onClick = { onChatSelected(chat.id) })
+                    ChatRow(chat, onClick = { onChatSelected(chat.id) }, onToggleArchived = { onToggleArchived(chat.id) }, onDelete = { onDeleteConversation(chat.id) })
+                }
+            }
+            if (archived.isNotEmpty()) {
+                item { SectionLabel("已归档（${archived.size}）", topPadding = 22.dp) }
+                items(archived, key = { it.id }) { chat ->
+                    ChatRow(chat, onClick = { onChatSelected(chat.id) }, onToggleArchived = { onToggleArchived(chat.id) }, onDelete = { onDeleteConversation(chat.id) })
                 }
             }
         }
@@ -72,7 +92,14 @@ private fun SectionLabel(text: String, topPadding: androidx.compose.ui.unit.Dp =
 }
 
 @Composable
-private fun ChatRow(chat: ChatPreview, onClick: () -> Unit) {
+private fun ChatRow(
+    chat: ChatPreview,
+    onClick: () -> Unit,
+    onToggleArchived: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var menuExpanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var confirmDelete by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -105,7 +132,31 @@ private fun ChatRow(chat: ChatPreview, onClick: () -> Unit) {
                         .background(Cyan, androidx.compose.foundation.shape.CircleShape),
                 )
             }
+            androidx.compose.foundation.layout.Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Outlined.MoreVert, "会话操作", tint = TextSecondary)
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (chat.archived) "取消归档" else "归档对话") },
+                        onClick = { menuExpanded = false; onToggleArchived() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除对话") },
+                        onClick = { menuExpanded = false; confirmDelete = true },
+                    )
+                }
+            }
         }
         HorizontalDivider(color = MeshDivider)
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除对话？") },
+            text = { Text("将删除与 ${chat.name} 的本地消息记录，并解除本机对话关系。") },
+            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("删除") } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+        )
     }
 }

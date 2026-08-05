@@ -41,6 +41,7 @@ import com.meshchat.app.ui.theme.Ink
 import com.meshchat.app.ui.theme.InkSoft
 import com.meshchat.app.ui.theme.MeshAmber
 import com.meshchat.app.ui.theme.MeshGreen
+import com.meshchat.app.ui.theme.MeshRed
 import com.meshchat.app.ui.theme.TextSecondary
 
 private fun kb(v: Long) = if (v >= 1024) "%.1fKB".format(v / 1024.0) else "${v}B"
@@ -88,11 +89,11 @@ fun DebugCenterScreen(
             if (settings.showRoutes) RoutesCard(snapshot)
             if (settings.showDelivery) DeliveryCard(snapshot)
             if (settings.showFile) FileCard(snapshot)
-            // 底部系统栏（常驻）
+            // 底部系统栏（常驻）——内存为本进程指标：Java 堆已用/上限 + PSS 真实占用
             Text(
                 "运行 ${snapshot.system.uptimeMs / 1000}s · 服务 ${if (snapshot.system.serviceStarted) "ON" else "OFF"} · " +
                     "蓝牙 ${if (snapshot.system.bluetoothEnabled) "ON" else "OFF"} · " +
-                    "内存 ${kb(snapshot.system.freeMemoryKb * 1024)}/${kb(snapshot.system.totalMemoryKb * 1024)}",
+                    "内存 堆${kb(snapshot.system.heapUsedKb * 1024)}/${kb(snapshot.system.heapMaxKb * 1024)} · PSS ${kb(snapshot.system.pssKb * 1024)}",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 modifier = Modifier.padding(bottom = 16.dp),
@@ -165,10 +166,20 @@ private fun RoutesCard(snap: DebugSnapshot) {
         StatRow("节点/会话/待邀请", "${snap.peers.size} · ${snap.sessions} · ${snap.pendingInvites}")
         StatRow("2 跳路由条目", snap.routeEntries.toString())
         snap.peers.forEach { p ->
+            // 协议层信号强度（PING 序列号缺口统计成功率；-1 = 样本不足/对端老版本无 seq）
+            val link = if (p.linkSuccessRate >= 0) " · 信号${(p.linkSuccessRate * 100).toInt()}%(${p.linkSamples}包)" else ""
+            val tx = if (p.txPower > Int.MIN_VALUE) " · TX${p.txPower}dBm" else ""
+            val sigColor = when {
+                p.linkSuccessRate < 0 -> TextSecondary
+                p.linkSuccessRate >= 0.9 -> MeshGreen
+                p.linkSuccessRate >= 0.6 -> Cyan
+                else -> MeshAmber
+            }
             StatRow(
                 "${p.shortId} ${p.displayName}".trim(),
                 "${p.presence} · ${p.rssi}dBm(${p.bars}) · ${p.hops}跳${p.relayVia?.let { " 经$it" } ?: ""} · " +
-                    if (p.lastSeenAgoMs >= 0) "${p.lastSeenAgoMs}ms前" else "未见",
+                    (if (p.lastSeenAgoMs >= 0) "${p.lastSeenAgoMs}ms前" else "未见") + link + tx,
+                sigColor,
             )
         }
     }
@@ -298,6 +309,17 @@ private fun ControlCard(
                 )
             }
         }
+        StatRow("广播功率", "${s.txPowerDbm}dBm · 越高越远越耗电")
+        Row {
+            listOf(1 to "1", -7 to "-7", -15 to "-15", -21 to "-21").forEach { (v, label) ->
+                FilterChip(
+                    selected = s.txPowerDbm == v,
+                    onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.SetTxPower(v)) },
+                    label = { Text(label) },
+                    modifier = Modifier.padding(end = 6.dp),
+                )
+            }
+        }
         Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
                 selected = s.signalingSuspended,
@@ -335,15 +357,14 @@ private fun FailureCard(snap: DebugSnapshot) {
     }
 }
 
-/** 示波器：横轴=最近 96 个采样点（时间窗口随刷新间隔），绿=发送速率、蓝=接收速率、琥珀竖线=失败脉冲。 */
+/** 示波器：横轴=最近 96 个采样点（时间窗口随刷新间隔），绿=发送速率、蓝=接收速率、红=失败占比（失败事件 ÷ 发送包数，与发送示数相对）。 */
 @Composable
 private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
     val last = history.lastOrNull()
-    val pulseTotal = history.sumOf { it.failurePulse.toLong() }
     SectionCard("示波器") {
         StatRow(
             "实时速率",
-            "↑${"%.1f/s".format(last?.sentRate ?: 0.0)} ↓${"%.1f/s".format(last?.recvRate ?: 0.0)} · 脉冲 ${pulseTotal}",
+            "↑${"%.1f/s".format(last?.sentRate ?: 0.0)} ↓${"%.1f/s".format(last?.recvRate ?: 0.0)} · 失败 ${"%.0f%%".format((last?.failureRatio ?: 0.0) * 100)}",
             Cyan,
         )
         androidx.compose.foundation.Canvas(
@@ -367,36 +388,27 @@ private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
                 drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(w, y), 1f)
             }
             if (history.size < 2) return@Canvas
-            // y 轴动态缩放：以历史峰值速率为满量程，波形始终可见
+            // y 轴动态缩放：收发速率以历史峰值为满量程；失败占比独立缩放（量级通常远小于 1.0）
             val maxRate = history.maxOf { maxOf(it.sentRate, it.recvRate) }.coerceAtLeast(0.1)
+            val maxFail = history.maxOf { it.failureRatio }.coerceAtLeast(0.01)
             val n = history.size
             val step = w / 95f
             fun yOf(rate: Double): Float = (h - (rate / maxRate * h).toFloat()).coerceIn(0f, h)
-            fun trace(selector: (MeshChatViewModel.OscPoint) -> Double): androidx.compose.ui.graphics.Path {
+            fun yOfFail(rate: Double): Float = (h - (rate / maxFail * h).toFloat()).coerceIn(0f, h)
+            fun trace(yMap: (Double) -> Float, selector: (MeshChatViewModel.OscPoint) -> Double): androidx.compose.ui.graphics.Path {
                 val p = androidx.compose.ui.graphics.Path()
                 history.forEachIndexed { i, pt ->
                     val x = w - (n - 1 - i) * step   // 最新采样在右端
-                    val y = yOf(selector(pt))
+                    val y = yMap(selector(pt))
                     if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
                 }
                 return p
             }
             // 发送绿线 / 接收蓝线
-            drawPath(trace { it.sentRate }, MeshGreen, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
-            drawPath(trace { it.recvRate }, Cyan, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
-            // 失败脉冲：琥珀竖线自底升起，高度 ∝ 脉冲强度（1-3）
-            history.forEachIndexed { i, pt ->
-                if (pt.failurePulse > 0) {
-                    val x = w - (n - 1 - i) * step
-                    val ph = h * 0.25f * minOf(pt.failurePulse, 3)
-                    drawLine(
-                        MeshAmber.copy(alpha = 0.85f),
-                        androidx.compose.ui.geometry.Offset(x, h),
-                        androidx.compose.ui.geometry.Offset(x, h - ph),
-                        2f,
-                    )
-                }
-            }
+            drawPath(trace(::yOf) { it.sentRate }, MeshGreen, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            drawPath(trace(::yOf) { it.recvRate }, Cyan, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            // 失败占比红线（独立缩放：与发送包数相对的失败率，替代原琥珀脉冲）
+            drawPath(trace(::yOfFail) { it.failureRatio }, MeshRed, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
             // 扫描头：最新发送速率亮点（history.size >= 2 已保证 last 非空）
             drawCircle(Cyan, 3.5f, androidx.compose.ui.geometry.Offset(w, yOf(history.last().sentRate)))
         }

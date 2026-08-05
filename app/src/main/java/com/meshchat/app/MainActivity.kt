@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.meshchat.app.ui.MeshChatApp
 import com.meshchat.app.ui.theme.MeshChatTheme
+import com.meshchat.app.security.model.SecurityCapability
 
 class MainActivity : ComponentActivity() {
     /** 按系统版本请求正确的 BLE 权限：API 31+ 用新蓝牙权限；API <=30 用位置权限（旧权限由 Manifest 声明即授予）。 */
@@ -23,13 +24,22 @@ class MainActivity : ComponentActivity() {
             add(Manifest.permission.BLUETOOTH_ADVERTISE)
         } else {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
-            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)  // API 26-28 写公共 Downloads 需要
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)  // API 26-28 写公共 Downloads 需要
+            }
         }
     }.toTypedArray()
 
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
-            if (hasAllPermissions()) ensureBluetoothAndStart()
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            val app = application as MeshChatApplication
+            if (result.values.all { it }) {
+                app.securityCapabilityManager.recordGranted(setOf(SecurityCapability.BLUETOOTH))
+                ensureBluetoothAndStart()
+            } else {
+                // 用户拒绝只会降低 Mesh 能力；Compose UI 已建立，聊天历史和设置仍可进入。
+                app.securityCapabilityManager.recordDenied(setOf(SecurityCapability.BLUETOOTH))
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,6 +55,7 @@ class MainActivity : ComponentActivity() {
                 MeshChatApp()
             }
         }
+        (application as MeshChatApplication).securityCapabilityManager.refresh()
         if (hasAllPermissions()) {
             ensureBluetoothAndStart()
         } else {
@@ -64,9 +75,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        (application as MeshChatApplication).securityCapabilityManager.refresh()
         // 回前台/重进：服务若被系统回收则自动重启（进入即开始寻找），并立即确认所有未送达消息
         val adapter = runCatching { getSystemService(BluetoothManager::class.java).adapter }.getOrNull()
-        if (adapter != null && adapter.isEnabled) {
+        if (hasAllPermissions() && adapter != null && adapter.isEnabled) {
             (application as MeshChatApplication).startMesh()
             (application as MeshChatApplication).service.resendPendingNow()
         }

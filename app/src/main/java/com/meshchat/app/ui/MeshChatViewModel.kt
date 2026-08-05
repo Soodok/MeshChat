@@ -99,15 +99,17 @@ class MeshChatViewModel(
         val signalingSuspended: Boolean = false,
         val lastPingAtMs: Long = -1L,   // -1 = 尚未手动发过
         val manualPingCount: Int = 0,   // 手动 PING 累计次数
+        val txPowerDbm: Int = 1,        // 广播发射功率档（默认 +1dBm HIGH）
     )
 
     // ---- 调试中心·示波器（采样历史，内存态；随刷新循环追加，重启清零）----
-    /** 单次采样点：发送/接收总速率 + 本轮失败事件脉冲强度（0-3）。 */
-    data class OscPoint(val sentRate: Double, val recvRate: Double, val failurePulse: Int)
+    /** 单次采样点：发送/接收总速率 + 本轮失败事件占比（0-1，失败事件数 ÷ 发送包数，与发送示数相对）。 */
+    data class OscPoint(val sentRate: Double, val recvRate: Double, val failureRatio: Double)
 
     private val _oscHistory = MutableStateFlow<List<OscPoint>>(emptyList())
     val oscHistory: StateFlow<List<OscPoint>> = _oscHistory.asStateFlow()
     private var prevFailureTotal = 0L   // 上次采样时失败累计（解码失败 + BLE 写/notify 失败）
+    private var prevSentTotal = 0L      // 上次采样时发送包累计（失败占比分母）
 
     private val _debugControlState = MutableStateFlow(DebugControlState())
     val debugControlState: StateFlow<DebugControlState> = _debugControlState.asStateFlow()
@@ -119,6 +121,7 @@ class MeshChatViewModel(
             is DebugControl.SetResendPolicy -> _debugControlState.value.copy(resendBaseMs = cmd.baseMs, resendMaxMs = cmd.maxMs)
             DebugControl.SuspendSignaling -> _debugControlState.value.copy(signalingSuspended = true)
             DebugControl.ResumeSignaling -> _debugControlState.value.copy(signalingSuspended = false)
+            is DebugControl.SetTxPower -> _debugControlState.value.copy(txPowerDbm = cmd.txPowerDbm)
             DebugControl.BroadcastPing -> _debugControlState.value.copy(
                 lastPingAtMs = System.currentTimeMillis(),
                 manualPingCount = _debugControlState.value.manualPingCount + 1,
@@ -167,16 +170,20 @@ class MeshChatViewModel(
                             "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
                             else -> snap.peers.sortedByDescending { it.rssi }
                         })
-                        // 示波器采样：总收发速率 + 失败事件脉冲（与上次累计的差值）
+                        // 示波器采样：总收发速率 + 本轮失败占比（失败事件 ÷ 发送包数，与发送示数相对）
                         val f = snap.failures
                         val failureTotal = f.receivedDecodeFailures + f.bleWriteFailed + f.bleNotifyFailed
-                        val pulse = (failureTotal - prevFailureTotal).toInt().coerceIn(0, 3)
+                        val sentDelta = snap.frames.values.sumOf { it.sent } - prevSentTotal
+                        prevSentTotal += sentDelta
+                        val failureRatio = if (sentDelta > 0) {
+                            (failureTotal - prevFailureTotal).toDouble() / sentDelta
+                        } else 0.0
                         prevFailureTotal = failureTotal
                         _oscHistory.value = (
                             _oscHistory.value + OscPoint(
                                 sentRate = snap.frames.values.sumOf { it.sentRatePerSec },
                                 recvRate = snap.frames.values.sumOf { it.receivedRatePerSec },
-                                failurePulse = pulse,
+                                failureRatio = failureRatio.coerceIn(0.0, 1.0),
                             )
                             ).takeLast(OSC_MAX_POINTS)
                     }

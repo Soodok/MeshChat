@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -125,6 +126,7 @@ fun IdentityKeyScreen(
 fun GeneralSettingsScreen(
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
+    canEditDisplayName: Boolean,
     backgroundEnabled: Boolean,
     onBackgroundEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit,
@@ -136,11 +138,12 @@ fun GeneralSettingsScreen(
             value = displayName,
             onValueChange = onDisplayNameChange,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            enabled = canEditDisplayName,
             singleLine = true,
             label = { Text("昵称（广播给邻近节点）") },
         )
         Text(
-            "昵称随心跳广播，邻近节点将以此标识你。",
+            if (canEditDisplayName) "昵称会随心跳广播，邻近节点将以此标识你。" else "连接至少一台其他设备后，才可以修改昵称。",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
@@ -157,6 +160,33 @@ fun GeneralSettingsScreen(
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
+    }
+}
+
+@Composable
+fun AboutScreen(onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().background(Ink)) {
+        DetailHeader(title = "关于 MeshChat", icon = Icons.Outlined.Info, onBack = onBack)
+        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 22.dp)) {
+            Text("MeshChat", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("离线近场安全通信", color = MeshGreen, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 6.dp))
+            Text(
+                "MeshChat 通过蓝牙发现附近设备，并以 Mesh 方式在没有互联网的场景中传递消息和文件。",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(top = 28.dp),
+            )
+            HorizontalDivider(color = Divider, modifier = Modifier.padding(vertical = 24.dp))
+            Text("隐私与数据", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "消息记录保存在本机。通信仅在附近设备间进行；请在共享设备上谨慎保留本地对话。",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text("版本", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text("v1.1.2", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+        }
     }
 }
 

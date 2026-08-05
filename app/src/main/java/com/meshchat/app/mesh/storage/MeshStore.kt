@@ -31,12 +31,16 @@ interface MeshStore {
     fun updateFileMeta(id: String, fileMeta: String?)
     fun queryMessages(convId: String): List<StoredMessage>
     fun observeMessages(convId: String): Flow<List<StoredMessage>>
+    fun observeAllMessages(): Flow<List<StoredMessage>>
+    fun deleteConversation(convId: String)
     fun enqueueOutbox(entry: OutboxEntry)
     fun nextOutbox(now: Long): List<OutboxEntry>
     fun removeOutbox(id: String)
     /** 删除已过期（expireAt ≤ now）的投递记录（缓存维护，不删聊天记录）。 */
     fun pruneExpiredOutbox(now: Long)
     fun upsertPeer(shortId: String, displayName: String, lastSeen: Long, hops: Int)
+    /** 删除指定节点缓存（删除对话时同步遗忘该节点，不再从持久化恢复）。 */
+    fun deletePeer(shortId: String)
     /** 删除 lastSeen 早于 cutoff 的节点缓存（缓存维护，不删聊天记录/已存文件）。 */
     fun prunePeersNotSeenSince(cutoff: Long)
     fun loadPeers(): List<PeerEntity>

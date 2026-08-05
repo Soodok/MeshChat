@@ -16,6 +16,9 @@ data class ChatPreview(
     val time: String,
     val reachability: Reachability,
     val unread: Boolean = false,
+    val archived: Boolean = false,
+    val lastMessageAt: Long = 0L,
+    val lastMessageSentByMe: Boolean = true,
     val presence: PeerPresence = PeerPresence.ONLINE,  // 三色状态（与节点列表一致）：在线绿/寻找中·重连黄/离线黑
 )
 
@@ -47,6 +50,7 @@ data class MeshPeer(
     val presence: PeerPresence = PeerPresence.ONLINE,  // 三色状态：在线绿/寻找中·重连黄/离线黑
     val lastSeenAt: Long = 0,  // 最后收到对端帧的时刻（ms）：UI 显示"X 秒前信号"
     val relayVia: String = "",  // 经中继可达的经由节点 shortId（v1.1.0 多跳）；空 = 一跳直连
+    val signalRatio: Double = -1.0,  // 链路信号强度(0-1) = PONG 回应速率 ÷ PING 发送速率；-1 样本不足（v1.1.17）
 )
 
 enum class MainDestination(val label: String, val icon: ImageVector) {

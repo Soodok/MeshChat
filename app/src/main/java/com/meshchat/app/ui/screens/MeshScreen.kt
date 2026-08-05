@@ -81,12 +81,14 @@ fun MeshScreen(
     onPeerSelected: (String) -> Unit,
 ) {
     var discovering by remember { mutableStateOf(true) }   // 进入即自动开始寻找（服务随 App 启动）
+    val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
+    val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peers = peers, sessions = sessions) }
         item {
-            Text("附近节点（${peers.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+            Text("附近节点（${nearbyPeers.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
         }
-        if (peers.isEmpty()) {
+        if (nearbyPeers.isEmpty()) {
             item {
                 Text(
                     text = if (discovering) "正在扫描邻近节点…" else "暂无邻近节点，请点击重新发现",
@@ -96,13 +98,26 @@ fun MeshScreen(
                 )
             }
         }
-        items(peers, key = { it.shortId }) { peer ->
+        items(nearbyPeers, key = { it.shortId }) { peer ->
             PeerRow(
                 peer = peer,
                 connected = peer.shortId in sessions,
                 pending = peer.shortId in pendingInvites,
                 onClick = { onPeerSelected(peer.shortId) },
             )
+        }
+        if (historyPeers.isNotEmpty()) {
+            item {
+                Text("历史连接（${historyPeers.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+            }
+            items(historyPeers, key = { "history-${it.shortId}" }) { peer ->
+                PeerRow(
+                    peer = peer,
+                    connected = false,
+                    pending = false,
+                    onClick = { onPeerSelected(peer.shortId) },
+                )
+            }
         }
         item {
             Button(
@@ -330,7 +345,8 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                     SignalBars(peer.strength)
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "${peer.rssi} dBm",
+                        // v1.1.17：有协议层信号强度显示百分比，否则回退 dBm（对端老版本/样本不足）
+                        text = if (peer.signalRatio >= 0) "${(peer.signalRatio * 100).toInt()}%" else "${peer.rssi} dBm",
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         color = TextSecondary,
                     )

@@ -27,6 +27,7 @@ interface MeshRepository {
     fun sendInvite(peerId: String)
     fun acceptInvite(peerId: String)
     fun rejectInvite(peerId: String)
+    fun deleteConversation(peerId: String)
     fun startDiscovery()
     fun localShortId(): String
 }
@@ -37,22 +38,30 @@ class MeshRepositoryImpl(
 ) : MeshRepository {
 
     override fun observeConversations(): Flow<List<ChatPreview>> =
-        combine(service.sessions, store.observeConversationIds(), service.peers) { sessionIds, historyConvIds, peers ->
+        combine(service.sessions, store.observeAllMessages(), service.peers) { sessionIds, messages, peers ->
             // 会话集合 + 消息历史反推的对话兜底：即使会话关系持久化丢失/重装，最近对话列表也不空（持久化效果）
-            val ids = (sessionIds + historyConvIds.map { it.substringAfterLast("-") })
+            val latestByConversation = messages.groupBy { it.convId }
+                .mapValues { (_, entries) -> entries.maxByOrNull { it.ts }!! }
+            val ids = (sessionIds + latestByConversation.keys.map { it.substringAfterLast("-") })
                 .distinct()
                 .filter { it.isNotBlank() && it != "ME" }
             ids.map { id ->
                 val peer = peers.firstOrNull { it.shortId == id }
                 val name = peer?.displayName?.ifBlank { id } ?: id
                 val presence = peer?.presence ?: PeerPresence.SEARCHING
+                val latest = latestByConversation["conv-$id"]
                 ChatPreview(
-                    id = id, name = name, snippet = "已建立对话", time = "",
+                    id = id,
+                    name = name,
+                    snippet = latest?.text?.ifBlank { "附件" } ?: "已建立对话",
+                    time = latest?.let { SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(it.ts)) } ?: "",
                     reachability = if (presence == PeerPresence.ONLINE) Reachability.REACHABLE else Reachability.QUEUED,
                     presence = presence,
+                    lastMessageAt = latest?.ts ?: 0L,
+                    lastMessageSentByMe = latest?.srcId == service.shortId,
                 )
             }
-        }
+        }.map { it.sortedByDescending { preview -> preview.lastMessageAt } }
 
     override fun observePendingInvites(): Flow<Set<String>> = service.pendingInvites
 
@@ -91,12 +100,28 @@ class MeshRepositoryImpl(
 
     override fun rejectInvite(peerId: String) = service.rejectInvite(peerId)
 
+    override fun deleteConversation(peerId: String) {
+        store.deleteConversation("conv-$peerId")
+        service.removeSession(peerId)
+        service.removePeer(peerId)   // 同时遗忘节点：Mesh 页立即消失、重启不恢复（在线节点会被重新发现）
+    }
+
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
-        val strength = BluetoothQuality.bars(rssi)
+        // 信号格数由协议层速率比决定（≥60% 满格 / ≥25% 两格 / ≥5% 一格）；样本不足回退 RSSI 格数
+        val strength = if (signalRatio >= 0.0) {
+            when {
+                signalRatio >= 0.6 -> 3
+                signalRatio >= 0.25 -> 2
+                signalRatio >= 0.05 -> 1
+                else -> 0
+            }
+        } else {
+            BluetoothQuality.bars(rssi)
+        }
         return MeshPeer(
             name = displayName.ifBlank { shortId }, shortId = shortId, hops = hops, strength = strength,
             rssi = rssi, lost = lost, reachable = !lost, presence = presence, lastSeenAt = lastSeenAt,
-            relayVia = relayVia,
+            relayVia = relayVia, signalRatio = signalRatio,
         )
     }
 

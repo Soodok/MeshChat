@@ -39,6 +39,8 @@ data class PresenceBody(
     val ackIds: List<String> = emptyList(),
     /** 中继路由（v1.1.0）：本机一跳邻居 shortId 列表，随 PING 每 3 次携带一次（3s），对端据此学习 2 跳路由。 */
     val relays: List<String> = emptyList(),
+    /** 心跳序列号（v1.1.16）：每次 PING 递增，接收端按缺口统计收包成功率/丢包率（协议层信号强度，不依赖系统 RSSI）；0 = 老版本未携带。 */
+    val seq: Int = 0,
 ) : EnvelopeBody
 
 @Serializable

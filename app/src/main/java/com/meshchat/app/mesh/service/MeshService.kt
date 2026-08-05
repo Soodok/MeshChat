@@ -74,6 +74,11 @@ private const val ROUTE_EXPIRE_MS = 30_000L           // 路由条目超时：�
 private const val FORWARD_JITTER_MIN_MS = 50L         // 转发抖动下界：错开多机同步转发，防广播风暴
 private const val FORWARD_JITTER_MAX_MS = 250L
 
+/** 默认广播发射功率(dBm)：Android 四档最高 ADVERTISE_TX_POWER_HIGH = +1dBm。 */
+private const val DEFAULT_TX_POWER_DBM = 1
+/** 合法广播功率档(dBm)：UltraLow/Low/Medium/High。 */
+private val TX_POWER_LEVELS = intArrayOf(1, -7, -15, -21)
+
 private const val TAG = "MeshSvc"
 
 /** 接受邀请后持续重发确认的上限：超过则停止，避免无限广播空耗。 */
@@ -158,9 +163,57 @@ class MeshService(
     private val routeEntries = ConcurrentHashMap<String, RouteEntry>()
     /** PING 计数器：每 PING_RELAYS_EVERY 次心跳携带一次 relays 路由信息。 */
     private var pingCount = 0
+    /** PING 序列号：每次广播递增（v1.1.16 协议层信号强度统计用）。 */
+    private var pingSeq = 0
     /** 中继转发 outbox 重发状态：id -> 上次重发时刻 / 重试次数（内存态）。 */
     private val outboxLastSent = HashMap<String, Long>()
     private val outboxAttempts = HashMap<String, Int>()
+
+    /**
+     * 链路质量窗口（v1.1.16）：基于对端 PING 序列号缺口估算收包成功率——协议层信号强度，不依赖系统 RSSI。
+     * 收到 seq 时把 [lastSeq+1, seq-1] 判为丢失、seq 判为收到；窗口按序号前移，超过 size 重建（对端重启/长期失联后重新累计）。
+     */
+    internal class LinkQualityWindow(private val size: Int = 64) {
+        private val hit = BooleanArray(size)
+        private var baseSeq = 0   // 窗口起点 seq（含）
+        private var lastSeq = 0   // 最后成功解析的 seq
+        private var filled = 0    // 窗口内已判定格数
+        private var got = 0       // 窗口内命中（收到）格数
+
+        /** 收到带 seq 的 PING 后更新统计；返回窗口内成功率(0-1)，样本不足返回 -1。 */
+        fun onPing(seq: Int): Double {
+            if (seq <= 0) return -1.0
+            if (lastSeq == 0 || seq - baseSeq >= size) {
+                // 首样本 / 序号大幅跳变（重启或长期失联）→ 重建窗口
+                java.util.Arrays.fill(hit, false)
+                baseSeq = seq; lastSeq = seq; filled = 0; got = 0
+                mark(seq, true)
+                return -1.0
+            }
+            if (seq <= lastSeq) return rate() // 乱序/重复，忽略
+            for (s in lastSeq + 1..seq) mark(s, s == seq) // 缺口判丢、当前判收
+            lastSeq = seq
+            return rate()
+        }
+
+        private fun mark(seq: Int, isHit: Boolean) {
+            val idx = seq - baseSeq
+            if (idx !in 0 until size) return
+            if (hit[idx]) return // 已判定，不重复计
+            hit[idx] = true
+            filled++
+            if (isHit) got++
+        }
+
+        /** 窗口内成功率(0-1)；无样本返回 -1。 */
+        fun rate(): Double = if (filled > 0) got.toDouble() / filled else -1.0
+
+        /** 窗口内已判定样本数。 */
+        val samples: Int get() = filled
+    }
+
+    /** 一跳邻居链路质量：shortId -> 收包成功率窗口（内存态，重启清零）。 */
+    private val peerLinkQuality = ConcurrentHashMap<String, LinkQualityWindow>()
 
     /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
     private val peerEntries = ConcurrentHashMap<String, PeerEntry>()
@@ -175,6 +228,8 @@ class MeshService(
     @Volatile private var lostHeartbeatMs: Long = LOST_HEARTBEAT_MS
     @Volatile private var resendBaseMs: Long = RECEIPT_TIMEOUT_MS
     @Volatile private var resendMaxMs: Long = MAX_RESEND_INTERVAL_MS
+    /** 广播发射功率(dBm)：默认 +1dBm（Android 四档最高）；仅 1/-7/-15/-21 合法。 */
+    @Volatile private var txPowerDbm: Int = DEFAULT_TX_POWER_DBM
 
     /** 服务启动时刻（用于持久化恢复节点的寻找超时判定）。 */
     private val startupAt = System.currentTimeMillis()
@@ -279,12 +334,16 @@ class MeshService(
             peers = {
                 peerEntries.entries.map { (id, e) ->
                     val info = e.info
+                    val lq = peerLinkQuality[id]
                     PeerDebugInfo(
                         shortId = id, displayName = info.displayName,
                         rssi = info.rssi, bars = BluetoothQuality.bars(info.rssi),
                         presence = info.presence.name, hops = info.hops,
                         relayVia = routeEntries[id]?.via,
                         lastSeenAgoMs = if (info.lastSeenAt > 0) (System.currentTimeMillis() - info.lastSeenAt).coerceAtLeast(0) else -1,
+                        txPower = info.txPower,
+                        linkSuccessRate = lq?.rate() ?: -1.0,
+                        linkSamples = lq?.samples ?: 0,
                     )
                 }
             },
@@ -313,6 +372,7 @@ class MeshService(
                 is DebugControl.SetResendPolicy -> setResendPolicy(cmd.baseMs, cmd.maxMs)
                 DebugControl.SuspendSignaling -> suspendSignaling()
                 DebugControl.ResumeSignaling -> resumeSignaling()
+                is DebugControl.SetTxPower -> setTxPower(cmd.txPowerDbm)
                 DebugControl.BroadcastPing -> broadcastPing()
                 DebugControl.ResetControls -> resetDebugControls()
             }
@@ -603,13 +663,14 @@ class MeshService(
     /** 广播 PING（带本机昵称），对端收到回 PONG。每 PING_RELAYS_EVERY 次携带一跳邻居列表（路由信息搭心跳便车）。 */
     private fun sendPing() {
         pingCount++
+        pingSeq++
         // 路由信息节流：前 2 次心跳不带（空列表省带宽），第 3 次（3s）带一次
         val relays = if (pingCount % PING_RELAYS_EVERY == 0) currentRelays() else emptyList()
         val env = MeshEnvelope(
             id = UUID.randomUUID().toString(), kind = "PING",
             srcId = identity.shortId, dstId = "", convId = "conv-${identity.shortId}",
             ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
-            body = PresenceBody(identity.displayName, relays = relays),
+            body = PresenceBody(identity.displayName, relays = relays, seq = pingSeq),
         )
         val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray())
         recordSentFrame(frame)
@@ -646,6 +707,13 @@ class MeshService(
     /** 恢复发现层。 */
     fun resumeSignaling() = transport.resumeDiscovery()
 
+    /** 广播发射功率(dBm)：仅接受 Android 四档（1/-7/-15/-21），非法忽略；重启广播生效。 */
+    fun setTxPower(power: Int) {
+        if (power !in TX_POWER_LEVELS) return
+        txPowerDbm = power
+        transport.setTxPowerLevel(power)
+    }
+
     /** 立即广播一轮 PING（链路探测）。 */
     fun broadcastPing() = sendPing()
 
@@ -655,6 +723,10 @@ class MeshService(
         lostHeartbeatMs = LOST_HEARTBEAT_MS
         resendBaseMs = RECEIPT_TIMEOUT_MS
         resendMaxMs = MAX_RESEND_INTERVAL_MS
+        if (txPowerDbm != DEFAULT_TX_POWER_DBM) {
+            txPowerDbm = DEFAULT_TX_POWER_DBM
+            transport.setTxPowerLevel(DEFAULT_TX_POWER_DBM)
+        }
         resumeSignaling()
     }
 
@@ -756,6 +828,11 @@ class MeshService(
         refreshPeers()
     }
 
+    /** 记录对端 PING 序列号：协议层收包成功率/丢包率统计（v1.1.16）。 */
+    private fun recordLinkQuality(peerId: String, seq: Int) {
+        peerLinkQuality.computeIfAbsent(peerId) { LinkQualityWindow() }.onPing(seq)
+    }
+
     /**
      * 刷新 peers 流：一跳节点（peerEntries，presence 由状态机裁决）+ 2 跳节点（routeEntries 合成，
      * relayVia 非空，presence 恒 ONLINE——UI 层据此显示"经中继可达"）。
@@ -768,7 +845,9 @@ class MeshService(
                 relayVia = r.via, lastSeenAt = r.lastSeenAt,
             )
         }
-        _peers.value = peerEntries.values.map { it.info } + twoHop
+        // 信号强度 = 全局接收成功率（接收包 ÷ (接收包+失败包)，用户指定算法）：一跳节点统一反映当前网络健壮度
+        val signal = debugStats.receiveSuccessRate()
+        _peers.value = peerEntries.values.map { it.info.copy(signalRatio = signal) } + twoHop
     }
 
     /**
@@ -915,6 +994,8 @@ class MeshService(
                 // 心跳广播帧：仅处理发往本机/广播；回 PONG 双向确认在线，同时交换昵称
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
+                // v1.1.16：按 PING 序列号缺口统计收包成功率/丢包率（协议层信号强度，不依赖系统 RSSI）
+                (envelope.body as? PresenceBody)?.seq?.takeIf { it > 0 }?.let { recordLinkQuality(envelope.srcId, it) }
                 // v1.1.0：从 PING 携带的 relays 学习 2 跳路由（每 3 次心跳搭一次便车）
                 (envelope.body as? PresenceBody)?.let { learnRoutes(envelope.srcId, it) }
                 // 对方在线 → 立即重发未确认消息（后台恢复场景秒级收敛，不等 3s 定时）

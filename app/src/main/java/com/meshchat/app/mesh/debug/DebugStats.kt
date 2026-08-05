@@ -27,6 +27,12 @@ data class PeerDebugInfo(
     val shortId: String, val displayName: String, val rssi: Int,
     val bars: Int, val presence: String, val hops: Int, val relayVia: String?,
     val lastSeenAgoMs: Long,
+    /** 对端广播发射功率(dBm)；Int.MIN_VALUE = 未知（老版本/广播未带功率字段）。 */
+    val txPower: Int = Int.MIN_VALUE,
+    /** 协议层收包成功率(0-1，PING 序列号缺口统计)；-1 = 样本不足（对端老版本无 seq）。 */
+    val linkSuccessRate: Double = -1.0,
+    /** 成功率窗口已判定样本数。 */
+    val linkSamples: Int = 0,
 )
 
 data class DeliveryStats(
@@ -45,7 +51,12 @@ data class FileStats(
 
 data class SystemStats(
     val uptimeMs: Long = 0, val serviceStarted: Boolean = false, val bluetoothEnabled: Boolean = false,
-    val totalMemoryKb: Long = 0, val freeMemoryKb: Long = 0,
+    /** 本进程 Java 堆已用(KB)（= totalMemory - freeMemory）。 */
+    val heapUsedKb: Long = 0,
+    /** 本进程 Java 堆上限(KB)（maxMemory，非设备内存）。 */
+    val heapMaxKb: Long = 0,
+    /** 本进程真实内存占用(KB)（Debug PSS；单测/JVM 环境为 0）。 */
+    val pssKb: Long = 0,
 )
 
 /** 失败包统计（信息不可确认/不完整包）：接收解码失败 + 送达不可确认 + BLE 发送失败。 */
@@ -158,6 +169,16 @@ class DebugStats(
         val now = clock()
         receivedFailuresQ.push(now, 0)
         receivedFailures++
+    }
+
+    /**
+     * 全局接收成功率(0-1) = 累计接收包数 ÷ (累计接收包数 + 累计失败事件数)。
+     * 失败事件 = 解码失败 + BLE 写失败 + notify 失败；无任何样本返回 -1（Mesh 页信号显示，v1.1.20）。
+     */
+    fun receiveSuccessRate(): Double {
+        val rx = recvTotal.values.sum()
+        val fail: Long = synchronized(bleLock) { receivedFailures + writeFailed + notifyFailed }
+        return if (rx + fail > 0) rx.toDouble() / (rx + fail) else -1.0
     }
 
     // ---- BLE ----
@@ -292,7 +313,15 @@ class DebugStats(
                 servicesDiscoverRetries = servicesDiscoverRetries,
             )
         }
+        // App 进程内存：Java 堆 used/max + Debug PSS（真实占用）；单测/JVM 环境 PSS=0
         val runtime = Runtime.getRuntime()
+        val heapUsedKb = (runtime.totalMemory() - runtime.freeMemory()) / 1024
+        val heapMaxKb = runtime.maxMemory() / 1024
+        val pssKb = runCatching {
+            val mi = android.os.Debug.MemoryInfo()
+            android.os.Debug.getMemoryInfo(mi)
+            mi.totalPss.toLong()
+        }.getOrDefault(0L)
         val failuresWin = receivedFailuresQ.statsSince(now, windowMs)
         val failed: FailedStats
         synchronized(bleLock) {
@@ -319,8 +348,9 @@ class DebugStats(
                 uptimeMs = now - startedAt,
                 serviceStarted = runCatching { serviceStartedProvider() }.getOrDefault(false),
                 bluetoothEnabled = runCatching { bluetoothEnabledProvider() }.getOrDefault(false),
-                totalMemoryKb = runtime.totalMemory() / 1024,
-                freeMemoryKb = runtime.freeMemory() / 1024,
+                heapUsedKb = heapUsedKb,
+                heapMaxKb = heapMaxKb,
+                pssKb = pssKb,
             ),
             failures = failed,
         )

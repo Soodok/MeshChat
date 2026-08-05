@@ -46,6 +46,10 @@ class BleTransport(
     private val _incoming = MutableSharedFlow<MeshFrame>(extraBufferCapacity = 64)
     override val incoming: SharedFlow<MeshFrame> = _incoming
 
+    /** 当前广播发射功率档(dBm)：默认 +1dBm HIGH（可经调试中心调节，重启广播生效）。 */
+    @Volatile
+    private var txPowerDbm: Int = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+
     private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
     override val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
@@ -192,6 +196,18 @@ class BleTransport(
     override fun bluetoothEnabled(): Boolean =
         runCatching { bluetoothAdapter?.isEnabled == true }.getOrDefault(false)
 
+    /** 调试控制：设置广播发射功率(dBm，仅限四档)——重启广播生效（广播更新有频率限制）。 */
+    override fun setTxPowerLevel(power: Int) {
+        if (power != AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW &&
+            power != AdvertiseSettings.ADVERTISE_TX_POWER_LOW &&
+            power != AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM &&
+            power != AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+        ) return
+        txPowerDbm = power
+        Log.d(TAG, "setTxPowerLevel: ${power}dBm")
+        refreshAdvertising()
+    }
+
     /** 调试控制：暂停发现层——只停广播+扫描，保留 GATT server/clients 与已建立连接收发。 */
     override fun suspendDiscovery() {
         Log.d(TAG, "suspendDiscovery: stop advertising + scanning")
@@ -243,11 +259,13 @@ class BleTransport(
         val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+            .setTxPowerLevel(txPowerDbm)
             .setConnectable(true)
             .build()
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
+            // 广播包携带本机发射功率：接收端扫描可读（ScanResult.getTxPowerLevel），结合 RSSI 估算路径损耗/距离
+            .setIncludeTxPowerLevel(true)
             .addServiceUuid(ParcelUuid(serviceUuid))
             .addServiceData(ParcelUuid(serviceUuid), advertiseShortId.toByteArray())
             .build()
@@ -296,7 +314,12 @@ class BleTransport(
             } else emptyList()
             peerIds[device.address] = shortId
             _foundPeers.tryEmit(
-                MeshPeerInfo(shortId = shortId, deviceAddress = device.address, rssi = result.rssi, ackKeys = ackKeys),
+                MeshPeerInfo(
+                    shortId = shortId, deviceAddress = device.address, rssi = result.rssi,
+                    ackKeys = ackKeys,
+                    // 广播包带 TX power 字段时有效（本工程互发必带）；老版本/未知 = Int.MIN_VALUE
+                    txPower = record.txPowerLevel,
+                ),
             )
             connectTo(device)
         }

@@ -21,6 +21,10 @@ data class MeshPeerInfo(
     val lastSeenAt: Long = 0,
     /** 经中继可达的经由节点 shortId（v1.1.0）；空 = 一跳直连。路由表合成的 2 跳节点此字段非空。 */
     val relayVia: String = "",
+    /** 对端广播发射功率(dBm)；广播包未带 TX power 字段时 = Int.MIN_VALUE（未知）。 */
+    val txPower: Int = Int.MIN_VALUE,
+    /** 链路信号强度(0-1) = 从对端收到 PONG 的速率 ÷ 本机 PING 发送速率（v1.1.17，协议层双向质量，替代 RSSI）；-1 = 样本不足。 */
+    val signalRatio: Double = -1.0,
 )
 
 interface MeshTransport {
@@ -40,6 +44,9 @@ interface MeshTransport {
 
     /** 蓝牙开关状态（调试中心快照用；默认 false，实现覆盖）。 */
     fun bluetoothEnabled(): Boolean = false
+
+    /** 设置广播发射功率(dBm，仅限 -21/-15/-7/1 四档)；广播更新有频率限制，需重启广播生效。默认空实现（内存/测试替身）。 */
+    fun setTxPowerLevel(power: Int) {}
 
     /** 暂停发现层（广播+扫描）；默认无操作，BleTransport 覆写。 */
     fun suspendDiscovery() = Unit

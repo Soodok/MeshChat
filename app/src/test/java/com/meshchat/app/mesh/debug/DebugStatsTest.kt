@@ -125,4 +125,19 @@ class DebugStatsTest {
         // 未注册 handler 时静默不抛（测试/未装配场景）
         DebugStats().issue(DebugControl.ResetControls)
     }
+
+    @Test
+    fun `receive success rate is received over received plus failures`() {
+        val stats = DebugStats()
+        assertEquals(-1.0, stats.receiveSuccessRate(), 1e-9)   // 无样本
+        stats.recordReceived(FrameKind.PING, 10)
+        stats.recordReceived(FrameKind.PING, 10)
+        assertEquals(1.0, stats.receiveSuccessRate(), 1e-9)    // 只收无失败 → 100%
+        stats.recordReceivedFailure()
+        assertEquals(2.0 / 3.0, stats.receiveSuccessRate(), 1e-9)  // 2 收 1 失败
+        stats.recordGattWrite(false)
+        assertEquals(2.0 / 4.0, stats.receiveSuccessRate(), 1e-9)  // 写失败计入分母
+        stats.reset()
+        assertEquals(-1.0, stats.receiveSuccessRate(), 1e-9)   // 清零后无样本
+    }
 }
