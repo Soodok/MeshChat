@@ -78,6 +78,7 @@ class MeshChatViewModel(
         val showDelivery: Boolean = true,
         val showFile: Boolean = true,
         val showControl: Boolean = true,   // 主动控制板块显隐
+        val showFailure: Boolean = true,   // 失败包板块显隐
         val sortBy: String = "rssi",   // rssi / name / recent
         val paused: Boolean = false,
     )

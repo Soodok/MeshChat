@@ -78,6 +78,7 @@ fun DebugCenterScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (settings.showFrames) FramesCard(snapshot, settings.perMinute)
+            if (settings.showFailure) FailureCard(snapshot)
             if (settings.showControl) ControlCard(controlState, onControl, onResetControls)
             if (settings.showBle) BleCard(snapshot)
             if (settings.showRoutes) RoutesCard(snapshot)
@@ -227,7 +228,7 @@ private fun DebugSettingsPanel(
         Text("板块", color = TextSecondary, style = monoStyle(), modifier = Modifier.padding(top = 8.dp))
         Row {
             listOf(
-                "收发包" to s.showFrames, "控制" to s.showControl, "BLE" to s.showBle, "信号" to s.showRoutes,
+                "收发包" to s.showFrames, "失败包" to s.showFailure, "控制" to s.showControl, "BLE" to s.showBle, "信号" to s.showRoutes,
                 "送达" to s.showDelivery, "文件" to s.showFile,
             ).forEach { (label, on) ->
                 FilterChip(
@@ -249,6 +250,7 @@ private fun DebugSettingsPanel(
 
 private fun toggleSection(s: MeshChatViewModel.DebugSettings, label: String): MeshChatViewModel.DebugSettings = when (label) {
     "收发包" -> s.copy(showFrames = !s.showFrames)
+    "失败包" -> s.copy(showFailure = !s.showFailure)
     "控制" -> s.copy(showControl = !s.showControl)
     "BLE" -> s.copy(showBle = !s.showBle)
     "信号" -> s.copy(showRoutes = !s.showRoutes)
@@ -266,7 +268,7 @@ private fun ControlCard(
     SectionCard("主动控制") {
         StatRow("心跳频率", "${s.heartbeatMs}ms · 失联阈值 ${s.lostMs}ms", Cyan)
         Row {
-            listOf(500L to "0.5s", 1_000L to "1s", 2_000L to "2s", 5_000L to "5s").forEach { (v, label) ->
+            listOf(50L to "0.05s", 100L to "0.1s", 500L to "0.5s", 1_000L to "1s", 2_000L to "2s", 5_000L to "5s").forEach { (v, label) ->
                 FilterChip(
                     selected = s.heartbeatMs == v,
                     onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.SetHeartbeat(v, v * 2)) },
@@ -311,5 +313,16 @@ private fun ControlCard(
         if (s.lastPingAtMs >= 0) {
             StatRow("上次手动 PING", "${(System.currentTimeMillis() - s.lastPingAtMs).coerceAtLeast(0)}ms 前")
         }
+    }
+}
+
+@Composable
+private fun FailureCard(snap: DebugSnapshot) {
+    val f = snap.failures
+    SectionCard("失败包") {
+        StatRow("接收解码失败", "${f.receivedDecodeFailures} 次 · ${"%.1f/s".format(f.receivedDecodeRatePerSec)}", if (f.receivedDecodeFailures > 0) MeshAmber else TextSecondary)
+        StatRow("送达不可确认", "${f.unconfirmed} 包", if (f.unconfirmed > 0) MeshAmber else MeshGreen)
+        StatRow("BLE 写失败", f.bleWriteFailed.toString(), if (f.bleWriteFailed > 0) MeshAmber else TextSecondary)
+        StatRow("BLE notify 失败", f.bleNotifyFailed.toString(), if (f.bleNotifyFailed > 0) MeshAmber else TextSecondary)
     }
 }
