@@ -65,23 +65,7 @@ class MeshChatViewModel(
         if (sessions.value.isNotEmpty()) setDisplayName(value)
     }
 
-    val backgroundEnabled: Boolean get() = backgroundEnabledProvider()
-
-    fun updateBackgroundEnabled(value: Boolean) = setBackgroundEnabled(value)
-
-    init {
-        securityCapabilityManager.refresh()
-        refreshLocalSecurity()
-        // 通知点击 → 打开对应会话（convId = conv-<shortId>，target 取短 ID）
-        viewModelScope.launch {
-            conversationRequest.collect { convId ->
-                convId?.let { openConversation(it.substringAfterLast("-")) }
-            }
-        }
-        startDebugLoop()
-    }
-
-    // ---- 调试中心 ----
+    // ---- 调试中心（必须在 init 之前声明：Kotlin 按声明顺序初始化，init 里 startDebugLoop 立即读取这些属性）----
     /** 仪表盘调节项（内存态，重启回默认；暂停仅冻结刷新，计数继续累积）。 */
     data class DebugSettings(
         val refreshIntervalMs: Long = 1_000L,
@@ -101,6 +85,22 @@ class MeshChatViewModel(
     private val _debugSnapshot = MutableStateFlow<com.meshchat.app.mesh.debug.DebugSnapshot>(com.meshchat.app.mesh.debug.DebugSnapshot())
     val debugSnapshot: StateFlow<com.meshchat.app.mesh.debug.DebugSnapshot> = _debugSnapshot.asStateFlow()
 
+    val backgroundEnabled: Boolean get() = backgroundEnabledProvider()
+
+    fun updateBackgroundEnabled(value: Boolean) = setBackgroundEnabled(value)
+
+    init {
+        securityCapabilityManager.refresh()
+        refreshLocalSecurity()
+        // 通知点击 → 打开对应会话（convId = conv-<shortId>，target 取短 ID）
+        viewModelScope.launch {
+            conversationRequest.collect { convId ->
+                convId?.let { openConversation(it.substringAfterLast("-")) }
+            }
+        }
+        startDebugLoop()
+    }
+
     fun updateDebugSettings(transform: (DebugSettings) -> DebugSettings) {
         _debugSettings.value = transform(_debugSettings.value)
     }
@@ -109,22 +109,22 @@ class MeshChatViewModel(
 
     private fun startDebugLoop() {
         viewModelScope.launch {
+            // 防御：整个循环体（含设置读取/快照聚合）异常只跳过本轮，绝不让循环崩溃拖垮进程
             while (true) {
-                val s = _debugSettings.value
-                if (!s.paused) {
-                    // 防御：快照聚合/数据提供器异常只跳过本轮，绝不让循环崩溃拖垮进程
-                    try {
+                try {
+                    val s = _debugSettings.value
+                    if (!s.paused) {
                         val snap = debugStats.snapshot(s.windowMs)
                         _debugSnapshot.value = snap.copy(peers = when (s.sortBy) {
                             "name" -> snap.peers.sortedBy { it.displayName }
                             "recent" -> snap.peers.sortedBy { it.lastSeenAgoMs }
                             else -> snap.peers.sortedByDescending { it.rssi }
                         })
-                    } catch (t: Throwable) {
-                        android.util.Log.w("MeshChatVM", "debug snapshot failed", t)
                     }
+                } catch (t: Throwable) {
+                    android.util.Log.w("MeshChatVM", "debug loop iteration failed", t)
                 }
-                delay(s.refreshIntervalMs)
+                delay(_debugSettings.value.refreshIntervalMs)
             }
         }
     }
