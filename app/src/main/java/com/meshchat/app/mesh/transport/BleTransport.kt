@@ -67,6 +67,11 @@ class BleTransport(
         const val MAX_SERVICE_ADD_RETRIES = 5
         const val PENDING_FRAME_TIMEOUT_MS = 30_000L
         const val CONNECT_RETRY_COOLDOWN_MS = 5_000L
+        /** v1.1.47：写失败重试总超时（栈层瞬态拒绝时给足重试窗口，超时放弃由上层重发兜底）。 */
+        const val WRITE_RETRY_TIMEOUT_MS = 30_000L
+        /** v1.1.47：写失败重试初始退避；每次仍失败递增指数（封顶 WRITE_RETRY_MAX_BACKOFF_MS）。 */
+        const val WRITE_RETRY_BASE_MS = 150L
+        const val WRITE_RETRY_MAX_BACKOFF_MS = 2_000L
         const val DISCOVER_TIMEOUT_MS = 5_000L
         /** 客户端特征配置描述符（CCCD）标准 UUID，用于订阅 notify。 */
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
@@ -167,6 +172,19 @@ class BleTransport(
     private val connectAttempts = HashMap<String, Long>() // deviceAddress -> 上次连接尝试时间（失败冷却）
     // 待服务发现后补写的帧：address -> (入队时间戳, 帧)；超时未补写则丢弃，防止永久滞留
     private val pendingFrames = HashMap<String, MutableList<Pair<Long, MeshFrame>>>()
+    // v1.1.47：写失败自动重试（栈层瞬态拒绝兜底：连接/MTU/服务全正常但写仍失败，见 1.1.46 日志铁证）
+    // 链路仍 CONNECTED 的写失败帧入此队，定时重写直至成功或超时（超时由上层心跳/消息重发兜底）
+    private val retryFrames = HashMap<String, MutableList<PendingWrite>>()
+    // address -> 重试 flush 已挂起（防重复 postDelayed 造成并发双写）
+    private val retryScheduled = HashSet<String>()
+    // address -> 当前退避指数（每次仍失败递增，封顶 WRITE_RETRY_MAX_BACKOFF_MS）
+    private val retryBackoffStep = HashMap<String, Int>()
+    // write FAILED 日志限频：上次打日志时刻（3s 一条，高速失败流不刷屏、DebugLogBuffer 不爆仓）
+    @Volatile
+    private var lastWriteFailLogAt = 0L
+
+    /** v1.1.47：待重写帧（保留 unreliable 语义：无确认写重试仍走无确认写，文件块窗口重传兜底）。 */
+    private class PendingWrite(val ts: Long, val frame: MeshFrame, val unreliable: Boolean)
 
     override fun start() {
         Log.d(TAG, "start: shortId=$advertiseShortId")
@@ -190,6 +208,9 @@ class BleTransport(
         gattClients.clear()
         connectAttempts.clear()
         pendingFrames.clear()
+        retryFrames.clear()
+        retryScheduled.clear()
+        retryBackoffStep.clear()
         bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
         bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
     }
@@ -401,6 +422,9 @@ class BleTransport(
                                 gatt.close()
                                 gattClients.remove(device.address)
                                 pendingFrames.remove(device.address)
+                                // v1.1.47：链路已断，写重试队列作废（重连后由上层心跳/消息重发兜底）
+                                retryFrames.remove(device.address)
+                                retryBackoffStep.remove(device.address)
                             }
                         }
                     }
@@ -503,15 +527,26 @@ class BleTransport(
             val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
             // 可写条件 = 服务已发现 && 帧 ≤ 当前 MTU 载荷（v1.1.36 加 MTU 检查：MTU 未协商完成/协商不足时大帧写必失败）
             if (characteristic != null && frame.payload.size <= negotiatedMtu - 3) {
-                if (!writeTo(gatt, frame, unreliable)) {
-                    // 写失败：若链路已断（对端进程被杀后残留），移除死连接，下次扫描自动重建
+                // v1.1.47：先不即时记统计——由结果路径统一记账（成功/重试成功/超时/链路死），
+                // 避免栈层瞬态拒绝时重试重复计失败导致示波器失败计数虚高（1.1.41~45 教训）。
+                val ok = writeTo(gatt, frame, unreliable, countStats = false)
+                if (ok) {
+                    debugStats.recordGattWrite(true)
+                } else {
+                    // 写失败：先判链路生死——链路已断（对端进程被杀后残留）则移除死连接，下次扫描自动重建；
+                    // 链路仍 CONNECTED（栈层瞬态拒绝，1.1.46 日志铁证：MTU 517+服务已发现仍周期性写失败）→ 入队重试，帧不丢
                     val state = runCatching {
                         bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT)
                     }.getOrDefault(BluetoothProfile.STATE_DISCONNECTED)
                     if (state != BluetoothProfile.STATE_CONNECTED) {
+                        debugStats.recordGattWrite(false)
                         Log.w(TAG, "write failed for $address, link dead, drop stale connection")
                         gattClients.remove(address)
+                        retryFrames.remove(address)
+                        retryBackoffStep.remove(address)
                         runCatching { gatt.close() }
+                    } else {
+                        scheduleRetry(address, frame, unreliable)
                     }
                 }
             } else {
@@ -552,6 +587,79 @@ class BleTransport(
     }
 
     /**
+     * v1.1.47：链路仍 CONNECTED 但写被栈拒绝 → 入队 + 指数退避重写（帧不丢）。
+     * 超 WRITE_RETRY_TIMEOUT_MS 的帧丢弃，由上层心跳/消息重发兜底；
+     * 链路断开（DISCONNECTED 回调/死连接清理）时队列整体作废。
+     */
+    private fun scheduleRetry(address: String, frame: MeshFrame, unreliable: Boolean) {
+        val now = System.currentTimeMillis()
+        val queued = retryFrames.getOrPut(address) { mutableListOf() }
+        // 安全网：清理已在队中滞留超时的帧（常规超时记账在 flushRetry，这里兜底防堆积）
+        queued.removeAll { now - it.ts > WRITE_RETRY_TIMEOUT_MS }
+        // 限长防无限增长（与 pendingFrames 同策略）
+        if (queued.size >= 64) queued.removeAt(0)
+        queued.add(PendingWrite(now, frame, unreliable))
+        if (!retryScheduled.contains(address)) {
+            retryScheduled.add(address)
+            retryBackoffStep[address] = 0
+            mainHandler.postDelayed({ flushRetry(address) }, WRITE_RETRY_BASE_MS)
+        }
+    }
+
+    /** v1.1.47：重试队列 flush：逐帧重写；成功出队；超时丢弃；仍失败按指数退避再挂起。 */
+    private fun flushRetry(address: String) {
+        retryScheduled.remove(address)
+        val gatt = gattClients[address] ?: run {
+            // 连接已断：队列作废（重连后由上层重发兜底）
+            retryFrames.remove(address)
+            retryBackoffStep.remove(address)
+            return
+        }
+        val queued = retryFrames.remove(address) ?: return
+        val now = System.currentTimeMillis()
+        val keep = mutableListOf<PendingWrite>()
+        for (pw in queued) {
+            if (now - pw.ts > WRITE_RETRY_TIMEOUT_MS) {
+                // 超时放弃：记一次最终失败，由上层重发兜底
+                debugStats.recordGattWrite(false)
+                logWriteFail(pw.frame, "(retry timeout, dropped)")
+                continue
+            }
+            val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
+            if (characteristic != null && pw.frame.payload.size <= negotiatedMtu - 3) {
+                if (writeTo(gatt, pw.frame, pw.unreliable, countStats = false)) {
+                    debugStats.recordGattWrite(true) // 重试成功：计一次最终成功（首写失败不计，防虚高）
+                    continue
+                }
+                keep.add(pw)
+            } else {
+                // 服务/MTU 仍不满足：留队等下次 flush
+                keep.add(pw)
+            }
+        }
+        if (keep.isNotEmpty()) {
+            retryFrames[address] = keep
+            val step = (retryBackoffStep[address] ?: 0) + 1
+            retryBackoffStep[address] = step
+            retryScheduled.add(address)
+            val backoffMs = minOf(WRITE_RETRY_MAX_BACKOFF_MS, WRITE_RETRY_BASE_MS * (1L shl minOf(step, 4)))
+            mainHandler.postDelayed({ flushRetry(address) }, backoffMs)
+        } else {
+            retryBackoffStep.remove(address)
+        }
+    }
+
+    /** v1.1.47：write FAILED 日志限频（3s 一条）——高速失败流不刷屏、DebugLogBuffer 不爆仓。 */
+    private fun logWriteFail(frame: MeshFrame, detail: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastWriteFailLogAt >= 3_000L) {
+            lastWriteFailLogAt = now
+            Log.w(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B) $detail")
+            DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
+        }
+    }
+
+    /**
      * 写特征值。**API 33+ 用单参**（`writeCharacteristic(char)` + value/writeType）——v1.1.26 实证路径，
      * 真机日志铁证：三参（API 33+ 弃用）连 230B 心跳都 write FAILED（v1.1.32/33 全失败）。
      * API 26-32 用三参（单参 NoSuchMethodError）。返回值：API 33+ 单参 boolean；API 26-32 三参
@@ -574,7 +682,12 @@ class BleTransport(
         }
     }
 
-    private fun writeTo(gatt: BluetoothGatt, frame: MeshFrame, unreliable: Boolean = false): Boolean {
+    private fun writeTo(
+        gatt: BluetoothGatt,
+        frame: MeshFrame,
+        unreliable: Boolean = false,
+        countStats: Boolean = true,
+    ): Boolean {
         val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid) ?: return false
         val bytes = frame.encode()
         if (unreliable) {
@@ -584,24 +697,22 @@ class BleTransport(
                 gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
             )
             if (!okNoAck) {
-                Log.w(TAG, "writeNoAck failed, fallback to acknowledged write (${frame.type}, ${frame.payload.size}B)")
-                DebugLogBuffer.log(TAG, "writeNoAck FAILED, fallback (${frame.type}, ${frame.payload.size}B)")
+                logWriteFail(frame, "(noAck, fallback to acknowledged write)")
                 val ok = writeCharacteristicCompat(
                     gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
                 )
-                debugStats.recordGattWrite(ok)
+                if (countStats) debugStats.recordGattWrite(ok)
                 return ok
             }
-            debugStats.recordGattWrite(true)
+            if (countStats) debugStats.recordGattWrite(true)
             return true
         }
         val ok = writeCharacteristicCompat(
             gatt, characteristic, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         )
-        debugStats.recordGattWrite(ok)
+        if (countStats) debugStats.recordGattWrite(ok)
         if (!ok) {
-            Log.w(TAG, "writeCharacteristic failed (${frame.type}, ${frame.payload.size}B)")
-            DebugLogBuffer.log(TAG, "write FAILED (${frame.type}, ${frame.payload.size}B)")
+            logWriteFail(frame, "")
         }
         return ok
     }
