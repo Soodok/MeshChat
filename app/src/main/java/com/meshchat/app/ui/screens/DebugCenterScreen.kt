@@ -388,27 +388,25 @@ private fun OscilloscopeCard(history: List<MeshChatViewModel.OscPoint>) {
                 drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(w, y), 1f)
             }
             if (history.size < 2) return@Canvas
-            // y 轴动态缩放：收发速率以历史峰值为满量程；失败速率独立缩放（量级通常远小于收发）
-            val maxRate = history.maxOf { maxOf(it.sentRate, it.recvRate) }.coerceAtLeast(0.1)
-            val maxFail = history.maxOf { it.failureRate }.coerceAtLeast(0.1)
+            // 统一 y 轴动态缩放：三条线共用同一满量程（收/发/丢包同单位，高度直接可比，
+            // 不再各线独立缩放导致"丢 1 次=满格"的观感冲突）
+            val maxRate = history.maxOf { maxOf(it.sentRate, it.recvRate, it.failureRate) }.coerceAtLeast(0.1)
             val n = history.size
             val step = w / 95f
             fun yOf(rate: Double): Float = (h - (rate / maxRate * h).toFloat()).coerceIn(0f, h)
-            fun yOfFail(rate: Double): Float = (h - (rate / maxFail * h).toFloat()).coerceIn(0f, h)
-            fun trace(yMap: (Double) -> Float, selector: (MeshChatViewModel.OscPoint) -> Double): androidx.compose.ui.graphics.Path {
+            fun trace(selector: (MeshChatViewModel.OscPoint) -> Double): androidx.compose.ui.graphics.Path {
                 val p = androidx.compose.ui.graphics.Path()
                 history.forEachIndexed { i, pt ->
                     val x = w - (n - 1 - i) * step   // 最新采样在右端
-                    val y = yMap(selector(pt))
+                    val y = yOf(selector(pt))
                     if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
                 }
                 return p
             }
-            // 发送绿线 / 接收蓝线
-            drawPath(trace(::yOf) { it.sentRate }, MeshGreen, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
-            drawPath(trace(::yOf) { it.recvRate }, Cyan, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
-            // 失败速率红线（独立缩放：丢包/失败事件包每秒，与收发包同单位）
-            drawPath(trace(::yOfFail) { it.failureRate }, MeshRed, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            // 发送绿线 / 接收蓝线 / 丢包红线——共用同一 y 轴，丢包幅度真实反映其与收发包的比例
+            drawPath(trace { it.sentRate }, MeshGreen, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            drawPath(trace { it.recvRate }, Cyan, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
+            drawPath(trace { it.failureRate }, MeshRed, style = androidx.compose.ui.graphics.drawscope.Stroke(2f))
             // 扫描头：最新发送速率亮点（history.size >= 2 已保证 last 非空）
             drawCircle(Cyan, 3.5f, androidx.compose.ui.geometry.Offset(w, yOf(history.last().sentRate)))
         }
