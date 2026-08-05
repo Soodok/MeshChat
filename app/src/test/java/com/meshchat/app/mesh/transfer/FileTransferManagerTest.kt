@@ -467,6 +467,35 @@ class FileTransferManagerTest {
     }
 
     @Test
+    fun `duplicate chunks after completion do not reset receiver progress`() = runTest {
+        // v1.1.40 用户"传太快发送方显示已发送、接收方进度条没走满还在发送中、实际已送达"：收齐落盘后发送方
+        // 仍可能补发/重发（最终 ACK 丢失 → v1.1.38 无上限重发），旧逻辑 getOrPut 重建幽灵会话（totalChunks=0）
+        // 把进度覆盖回 RUNNING 0%。修复：completedFiles 拦截 + 回最终 ACK 让发送方收敛。
+        val manager = FileTransferManager(
+            transport = CountingTransport(), shortId = "B",
+            saver = FakeSaver(kotlin.io.path.createTempDirectory("dupB").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 5,
+        )
+        val fid = "12345678-1234-1234-1234-123456789012"
+        val chunkBytes = File3.CHUNK_BYTES
+        val bytes = randomBytes(chunkBytes * 8)
+        // 完整收齐：START + 8 块
+        manager.onFile3Frame(File3.encodeStart("A", fid, 8, bytes.size.toLong(), false, "dup.bin", "application/octet-stream"))
+        for (i in 0 until 8) {
+            manager.onFile3Frame(
+                File3.encodeChunk("A", fid, i, i.toLong() * chunkBytes, bytes.copyOfRange(i * chunkBytes, (i + 1) * chunkBytes)),
+            )
+        }
+        assertEquals("收齐应 DONE", TransferStatus.DONE, manager.progress.value?.status)
+        // 发送方最终 ACK 丢失 → 整窗重发 START + 块 → 重复帧到达
+        manager.onFile3Frame(File3.encodeStart("A", fid, 8, bytes.size.toLong(), false, "dup.bin", "application/octet-stream"))
+        manager.onFile3Frame(File3.encodeChunk("A", fid, 0, 0L, bytes.copyOfRange(0, chunkBytes)))
+        manager.onFile3Frame(File3.encodeChunk("A", fid, 7, 7L * chunkBytes, bytes.copyOfRange(7 * chunkBytes, 8 * chunkBytes)))
+        assertEquals("补发重复帧不得重置进度", TransferStatus.DONE, manager.progress.value?.status)
+        assertEquals("进度保持 100%", 100, manager.progress.value!!.transferredBytes * 100 / manager.progress.value!!.totalBytes)
+    }
+
+    @Test
     fun `file3 frames fit BLE single-frame budget`() {
         // v1.1.36 v2 CHUNK：61B 头（含 36 字符完整 UUID fid + 8B byteOffset）+ 448B 数据 = 509B ≤ MTU 512 载荷。
         // 历史教训：v1.1.28 用 8 字符短 fid 测试漏网（头 25B），生产 fid=完整 UUID 头超预算 → 真机 0 块；

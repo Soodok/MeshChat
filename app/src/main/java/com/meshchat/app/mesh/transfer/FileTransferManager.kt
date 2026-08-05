@@ -64,6 +64,8 @@ class FileTransferManager(
          */
         const val MAX_WINDOW_RETRIES = Int.MAX_VALUE
         const val RECV_STALL_TIMEOUT_MS = 60_000L
+        /** 已落盘 fileId 记忆上限（v1.1.40）：防补发拦截表无限增长；超限移除最旧。 */
+        const val MAX_COMPLETED_FILES = 32
         /**
          * 窗口内逐帧间隔（v1.1.28）：2ms——文件帧走 GATT WRITE_NO_RESPONSE 无确认写（v1.1.27 起），
          * 链路已建立、无写往返，丢帧由窗口重传兜底（初发与补发一致）。
@@ -177,6 +179,13 @@ class FileTransferManager(
     private var sending: SendSession? = null
     private var senderJob: kotlinx.coroutines.Job? = null
     private val receivers = mutableMapOf<String, ReceiveSession>()
+
+    /** 已收齐落盘的接收会话（v1.1.40）：收齐后对端可能仍补发/重发（最终 ACK 丢失 → 无上限重发），
+     *  若放行会经 getOrPut 重建幽灵会话把进度覆盖回 RUNNING 0%——记住并拦截，改回最终 ACK 让其收敛。
+     *  LinkedHashMap 保序，超 MAX_COMPLETED_FILES 移除最旧防无限增长。 */
+    private val completedFiles = LinkedHashMap<String, CompletedFile>()
+
+    private data class CompletedFile(val convId: String, val senderId: String, val totalChunks: Int)
 
     /** 当前等待 ACK 的 waiter（每轮等待窗口前重建，避免旧引用 complete 丢失）。 */
     private var ackWaiter: CompletableDeferred<FileAckBody?>? = null
@@ -483,6 +492,11 @@ class FileTransferManager(
         totalChunks: Int,
         chunks: List<Pair<Int, String>>,
     ) {
+        // 已落盘（v1.1.40）：对端在补发/重发——回最终 ACK 收敛，不重建幽灵会话防进度覆盖
+        completedFiles[fileId]?.let { c ->
+            acknowledgeCompletedFile(fileId, c.convId, c.senderId, c.totalChunks)
+            return
+        }
         if (size <= 0 || totalChunks <= 0) return
         val session = receivers.getOrPut(fileId) {
             ReceiveSession(
@@ -526,6 +540,11 @@ class FileTransferManager(
     }
 
     private fun handleStart3(start: File3.Start) {
+        // 已落盘：对端在重发 START（最终 ACK 丢失）——回最终 ACK 让其收敛，不重建会话（防进度覆盖）
+        completedFiles[start.fid]?.let { c ->
+            acknowledgeCompletedFile(start.fid, c.convId, c.senderId, c.totalChunks)
+            return
+        }
         if (start.origSize <= 0 || start.totalChunks <= 0) return
         val session = receivers.getOrPut(start.fid) {
             ReceiveSession(
@@ -548,6 +567,11 @@ class FileTransferManager(
 
     private fun handleChunk3(chunk: File3.Chunk) {
         if (chunk.data.isEmpty()) return
+        // 已落盘：对端在补发/重发（最终 ACK 丢失）——忽略块、回最终 ACK 收敛，不重建幽灵会话（防进度覆盖回 RUNNING 0%）
+        completedFiles[chunk.fid]?.let { c ->
+            acknowledgeCompletedFile(chunk.fid, c.convId, c.senderId, c.totalChunks)
+            return
+        }
         val session = receivers.getOrPut(chunk.fid) {
             // 元数据可能未到（START 帧晚到）：先建会话收块，START 到达后补齐（handleStart3）
             ReceiveSession(
@@ -569,7 +593,9 @@ class FileTransferManager(
         session.ackDirty = true
         if (session.isComplete && session.metaReady) {
             completeReceive(session)
-        } else if (!isNew) {
+            return   // v1.1.40：收齐已发 DONE，不得再被下方 RUNNING 覆盖（老 FILE 路径有 return，FILE3 漏了——传太快时进度条被覆盖回"发送中"）
+        }
+        if (!isNew) {
             // 重复块 = 发送端正在等确认/超时重发：立即回 ACK 让其收敛
             sendAck(session)
         } else if (session.ackCounter++ % WINDOW == 0) {
@@ -645,6 +671,12 @@ class FileTransferManager(
         sendAck(s, final = true)
         receivers.remove(s.fileId)
         onSaved(s.convId, s.fileId, s.fileName, s.mime, s.size, uri)
+        // v1.1.40：记住已落盘会话——对端可能仍在补发/重发（最终 ACK 丢失），须拦截防幽灵会话覆盖进度
+        completedFiles[s.fileId] = CompletedFile(s.convId, s.senderId, s.totalChunks)
+        while (completedFiles.size > MAX_COMPLETED_FILES) {
+            val eldest = completedFiles.keys.firstOrNull() ?: break
+            completedFiles.remove(eldest)
+        }
         updateReceiveProgress(s, TransferStatus.DONE)
     }
 
