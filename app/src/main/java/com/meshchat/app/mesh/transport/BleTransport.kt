@@ -360,16 +360,9 @@ class BleTransport(
                                 servicesDiscovered = false
                                 runCatching { gatt.requestMtu(512) }
                                     .onFailure { Log.w(TAG, "requestMtu failed: $it") }
-                                // v1.1.27 吞吐优化：2M PHY（BLE 5.0 手机物理吞吐×2）+ 高优先级连接（短连接间隔）
-                                runCatching {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        gatt.setPreferredPhy(
-                                            BluetoothDevice.PHY_LE_2M, BluetoothDevice.PHY_LE_2M,
-                                            BluetoothDevice.PHY_OPTION_NO_PREFERRED,
-                                        )
-                                    }
-                                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                                }.onFailure { Log.w(TAG, "setPreferredPhy/priority failed: $it") }
+                                // v1.1.27 曾加 setPreferredPhy(2M)+requestConnectionPriority(HIGH)（吞吐优化）——
+                                // v1.1.33 移除：该组合在部分 Android 13+/16 设备上致连接参数异常、大帧（~500B）ATT 写
+                                // 静默失败（v1.1.26 无此调用时文件传输正常 30 块/s，v1.1.27 起全 0 块，回退验证）。
                                 discoverServicesWithTimeout(gatt)
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
