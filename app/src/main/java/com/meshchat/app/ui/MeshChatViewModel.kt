@@ -8,6 +8,7 @@ import com.meshchat.app.data.ConversationPreferences
 import com.meshchat.app.data.FileUiMeta
 import com.meshchat.app.data.MeshPeer
 import com.meshchat.app.data.MeshRepository
+import com.meshchat.app.mesh.debug.DebugControl
 import com.meshchat.app.mesh.transfer.TransferStatus
 import com.meshchat.app.security.capability.SecurityCapabilityManager
 import com.meshchat.app.security.capability.SecurityCapabilityStatus
@@ -76,6 +77,7 @@ class MeshChatViewModel(
         val showRoutes: Boolean = true,
         val showDelivery: Boolean = true,
         val showFile: Boolean = true,
+        val showControl: Boolean = true,   // 主动控制板块显隐
         val sortBy: String = "rssi",   // rssi / name / recent
         val paused: Boolean = false,
     )
@@ -84,6 +86,37 @@ class MeshChatViewModel(
     val debugSettings: StateFlow<DebugSettings> = _debugSettings.asStateFlow()
     private val _debugSnapshot = MutableStateFlow<com.meshchat.app.mesh.debug.DebugSnapshot>(com.meshchat.app.mesh.debug.DebugSnapshot())
     val debugSnapshot: StateFlow<com.meshchat.app.mesh.debug.DebugSnapshot> = _debugSnapshot.asStateFlow()
+
+    // ---- 调试中心·主动控制（内存态，重启回默认）----
+    /** 当前生效控制档位/暂停标记/上次手动 PING 时刻。 */
+    data class DebugControlState(
+        val heartbeatMs: Long = 1_000L,
+        val lostMs: Long = 2_000L,
+        val resendBaseMs: Long = 3_000L,
+        val resendMaxMs: Long = 30_000L,
+        val signalingSuspended: Boolean = false,
+        val lastPingAtMs: Long = -1L,   // -1 = 尚未手动发过
+    )
+
+    private val _debugControlState = MutableStateFlow(DebugControlState())
+    val debugControlState: StateFlow<DebugControlState> = _debugControlState.asStateFlow()
+
+    fun sendDebugControl(cmd: DebugControl) {
+        debugStats.issue(cmd)
+        _debugControlState.value = when (cmd) {
+            is DebugControl.SetHeartbeat -> _debugControlState.value.copy(heartbeatMs = cmd.intervalMs, lostMs = cmd.lostMs)
+            is DebugControl.SetResendPolicy -> _debugControlState.value.copy(resendBaseMs = cmd.baseMs, resendMaxMs = cmd.maxMs)
+            DebugControl.SuspendSignaling -> _debugControlState.value.copy(signalingSuspended = true)
+            DebugControl.ResumeSignaling -> _debugControlState.value.copy(signalingSuspended = false)
+            DebugControl.BroadcastPing -> _debugControlState.value.copy(lastPingAtMs = System.currentTimeMillis())
+            DebugControl.ResetControls -> DebugControlState()
+        }
+    }
+
+    fun resetDebugControls() {
+        debugStats.issue(DebugControl.ResetControls)
+        _debugControlState.value = DebugControlState()
+    }
 
     val backgroundEnabled: Boolean get() = backgroundEnabledProvider()
 
