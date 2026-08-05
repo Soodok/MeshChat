@@ -95,4 +95,15 @@ class DebugStatsTest {
         assertEquals(1, snap.delivery.forwardCount)
         assertEquals(1, snap.delivery.relayedFrames)
     }
+
+    @Test
+    fun `issue forwards control commands to attached handler`() {
+        val stats = DebugStats()
+        var received: DebugControl? = null
+        stats.attachControls { received = it }
+        stats.issue(DebugControl.SetHeartbeat(500, 1_000))
+        assertEquals(DebugControl.SetHeartbeat(500, 1_000), received)
+        // 未注册 handler 时静默不抛（测试/未装配场景）
+        DebugStats().issue(DebugControl.ResetControls)
+    }
 }

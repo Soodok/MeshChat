@@ -340,4 +340,15 @@ class DebugStats(
         serviceStartedProvider = serviceStarted
         bluetoothEnabledProvider = bluetoothEnabled
     }
+
+    // ---- 控制总线（UI → MeshService 控制面；内核仅转发，不持有服务引用）----
+    private var controlHandler: ((DebugControl) -> Unit)? = null
+
+    fun attachControls(handler: (DebugControl) -> Unit) {
+        controlHandler = handler
+    }
+
+    fun issue(cmd: DebugControl) {
+        controlHandler?.invoke(cmd)
+    }
 }
