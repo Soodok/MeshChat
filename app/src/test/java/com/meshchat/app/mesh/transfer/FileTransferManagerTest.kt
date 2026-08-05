@@ -440,6 +440,32 @@ class FileTransferManagerTest {
         assertEquals("文件字节一致", bytes.toList(), saved.readBytes().toList())
     }
 
+    /** 模拟对端 GATT 连接已断开：isConnectedTo 恒 false——v1.1.38 发送端无上限重试的停止条件。 */
+    private class DisconnectedTransport(private val inner: InMemoryTransport) : MeshTransport {
+        override val incoming = inner.incoming
+        override val foundPeers = inner.foundPeers
+        override fun start() = inner.start()
+        override fun stop() = inner.stop()
+        override fun sendTo(peerId: String, frame: MeshFrame) = inner.sendTo(peerId, frame)
+        override fun broadcast(frame: MeshFrame) = inner.broadcast(frame)
+        override fun isConnectedTo(peerId: String): Boolean = false
+    }
+
+    @Test
+    fun `sender stops when link disconnects instead of retrying forever`() = runTest {
+        // v1.1.38 用户"重连次数直接无上限，除非断开连接"：连接存活时无限重试（零容错），
+        // 链路断开（isConnectedTo=false）则立即停止 FAILED，绝不无限硬撑。
+        val manager = FileTransferManager(
+            transport = DisconnectedTransport(InMemoryTransport()), shortId = "A",
+            saver = FakeSaver(kotlin.io.path.createTempDirectory("discA").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = Int.MAX_VALUE,   // 生产无上限
+        )
+        val bytes = randomBytes(File3.CHUNK_BYTES * 8)
+        manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "disc.bin", "application/octet-stream", bytes.size.toLong())
+        awaitDone(manager)
+        assertEquals("链路断开应立即 FAILED 而非无限重试", TransferStatus.FAILED, manager.progress.value?.status)
+    }
+
     @Test
     fun `file3 frames fit BLE single-frame budget`() {
         // v1.1.36 v2 CHUNK：61B 头（含 36 字符完整 UUID fid + 8B byteOffset）+ 448B 数据 = 509B ≤ MTU 512 载荷。

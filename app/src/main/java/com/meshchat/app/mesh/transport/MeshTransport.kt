@@ -65,4 +65,10 @@ interface MeshTransport {
      * 文件传输引擎据此动态计算块大小，保证帧 ≤ MTU-3 载荷，避免硬编码大块在 MTU 协商不足的真机上写失败。
      */
     fun currentMtu(): Int = -1
+
+    /**
+     * 与对端（shortId）的 GATT 连接是否存活（v1.1.38）：文件传输发送端据此停止无上限重试——
+     * 重连/重发次数不设限（零容错），仅链路断开才放弃。默认 true（内存/测试替身假定始终连接）。
+     */
+    fun isConnectedTo(peerId: String): Boolean = true
 }

@@ -215,6 +215,18 @@ class BleTransport(
     /** 当前协商 GATT MTU（文件传输引擎动态块大小依据）。 */
     override fun currentMtu(): Int = negotiatedMtu
 
+    /**
+     * 对端 GATT 连接是否存活（v1.1.38 文件传输无上限重试的停止条件）：
+     * 查本机 central 连接表——连接断开时 DISCONNECTED 回调已移除 gattClients 记录 → false。
+     */
+    override fun isConnectedTo(peerId: String): Boolean {
+        val address = peerIds.entries.firstOrNull { it.value == peerId }?.key ?: return false
+        val gatt = gattClients[address] ?: return false
+        return runCatching {
+            bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+        }.getOrDefault(false)
+    }
+
     /** 调试控制：设置广播发射功率(dBm，仅限四档)——重启广播生效（广播更新有频率限制）。 */
     override fun setTxPowerLevel(power: Int) {
         if (power != AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW &&
