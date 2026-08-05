@@ -60,12 +60,12 @@ class FileTransferManager(
         const val MAX_WINDOW_RETRIES = 5
         const val RECV_STALL_TIMEOUT_MS = 60_000L
         /**
-         * 窗口内逐帧间隔（v1.1.28）：0——文件帧走 GATT WRITE_NO_RESPONSE 无确认写（v1.1.27 起），
-         * 链路已建立、无写往返，连续写丢帧由窗口重传兜底（初发与补发一致）。
-         * v1.1.25 的 30ms 节流是针对旧广播/notify 连发触发系统丢弃的防护，对 GATT 无确认写不再需要，
-         * 反而把写吞吐锁死在 33 帧/s（≈4KB/s）。
+         * 窗口内逐帧间隔（v1.1.28）：2ms——文件帧走 GATT WRITE_NO_RESPONSE 无确认写（v1.1.27 起），
+         * 链路已建立、无写往返，丢帧由窗口重传兜底（初发与补发一致）。
+         * 0ms 完全无节流会让 notify/写队列瞬间过载被蓝牙栈丢弃（v1.1.26 的 30ms 节流下从未突发过）；
+         * 2ms = 500 帧/s 上限，远超 GATT 实际能力（100-300/s），吞吐无损但避免瞬时突发。
          */
-        const val BROADCAST_INTERVAL_MS = 0L
+        const val BROADCAST_INTERVAL_MS = 2L
         /**
          * 每帧携带块数（v1.1.27 FILE2）：固定 1。v1.1.28 起发送端改用 FILE3 二进制帧
          * （File3.CHUNK_BYTES=480/帧），该常量仅老 FILE2 帧 DIAG 预算测试引用。
@@ -281,33 +281,38 @@ class FileTransferManager(
 
     /**
      * v1.1.28 发送预处理：压缩（或原样复制）源流到 dataFile，算总块数。
-     * 源流只能读一次，压缩必须在此一次性完成；不可压缩（压缩后 ≥ 原大小）回退原文件。
+     * **openSource 只调用一次**（真机上 ContentResolver 流某些 provider 只能消费一次，二次打开会抛异常——
+     * v1.1.28 真机 0 块根因）：先落盘 raw，再从 raw 决定压缩/原样，压缩无效（已压缩的图片/视频）直接复用 raw。
      * 数据块大小 File3.CHUNK_BYTES=480（二进制无 base64 膨胀）。
      */
     private fun prepareData(s: SendSession): Boolean = try {
         val dir = tmpDir()
-        if (s.size < File3.COMPRESS_MIN_BYTES) {
-            // 小文件不压缩：deflate 对短数据反而膨胀
-            val raw = File(dir, "${s.fileId}.raw")
-            s.openSource().use { input -> FileOutputStream(raw).use { output -> input.copyTo(output) } }
-            s.dataFile = raw
-            s.compressed = false
-        } else {
+        val raw = File(dir, "${s.fileId}.raw")
+        s.openSource().use { input -> FileOutputStream(raw).use { output -> input.copyTo(output) } }
+        if (s.size >= File3.COMPRESS_MIN_BYTES) {
             val dz = File(dir, "${s.fileId}.dz")
-            s.openSource().use { input ->
-                DeflaterInputStream(input).use { def -> FileOutputStream(dz).use { output -> def.copyTo(output) } }
-            }
-            if (dz.length() < s.size) {
+            // 压缩容错：deflate 异常（IO/大文件超时等）回退原样传输，绝不因压缩失败丢弃整个文件
+            val compressed = runCatching {
+                FileInputStream(raw).use { input ->
+                    DeflaterInputStream(input).use { def -> FileOutputStream(dz).use { output -> def.copyTo(output) } }
+                }
+                dz.length() < raw.length()
+            }.getOrDefault(false)
+            if (compressed) {
+                // 压缩有效（文本/JSON/文档等）：用压缩文件，释放 raw
                 s.dataFile = dz
                 s.compressed = true
+                raw.delete()
             } else {
-                // 压缩无效（如已压缩的图片/视频）：回退原样复制
+                // 压缩无效（已压缩的图片/视频/二进制）或压缩异常：原样传输，释放 dz
                 dz.delete()
-                val raw = File(dir, "${s.fileId}.raw")
-                s.openSource().use { input -> FileOutputStream(raw).use { output -> input.copyTo(output) } }
                 s.dataFile = raw
                 s.compressed = false
             }
+        } else {
+            // 小文件不压缩：deflate 对短数据反而膨胀
+            s.dataFile = raw
+            s.compressed = false
         }
         val file = s.dataFile ?: return false
         s.totalChunks = ((file.length() + File3.CHUNK_BYTES - 1) / File3.CHUNK_BYTES).toInt()
@@ -340,10 +345,15 @@ class FileTransferManager(
         cache
     }.getOrNull()
 
-    /** 广播窗口全部块（v1.1.28 FILE3）：每窗口先发一次 START 帧（幂等，元数据可靠），再无节流连发数据块。 */
+    /** 广播窗口全部块（v1.1.28 FILE3）：每窗口先发一次 START 帧（幂等，元数据可靠），再以 2ms 间隔发数据块。 */
     private suspend fun broadcastWindow(s: SendSession, cache: Map<Int, ByteArray>) {
         broadcastStart3(s)
-        cache.keys.sorted().forEach { broadcastChunk3(s, it, cache[it]!!) }
+        var first = true
+        for (chunkIndex in cache.keys.sorted()) {
+            if (!first) delay(BROADCAST_INTERVAL_MS)
+            first = false
+            broadcastChunk3(s, chunkIndex, cache[chunkIndex]!!)
+        }
     }
 
     /** START 元数据帧（v1.1.28）：文件名/mime/原始大小/压缩标志/总块数。每窗口重发保证到达（幂等）。 */

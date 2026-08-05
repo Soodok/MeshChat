@@ -354,6 +354,38 @@ class FileTransferManagerTest {
     }
 
     @Test
+    fun `single-use source stream still transfers - v1-1-28 0-block root cause`() = runTest {
+        // v1.1.28 真机"一块都没有成功"回归：ContentResolver 流某些 provider 只能消费一次，
+        // 旧 prepareData 在压缩回退分支（图片/视频不可压缩必走）二次调用 openSource → 抛异常 → 一帧不发 FAILED。
+        // 修复：openSource 只调用一次。此测试精确复现该场景（image/jpeg + 单次流 + 不可压缩）。
+        val transport = CountingTransport()
+        val manager = FileTransferManager(
+            transport = transport, shortId = "A", saver = FakeSaver(kotlin.io.path.createTempDirectory("su").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 5_000, maxWindowRetries = 3,
+        )
+        var opened = 0
+        val bytes = randomBytes(File3.CHUNK_BYTES * 8)
+        val fileId = manager.sendFile(
+            convId = "conv-B", dstId = "B",
+            openSource = {
+                opened++
+                if (opened > 1) throw IllegalStateException("stream already consumed (ContentResolver single-use)")
+                ByteArrayInputStream(bytes)
+            },
+            fileName = "photo.jpg", mime = "image/jpeg", size = bytes.size.toLong(),
+        )!!
+        var guard = 0
+        while (fileChunks(transport.frames).size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
+        assertEquals("openSource 应只被调用一次", 1, opened)
+        assertTrue("首窗 8 块应发出（openSource 单次 + 压缩回退原样传输）", fileChunks(transport.frames).size >= 8)
+        while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 200) {
+            manager.onFileAck(ack(fileId, 8, emptyList()))
+            kotlinx.coroutines.delay(20)
+        }
+        assertEquals(TransferStatus.DONE, manager.progress.value?.status)
+    }
+
+    @Test
     fun `file3 frames fit BLE single-frame budget`() {
         // v1.1.28 FILE3 二进制帧：CHUNK（25B 头 + 480B 数据）与长文件名 START 都必须 ≤ MTU 512 可用载荷 509B
         val chunk = File3.encodeChunk("AB12", "f-12345678", 0, ByteArray(File3.CHUNK_BYTES) { 1 })
