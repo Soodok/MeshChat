@@ -192,6 +192,20 @@ class BleTransport(
     override fun bluetoothEnabled(): Boolean =
         runCatching { bluetoothAdapter?.isEnabled == true }.getOrDefault(false)
 
+    /** 调试控制：暂停发现层——只停广播+扫描，保留 GATT server/clients 与已建立连接收发。 */
+    override fun suspendDiscovery() {
+        Log.d(TAG, "suspendDiscovery: stop advertising + scanning")
+        runCatching { bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback) }
+        runCatching { bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+    }
+
+    /** 调试控制：恢复发现层——重新广播+扫描（与 start() 幂等互不干扰）。 */
+    override fun resumeDiscovery() {
+        Log.d(TAG, "resumeDiscovery: restart advertising + scanning")
+        runCatching { startAdvertising() }
+        runCatching { startScanning() }
+    }
+
     private fun registerServer() {
         gattServer = bluetoothManager.openGattServer(context, gattServerCallback)
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
