@@ -117,6 +117,7 @@ class MeshService(
     private var receiveJob: Job? = null
     private var peerJob: Job? = null
     private var tickJob: Job? = null
+    private var heartbeatJob: Job? = null
     /** 上次缓存维护时刻：tick 节流（6h 一次），启动时 force 一次。 */
     private var lastCacheMaintenanceAt = 0L
 
@@ -265,6 +266,13 @@ class MeshService(
                 transfer.tick(now)
             }
         }
+        // 独立心跳协程：与 200ms tick 解耦，支持 50ms 级高频调试档（间隔实时读取可动态调节）
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                delay(heartbeatIntervalMs.coerceIn(50L, 10_000L))
+                sendPingIfDue()
+            }
+        }
         // 调试中心快照数据源（纯读取，不参与收发逻辑）
         debugStats.attachProviders(
             pending = { pendingReceipts.size },
@@ -340,6 +348,7 @@ class MeshService(
         receiveJob?.cancel()
         peerJob?.cancel()
         tickJob?.cancel()
+        heartbeatJob?.cancel()
         transfer.cancel()
         transport.stop()
         rfcomm?.stop()
@@ -521,13 +530,10 @@ class MeshService(
 
     /**
      * 心跳 tick（tick 循环每 200ms 调用）：
-     * 每 1s 广播 PING（带本机昵称）；按三色状态机更新各节点：在线绿 / 断线重连黄 / 离线黑（保留不删除）。
+     * 按三色状态机更新各节点：在线绿 / 断线重连黄 / 离线黑（保留不删除）。
+     * PING 广播已由独立心跳协程（heartbeatJob）负责——支持 50ms 级高频调试档。
      */
     internal fun heartbeatTick(now: Long) {
-        if (now - lastPingAt >= heartbeatIntervalMs) {
-            lastPingAt = now
-            sendPing()
-        }
         // 重复回执：近期收到的消息每 3s 补发一次回执（60s 窗口），发送方在线时段内必达
         if (now - lastReceiptRepeatAt >= RECEIPT_REPEAT_INTERVAL_MS) {
             lastReceiptRepeatAt = now
@@ -610,11 +616,23 @@ class MeshService(
         transport.broadcast(frame)
     }
 
+    /**
+     * 心跳到期检查（独立心跳协程每心跳间隔调用一次；now 可注入便于测试）。
+     * 与 200ms tick 解耦，支持 50ms 级高频调试档——BLE 广播受系统约 100ms 最小间隔限制，
+     * 高频档在已建立 GATT 连接通道（写/notify）上真实生效。
+     */
+    internal fun sendPingIfDue(now: Long = System.currentTimeMillis()) {
+        if (now - lastPingAt >= heartbeatIntervalMs) {
+            lastPingAt = now
+            sendPing()
+        }
+    }
+
     // ===== 调试主动控制（UI 调节经 DebugStats 控制总线下发；全部幂等可逆）=====
-    /** 心跳间隔 + 失联阈值（联动由 UI 保证 lostMs = intervalMs * 2）。 */
+    /** 心跳间隔 + 失联阈值（联动由 UI 保证 lostMs = intervalMs * 2；最低 50ms 高频调试档）。 */
     fun setHeartbeat(intervalMs: Long, lostMs: Long) {
-        heartbeatIntervalMs = intervalMs.coerceIn(200L, 10_000L)
-        lostHeartbeatMs = lostMs.coerceIn(500L, 20_000L)
+        heartbeatIntervalMs = intervalMs.coerceIn(50L, 10_000L)
+        lostHeartbeatMs = lostMs.coerceIn(100L, 20_000L)
     }
 
     /** 消息重发退避（基础间隔 + 封顶）。 */
@@ -799,6 +817,7 @@ class MeshService(
                     .getOrNull()
                 if (envelope == null) {
                     debugStats.recordReceived(FrameKind.OTHER, frame.payload.size)
+                    debugStats.recordReceivedFailure()   // 失败包：收到但无法解析的不完整帧
                     return
                 }
                 debugStats.recordReceived(DebugStats.kindOfEnvelope(envelope.kind), frame.payload.size)

@@ -509,13 +509,13 @@ class MeshServiceTest {
             transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         val t0 = System.currentTimeMillis()
-        service.heartbeatTick(t0)                    // 首帧
-        service.heartbeatTick(t0 + 200)
-        service.heartbeatTick(t0 + 400)
-        service.heartbeatTick(t0 + 600)
-        service.heartbeatTick(t0 + 800)
+        service.sendPingIfDue(t0)                    // 首帧
+        service.sendPingIfDue(t0 + 200)
+        service.sendPingIfDue(t0 + 400)
+        service.sendPingIfDue(t0 + 600)
+        service.sendPingIfDue(t0 + 800)
         assertEquals(1, dataKinds(transport.frames).count { it == "PING" })
-        service.heartbeatTick(t0 + 1_000)            // 满 1s → 第二帧
+        service.sendPingIfDue(t0 + 1_000)            // 满 1s → 第二帧
         assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
     }
 
@@ -905,9 +905,9 @@ class MeshServiceTest {
         // 先让 B 成为本机一跳新鲜邻居（lastSeen 距今 ≤10s）
         service.handleFrame(pingFrame("B", "老王"))
         val t0 = System.currentTimeMillis()
-        service.heartbeatTick(t0)          // PING #1
-        service.heartbeatTick(t0 + 1_000)  // PING #2
-        service.heartbeatTick(t0 + 2_000)  // PING #3 → 携带 relays
+        service.sendPingIfDue(t0)          // PING #1
+        service.sendPingIfDue(t0 + 1_000)  // PING #2
+        service.sendPingIfDue(t0 + 2_000)  // PING #3 → 携带 relays
         val pings = transport.frames
             .filter { it.type == FrameType.DATA }
             .map { MeshJson.decodeEnvelope(it.payloadText) }
@@ -985,12 +985,31 @@ class MeshServiceTest {
 
         service.setHeartbeat(2_000, 4_000)
         val t0 = System.currentTimeMillis() + 10_000   // 虚拟推进 10s：确保距 start 时 lastPingAt 超过任何心跳间隔
-        service.heartbeatTick(t0)                       // 必发一轮 PING，lastPingAt = t0
+        service.sendPingIfDue(t0)                       // 必发一轮 PING，lastPingAt = t0
         transport.frames.clear()
-        service.heartbeatTick(t0 + 500)                 // 0.5s < 2s → 不发
+        service.sendPingIfDue(t0 + 500)                 // 0.5s < 2s → 不发
         assertTrue("0.5s 后不应发 PING", transport.frames.isEmpty())
-        service.heartbeatTick(t0 + 2_500)               // 2.5s ≥ 2s → 发
+        service.sendPingIfDue(t0 + 2_500)               // 2.5s ≥ 2s → 发
         assertTrue("2.5s 后应发 PING", transport.frames.isNotEmpty())
+    }
+
+    @Test
+    fun `heartbeat supports 50ms high frequency via debug control`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+
+        service.setHeartbeat(50, 100)
+        val t0 = System.currentTimeMillis() + 10_000
+        service.sendPingIfDue(t0)           // 首次必发，lastPingAt = t0
+        transport.frames.clear()
+        service.sendPingIfDue(t0 + 30)      // 30ms < 50ms → 不发
+        assertTrue("30ms 内不应发 PING", transport.frames.isEmpty())
+        service.sendPingIfDue(t0 + 60)      // 60ms ≥ 50ms → 发
+        assertTrue("60ms 后应发 PING", transport.frames.isNotEmpty())
     }
 
     @Test
