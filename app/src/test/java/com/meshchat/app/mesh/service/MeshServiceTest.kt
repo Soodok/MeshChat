@@ -983,7 +983,7 @@ class MeshServiceTest {
         )
         service.start()
 
-        service.setHeartbeat(2_000, 4_000)
+        service.setHeartbeat(2_000)
         val t0 = System.currentTimeMillis() + 10_000   // 虚拟推进 10s：确保距 start 时 lastPingAt 超过任何心跳间隔
         service.sendPingIfDue(t0)                       // 必发一轮 PING，lastPingAt = t0
         transport.frames.clear()
@@ -1002,7 +1002,7 @@ class MeshServiceTest {
         )
         service.start()
 
-        service.setHeartbeat(50, 100)
+        service.setHeartbeat(50)
         val t0 = System.currentTimeMillis() + 10_000
         service.sendPingIfDue(t0)           // 首次必发，lastPingAt = t0
         transport.frames.clear()

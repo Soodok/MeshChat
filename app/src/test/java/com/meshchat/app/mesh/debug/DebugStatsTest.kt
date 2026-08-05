@@ -120,8 +120,8 @@ class DebugStatsTest {
         val stats = DebugStats()
         var received: DebugControl? = null
         stats.attachControls { received = it }
-        stats.issue(DebugControl.SetHeartbeat(500, 1_000))
-        assertEquals(DebugControl.SetHeartbeat(500, 1_000), received)
+        stats.issue(DebugControl.SetHeartbeat(500))
+        assertEquals(DebugControl.SetHeartbeat(500), received)
         // 未注册 handler 时静默不抛（测试/未装配场景）
         DebugStats().issue(DebugControl.ResetControls)
     }

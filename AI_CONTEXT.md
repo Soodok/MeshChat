@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.10（versionCode 72，构建时间 2026-08-05）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.11（versionCode 73，构建时间 2026-08-05）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -176,9 +176,11 @@ app/src/main/java/com/meshchat/app/
   - **失败包统计**：`DebugStats.recordReceivedFailure()` + `FailedStats`（receivedDecodeFailures/速率、unconfirmed=待确认 pending、bleWriteFailed、bleNotifyFailed）并入 DebugSnapshot.failures；MeshService handleFrame 解码失败分支埋点；reset 清理。
   - **UI**：「失败包」板块（FailureCard，解码失败/送达不可确认/BLE 写与 notify 失败，非零琥珀色高亮）+ 心跳档位扩至六档 0.05s/0.1s/0.5s/1s/2s/5s（失联阈值 ×2 联动）+ 板块显隐 showFailure。
   - **测试**：DebugStatsTest +1（失败包聚合）+ MeshServiceTest +1（50ms 高频档），旧心跳测试（heartbeatTick 驱动）改用 `sendPingIfDue`（独立协程语义）；总 **123/123 通过**。
+- **v1.1.11 心跳档位收敛（2026-08-05，用户实测后调整）**：① 心跳只保留 **0.05s/0.1s/0.2s/0.4s 四档**（移除 0.5s/1s/2s/5s）② **失联阈值固定 2s 默认，不再自主调节/联动**——`DebugControl.SetHeartbeat(intervalMs)` 单参数化，`MeshService.setHeartbeat(intervalMs)` 不再修改 `lostHeartbeatMs`（字段保留默认 LOST_HEARTBEAT_MS=2s）；UI StatRow 显示"失联阈值 2s（固定）"。默认心跳 1s 不在四档内（恢复默认后无选中态，符合预期）。测试适配（DebugStatsTest/MeshServiceTest 单参数）。
 
 ### 已验证内容
-- **v1.1.10 高频心跳 + 失败包验证**：`testDebugUnitTest` **123/123 通过，0 失败**（DebugStatsTest 7 + MeshServiceTest 47 + 其余回归）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 72 / versionName 1.1.10）；APK `MeshChat-v1.1.10-debug.apk`。⚠️ 待用户真机验证：心跳 0.05s 档（GATT 通道高频生效）、失败包板块统计。
+- **v1.1.11 心跳档位收敛验证**：`testDebugUnitTest` **123/123 通过，0 失败**（SetHeartbeat 单参数化后 DebugStatsTest/MeshServiceTest 全回归）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 73 / versionName 1.1.11）；APK `MeshChat-v1.1.11-debug.apk`。⚠️ 待用户真机验证：心跳四档（0.05/0.1/0.2/0.4s）、失败包板块、失联阈值固定 2s。
+- **v1.1.10 高频心跳 + 失败包验证**：`testDebugUnitTest` **123/123 通过，0 失败**（DebugStatsTest 7 + MeshServiceTest 47 + 其余回归）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 72 / versionName 1.1.10）；APK `MeshChat-v1.1.10-debug.apk`。⚠️ 心跳档位经 v1.1.11 收敛为四档。
 - **v1.1.9 调试中心主动控制验证**：`testDebugUnitTest` **121/121 通过，0 失败**（DebugStatsTest 6 + MeshServiceTest 45 + 其余回归）；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 71 / versionName 1.1.9）；APK `MeshChat-v1.1.9-debug.apk`。⚠️ 待用户真机验证：主动控制面板各项调节生效（心跳/重发/暂停恢复/手动 PING/恢复默认）。
 - **v1.1.8 启动崩溃真根因修复验证（决定性）**：`testDebugUnitTest` **117/117 通过，0 失败**；`assembleDebug` **BUILD SUCCESSFUL**（versionCode 70 / versionName 1.1.8）；**Android 16（API 36）headless 模拟器实测**：v1.1.7 同镜像安装启动 → 复现 NPE 崩溃栈（`startDebugLoop$1` 113 行）；v1.1.8 安装启动 → **无 FATAL EXCEPTION + 进程持续存活**，App 正常进入权限请求/主界面。APK `MeshChat-v1.1.8-debug.apk`。⚠️ 用户真机已确认正常（"OK，正常了"）。
 - **v1.1.7 启动崩溃中间排查验证**：`testDebugUnitTest` **117/117 通过**；`assembleDebug` SUCCESS（versionCode 69）。⚠️ 模拟器验证发现非根因（见 v1.1.8），改动（ConcurrentHashMap 等）保留。
@@ -195,7 +197,7 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **⚠️ v1.1.3 融合 + v1.1.4 修复 + v1.1.5 调试中心 + v1.1.6 FGS + v1.1.7 并发 + v1.1.8 崩溃修复（真机已确认）+ v1.1.9 主动控制 + v1.1.10 高频心跳/失败包，待用户真机验证后提交推送**：改动全部在工作区未提交。**待办**：① 用户安装 `MeshChat-v1.1.10-debug.apk` 验证（**重点：能正常打开 + 主动控制面板**——心跳 0.05s/0.1s 高频档生效、失败包板块统计、暂停/恢复广播+扫描、手动 PING、恢复默认；其余回归同 v1.1.9）；② 确认后 git add + commit + push origin/main。
+- **⚠️ v1.1.3 融合 + v1.1.4 修复 + v1.1.5 调试中心 + v1.1.6 FGS + v1.1.7 并发 + v1.1.8 崩溃修复（真机已确认）+ v1.1.9 主动控制 + v1.1.10 高频心跳/失败包 + v1.1.11 档位收敛，待用户真机验证后提交推送**：改动全部在工作区未提交。**待办**：① 用户安装 `MeshChat-v1.1.11-debug.apk` 验证（**重点：能正常打开 + 主动控制面板**——心跳 0.05s/0.1s/0.2s/0.4s 四档生效、失败包板块统计、暂停/恢复广播+扫描、手动 PING、恢复默认；其余回归同 v1.1.9）；② 确认后 git add + commit + push origin/main。
 - **⚠️ 推送阻塞（网络）已解除**：此前 `github.com:443` TCP reset/超时导致的推送积压（v1.0.25 `9d0f373` + v1.1.0 `9d7c62c`）已全部推送成功，本地与 origin/main 同步。GitHub Release（挂 APK）仍可后续用 gh CLI 或网页：仓库 https://github.com/Soodok/MeshChat 的 Releases 页上传 `MeshChat-v1.1.1-debug.apk`。
 - **无阻塞**（v1.0.0 已推送 GitHub origin/main，本地与远程同步）。备用源 `soodok.online/meshchat_bare.git` 未同步（如需可 push）。
 - 服务器注意：nginx `client_max_body_size` 默认 1M → 上传 bundle 需分块（≤400KB/块）；`/home/wwwroot` 不存在，实际 web 根为 `/var/www/html`。
@@ -222,7 +224,7 @@ app/src/main/java/com/meshchat/app/
   - 单测 +7（规格 12.1 全部覆盖），72/72 通过。范围外：文件/握手/群组多跳、3 跳+、加密、路由持久化。
 
 ### 下一步首要任务
-0. **v1.1.10 真机验证（当前版本）**：用户安装 `MeshChat-v1.1.10-debug.apk` → ① 能正常打开 ② **主动控制**（Profile→调试中心→主动控制）：心跳 0.05s/0.1s 档（已连接对端观察 PING 高频到达；广播通道受系统 100ms 限制）、暂停/恢复、手动 PING、恢复默认 ③ **失败包板块**：观察解码失败/送达不可确认/BLE 写与 notify 失败统计 ④ 其余回归：删除对话后节点消失、安全中心、归档/删除/未读、附近/历史分组、新图标 → 确认后提交推送 origin/main（v1.1.3~v1.1.10 全部积压）。
+0. **v1.1.11 真机验证（当前版本）**：用户安装 `MeshChat-v1.1.11-debug.apk` → ① 能正常打开 ② **主动控制**（Profile→调试中心→主动控制）：心跳 0.05s/0.1s/0.2s/0.4s 四档（已连接对端观察 PING 高频到达；广播通道受系统 100ms 限制）、暂停/恢复、手动 PING、恢复默认 ③ **失败包板块**：解码失败/送达不可确认/BLE 写与 notify 失败统计 ④ 其余回归：删除对话后节点消失、安全中心、归档/删除/未读、附近/历史分组、新图标 → 确认后提交推送 origin/main（v1.1.3~v1.1.11 全部积压）。
 1. **v1.1.0 真机验证——多跳中继三机验收**：按规格 §12.2 排布 A—B—C（相邻两两可达、A 与 C 互不可见）：① A 的 Mesh 页/拓扑图看到 C"经 B 可达 · 2跳"（Cyan 小节点）② A 给 C 发 TEXT → C 收到、A 状态翻"已送达"（RECEIPT 经 B 回传），消息文案带"· 经中继" ③ C 回 TEXT → A 收到（对称）④ 会话页 Header 显示"经 B 可达 · 消息经中继送达" ⑤ B 删后台 → A 的路由重新学习，B 不在线期间 outbox 重发兜底 ⑥ 关 B 蓝牙 → A 侧 C 路由移除。其余回归：一跳直连收发/送达确认、蓝牙关→开自动恢复（v1.0.24）、拓扑图、文件传输。
 2. **v1.0.13 蓝牙重搜验证**：安装 `MeshChat-v1.0.13-debug.apk`，重点复现蓝牙重搜路径：两机先关蓝牙进软件 → 开蓝牙 → 点"重新发现" → 应互相搜到（不再需要重进）。其余回归：Mesh 页拓扑图（力导向/拖拽/三色）、送达确认、滚动、文件传输。
 3. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
@@ -248,3 +250,4 @@ app/src/main/java/com/meshchat/app/
 - **v1.1.8 启动崩溃真根因修复**：`ui/MeshChatViewModel.kt`（**调试中心属性声明块整体移到 init 块之前**——`DebugSettings`/`_debugSettings`/`debugSettings`/`_debugSnapshot`/`debugSnapshot` 从 init 之后移到 `val backgroundEnabled` 之前；`startDebugLoop` 循环体 try-catch 覆盖含 `_debugSettings.value` 读取的整个迭代——**本次崩溃根因文件**）、`app/build.gradle.kts`（v1.1.8/70）、`AI_CONTEXT.md`
 - **v1.1.9 调试中心主动控制**：新增 `mesh/debug/DebugControl.kt`（sealed class 命令集）；修改 `mesh/debug/DebugStats.kt`（attachControls/issue 控制总线）、`mesh/service/MeshService.kt`（4 volatile 参数 + 6 控制方法 + 4 处常量使用处替换 + handler 注册）、`mesh/transport/MeshTransport.kt`（suspendDiscovery/resumeDiscovery 默认方法）、`mesh/transport/BleTransport.kt`（覆写：只停/启广播+扫描保留 GATT）、`mesh/transport/InMemoryTransport.kt`（覆写 + discoverySuspended 断言位）、`ui/MeshChatViewModel.kt`（DebugControlState/sendDebugControl/resetDebugControls + DebugSettings.showControl）、`ui/screens/DebugCenterScreen.kt`（ControlCard 面板 + 板块显隐）、`ui/screens/MeshChatHome.kt`（透传）、`ui/MeshChatApp.kt`（collect+透传）；版本 `app/build.gradle.kts`（v1.1.9/71）、`README.md`、`AI_CONTEXT.md`；规格 `docs/superpowers/specs/2026-08-05-debug-center-active-control-design.md`、计划 `docs/superpowers/plans/2026-08-05-debug-center-active-control.md`；测试 `DebugStatsTest` +1、`MeshServiceTest` +3
 - **v1.1.10 高频心跳 + 失败包**：`mesh/service/MeshService.kt`（**独立心跳协程 heartbeatJob + sendPingIfDue**——PING 与 200ms tick 解耦支持 50ms 档；setHeartbeat 下限放宽 50ms/100ms；handleFrame 解码失败埋点）、`mesh/debug/DebugStats.kt`（recordReceivedFailure + FailedStats 并入 snapshot.failures + reset）、`ui/MeshChatViewModel.kt`（DebugSettings.showFailure）、`ui/screens/DebugCenterScreen.kt`（FailureCard 失败包板块 + 心跳六档 0.05s~5s + 板块显隐）；版本 `app/build.gradle.kts`（v1.1.10/72）、`README.md`、`AI_CONTEXT.md`；测试 `DebugStatsTest` +1、`MeshServiceTest` +1（50ms 档）、旧心跳测试改 `sendPingIfDue`
+- **v1.1.11 心跳档位收敛**：`mesh/debug/DebugControl.kt`（SetHeartbeat 单参数化 intervalMs）、`mesh/service/MeshService.kt`（setHeartbeat 不再修改 lostHeartbeatMs，失联固定 2s）、`ui/MeshChatViewModel.kt`（sendDebugControl 分支适配 + DebugControlState.lostMs 注释）、`ui/screens/DebugCenterScreen.kt`（心跳四档 0.05/0.1/0.2/0.4s + "失联阈值 2s（固定）"）、`DebugStatsTest`/`MeshServiceTest`（单参数适配）；版本 `app/build.gradle.kts`（v1.1.11/73）、`README.md`、`AI_CONTEXT.md`

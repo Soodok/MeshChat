@@ -309,7 +309,7 @@ class MeshService(
         // 调试主动控制：UI 调节经 DebugStats 控制总线转发到本服务控制面
         debugStats.attachControls { cmd ->
             when (cmd) {
-                is DebugControl.SetHeartbeat -> setHeartbeat(cmd.intervalMs, cmd.lostMs)
+                is DebugControl.SetHeartbeat -> setHeartbeat(cmd.intervalMs)
                 is DebugControl.SetResendPolicy -> setResendPolicy(cmd.baseMs, cmd.maxMs)
                 DebugControl.SuspendSignaling -> suspendSignaling()
                 DebugControl.ResumeSignaling -> resumeSignaling()
@@ -629,10 +629,9 @@ class MeshService(
     }
 
     // ===== 调试主动控制（UI 调节经 DebugStats 控制总线下发；全部幂等可逆）=====
-    /** 心跳间隔 + 失联阈值（联动由 UI 保证 lostMs = intervalMs * 2；最低 50ms 高频调试档）。 */
-    fun setHeartbeat(intervalMs: Long, lostMs: Long) {
+    /** 心跳间隔（失联阈值保持 LOST_HEARTBEAT_MS=2s 固定，不随心跳联动——用户决策）。 */
+    fun setHeartbeat(intervalMs: Long) {
         heartbeatIntervalMs = intervalMs.coerceIn(50L, 10_000L)
-        lostHeartbeatMs = lostMs.coerceIn(100L, 20_000L)
     }
 
     /** 消息重发退避（基础间隔 + 封顶）。 */

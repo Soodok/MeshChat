@@ -92,7 +92,7 @@ class MeshChatViewModel(
     /** 当前生效控制档位/暂停标记/上次手动 PING 时刻。 */
     data class DebugControlState(
         val heartbeatMs: Long = 1_000L,
-        val lostMs: Long = 2_000L,
+        val lostMs: Long = 2_000L,          // 失联阈值固定默认 2s，不可调
         val resendBaseMs: Long = 3_000L,
         val resendMaxMs: Long = 30_000L,
         val signalingSuspended: Boolean = false,
@@ -105,7 +105,7 @@ class MeshChatViewModel(
     fun sendDebugControl(cmd: DebugControl) {
         debugStats.issue(cmd)
         _debugControlState.value = when (cmd) {
-            is DebugControl.SetHeartbeat -> _debugControlState.value.copy(heartbeatMs = cmd.intervalMs, lostMs = cmd.lostMs)
+            is DebugControl.SetHeartbeat -> _debugControlState.value.copy(heartbeatMs = cmd.intervalMs)
             is DebugControl.SetResendPolicy -> _debugControlState.value.copy(resendBaseMs = cmd.baseMs, resendMaxMs = cmd.maxMs)
             DebugControl.SuspendSignaling -> _debugControlState.value.copy(signalingSuspended = true)
             DebugControl.ResumeSignaling -> _debugControlState.value.copy(signalingSuspended = false)

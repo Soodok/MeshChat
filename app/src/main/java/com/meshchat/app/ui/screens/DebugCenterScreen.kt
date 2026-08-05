@@ -266,12 +266,12 @@ private fun ControlCard(
     onResetControls: () -> Unit,
 ) {
     SectionCard("主动控制") {
-        StatRow("心跳频率", "${s.heartbeatMs}ms · 失联阈值 ${s.lostMs}ms", Cyan)
+        StatRow("心跳频率", "${s.heartbeatMs}ms · 失联阈值 2s（固定）", Cyan)
         Row {
-            listOf(50L to "0.05s", 100L to "0.1s", 500L to "0.5s", 1_000L to "1s", 2_000L to "2s", 5_000L to "5s").forEach { (v, label) ->
+            listOf(50L to "0.05s", 100L to "0.1s", 200L to "0.2s", 400L to "0.4s").forEach { (v, label) ->
                 FilterChip(
                     selected = s.heartbeatMs == v,
-                    onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.SetHeartbeat(v, v * 2)) },
+                    onClick = { onControl(com.meshchat.app.mesh.debug.DebugControl.SetHeartbeat(v)) },
                     label = { Text(label) },
                     modifier = Modifier.padding(end = 6.dp),
                 )
