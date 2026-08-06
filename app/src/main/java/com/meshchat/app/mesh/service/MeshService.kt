@@ -705,10 +705,27 @@ class MeshService(
     }
 
     /** 暂停发现层（广播+扫描；已建立 GATT 连接收发不受影响）。 */
-    fun suspendSignaling() = transport.suspendDiscovery()
+    fun suspendSignaling() = suspendDiscovery()
 
     /** 恢复发现层。 */
-    fun resumeSignaling() = transport.resumeDiscovery()
+    fun resumeSignaling() = resumeDiscovery()
+
+    /**
+     * 发现开关（v1.1.49）：暂停/恢复广播+扫描（已建立 GATT 连接与收发不受影响）。
+     * Mesh 页"搜索开关"与"打开应用时自动搜索"设置共用；状态以 StateFlow 供 UI 显示。
+     */
+    private val _discoveryEnabled = MutableStateFlow(true)
+    val discoveryEnabled: StateFlow<Boolean> = _discoveryEnabled.asStateFlow()
+
+    fun suspendDiscovery() {
+        transport.suspendDiscovery()
+        _discoveryEnabled.value = false
+    }
+
+    fun resumeDiscovery() {
+        transport.resumeDiscovery()
+        _discoveryEnabled.value = true
+    }
 
     /** 广播发射功率(dBm)：仅接受 Android 四档（1/-7/-15/-21），非法忽略；重启广播生效。 */
     fun setTxPower(power: Int) {

@@ -2,6 +2,7 @@ package com.meshchat.app.ui.screens
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.BluetoothSearching
 import androidx.compose.material.icons.outlined.Hub
@@ -79,21 +81,30 @@ fun MeshScreen(
     pendingInvites: Set<String>,
     onStartDiscovery: () -> Unit,
     onPeerSelected: (String) -> Unit,
+    /** v1.1.49：发现开关（是否在广播+扫描）。 */
+    discoveryEnabled: Boolean,
+    onToggleDiscovery: () -> Unit,
 ) {
-    var discovering by remember { mutableStateOf(true) }   // 进入即自动开始寻找（服务随 App 启动）
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peers = peers, sessions = sessions) }
         item {
-            Text("附近节点（${nearbyPeers.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
+            ) {
+                Text("附近节点（${nearbyPeers.size}）", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.weight(1f))
+                DiscoveryToggleButton(enabled = discoveryEnabled, onClick = onToggleDiscovery)
+            }
         }
         if (nearbyPeers.isEmpty()) {
             item {
                 Text(
-                    text = if (discovering) "正在扫描邻近节点…" else "暂无邻近节点，请点击重新发现",
+                    text = if (discoveryEnabled) "正在扫描邻近节点…" else "搜索已停止 · 点击右侧红色按键开启",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
+                    color = if (discoveryEnabled) TextSecondary else MeshAmber,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
                 )
             }
@@ -121,16 +132,50 @@ fun MeshScreen(
         }
         item {
             Button(
-                onClick = {
-                    onStartDiscovery()
-                    discovering = true
-                },
+                onClick = onStartDiscovery,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Color(0xFF081420)),
             ) {
                 Icon(Icons.AutoMirrored.Outlined.BluetoothSearching, null)
-                Text(if (discovering) "重新发现" else "开始附近发现", modifier = Modifier.padding(start = 8.dp))
+                Text("重新发现", modifier = Modifier.padding(start = 8.dp))
             }
+        }
+    }
+}
+
+/**
+ * 搜索开关（v1.1.49）：录像键样式——搜索中 = 红色实心圆 + 白点（录制中），
+ * 已停止 = 红色空心圆环。点击切换广播+扫描（已建立 GATT 连接收发不受影响）。
+ */
+@Composable
+private fun DiscoveryToggleButton(enabled: Boolean, onClick: () -> Unit) {
+    val diameter = 34.dp
+    val ring = 2.dp
+    Box(
+        modifier = Modifier
+            .size(diameter)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .then(
+                if (enabled) {
+                    Modifier.background(MeshRed)
+                } else {
+                    Modifier.background(MeshRed.copy(alpha = 0.12f))
+                        .border(ring, MeshRed, CircleShape)
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (enabled) {
+            // 录制中：中心白点
+            Box(
+                Modifier.size(10.dp).clip(CircleShape).background(Color.White),
+            )
+        } else {
+            // 已停止：中心小红点
+            Box(
+                Modifier.size(14.dp).clip(CircleShape).background(MeshRed),
+            )
         }
     }
 }

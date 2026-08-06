@@ -1056,6 +1056,25 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `discovery toggle updates state flow and forwards to transport`() = runTest {
+        // v1.1.49：Mesh 页搜索开关——suspend/resumeDiscovery 更新 discoveryEnabled 状态（UI 读它渲染录像键）
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+
+        assertTrue("默认搜索开启", service.discoveryEnabled.value)
+        service.suspendDiscovery()
+        assertTrue("暂停后 transport 同步暂停", transport.discoverySuspended)
+        assertTrue("暂停后状态流为 false", !service.discoveryEnabled.value)
+        service.resumeDiscovery()
+        assertTrue("恢复后 transport 同步恢复", !transport.discoverySuspended)
+        assertTrue("恢复后状态流为 true", service.discoveryEnabled.value)
+    }
+
+    @Test
     fun `tx power can be adjusted via debug control and reset to default`() = runTest {
         val identity = LocalIdentity(shortId = "ME")
         val transport = InMemoryTransport()

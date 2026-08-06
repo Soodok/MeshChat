@@ -30,6 +30,10 @@ interface MeshRepository {
     fun deleteConversation(peerId: String)
     fun startDiscovery()
     fun localShortId(): String
+    /** 发现开关（v1.1.49）：当前是否在广播+扫描。 */
+    val discoveryEnabled: kotlinx.coroutines.flow.StateFlow<Boolean>
+    fun suspendDiscovery()
+    fun resumeDiscovery()
 }
 
 class MeshRepositoryImpl(
@@ -74,6 +78,12 @@ class MeshRepositoryImpl(
     }
 
     override fun localShortId(): String = service.shortId
+
+    override val discoveryEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> = service.discoveryEnabled
+
+    override fun suspendDiscovery() = service.suspendDiscovery()
+
+    override fun resumeDiscovery() = service.resumeDiscovery()
 
     override fun observeMessages(convId: String): Flow<List<ChatMessage>> =
         store.observeMessages(convId).map { list -> list.map { it.toUiModel() } }

@@ -73,6 +73,12 @@ fun MeshChatHome(
     onDisplayNameChange: (String) -> Unit,
     backgroundEnabled: Boolean,
     onBackgroundEnabledChange: (Boolean) -> Unit,
+    /** v1.1.49：打开应用时自动搜索设置。 */
+    autoDiscovery: Boolean,
+    onAutoDiscoveryChange: (Boolean) -> Unit,
+    /** v1.1.49：发现开关（是否在广播+扫描）。 */
+    discoveryEnabled: Boolean,
+    onToggleDiscovery: () -> Unit,
     onOpenConversation: (String?) -> Unit,
     onToggleConversationArchived: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
@@ -211,6 +217,8 @@ fun MeshChatHome(
                 canEditDisplayName = sessions.isNotEmpty(),
                 backgroundEnabled = backgroundEnabled,
                 onBackgroundEnabledChange = onBackgroundEnabledChange,
+                autoDiscovery = autoDiscovery,
+                onAutoDiscoveryChange = onAutoDiscoveryChange,
                 onBack = { profileDetail = null },
             )
             "about" -> AboutScreen(onBack = { profileDetail = null })
@@ -316,6 +324,8 @@ fun MeshChatHome(
                         if (peerId !in sessions) onSendInvite(peerId)
                         onOpenConversation(peerId)
                     },
+                    discoveryEnabled = discoveryEnabled,
+                    onToggleDiscovery = onToggleDiscovery,
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),

@@ -132,6 +132,9 @@ fun GeneralSettingsScreen(
     canEditDisplayName: Boolean,
     backgroundEnabled: Boolean,
     onBackgroundEnabledChange: (Boolean) -> Unit,
+    /** v1.1.49：打开应用时自动搜索（默认开）。 */
+    autoDiscovery: Boolean,
+    onAutoDiscoveryChange: (Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
@@ -159,6 +162,17 @@ fun GeneralSettingsScreen(
         )
         Text(
             "开启后息屏/退后台仍持续收发消息并弹通知。",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        SettingsSwitchRow(
+            title = "打开应用时自动搜索",
+            checked = autoDiscovery,
+            onCheckedChange = onAutoDiscoveryChange,
+        )
+        Text(
+            "开启后每次进入应用自动开始蓝牙广播+扫描；关闭则需在 Mesh 页手动开启搜索。",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),

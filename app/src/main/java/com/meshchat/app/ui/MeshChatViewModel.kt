@@ -36,6 +36,8 @@ class MeshChatViewModel(
     private val setDisplayName: (String) -> Unit,
     private val backgroundEnabledProvider: () -> Boolean,
     private val setBackgroundEnabled: (Boolean) -> Unit,
+    private val autoDiscoveryProvider: () -> Boolean,
+    private val setAutoDiscovery: (Boolean) -> Unit,
     private val conversationPreferences: ConversationPreferences,
     private val conversationRequest: kotlinx.coroutines.flow.StateFlow<String?>,
     private val securityCapabilityManager: SecurityCapabilityManager,
@@ -149,6 +151,20 @@ class MeshChatViewModel(
     val backgroundEnabled: Boolean get() = backgroundEnabledProvider()
 
     fun updateBackgroundEnabled(value: Boolean) = setBackgroundEnabled(value)
+
+    /** 打开应用时自动搜索（v1.1.49，默认开）：关闭后启动/回前台不自动广播+扫描。 */
+    val autoDiscovery: Boolean get() = autoDiscoveryProvider()
+
+    fun updateAutoDiscovery(value: Boolean) = setAutoDiscovery(value)
+
+    /** 发现开关（v1.1.49）：当前是否在广播+扫描（Mesh 页录像键式开关状态）。 */
+    val discoveryEnabled: StateFlow<Boolean> = repository.discoveryEnabled
+
+    /** 切换搜索开关：开→暂停广播+扫描（保留已建立连接收发），关→恢复。 */
+    fun toggleDiscovery() {
+        if (repository.discoveryEnabled.value) repository.suspendDiscovery()
+        else repository.resumeDiscovery()
+    }
 
     init {
         securityCapabilityManager.refresh()

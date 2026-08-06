@@ -19,6 +19,8 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             setDisplayName = { app.displayName = it },
             backgroundEnabledProvider = { app.backgroundEnabled },
             setBackgroundEnabled = { app.backgroundEnabled = it },
+            autoDiscoveryProvider = { app.autoDiscovery },
+            setAutoDiscovery = { app.autoDiscovery = it },
             conversationPreferences = ConversationPreferences(app),
             conversationRequest = app.conversationRequest,
             securityCapabilityManager = app.securityCapabilityManager,

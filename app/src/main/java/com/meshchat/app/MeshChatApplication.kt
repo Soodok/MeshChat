@@ -90,6 +90,19 @@ class MeshChatApplication : Application() {
                 .edit().putBoolean("background_enabled", value).apply()
         }
 
+    /**
+     * 打开应用时自动搜索开关（v1.1.49，设置页可改，默认开）：
+     * 关闭后 App 启动/回前台不自动开始蓝牙广播+扫描（但服务/心跳/已建立连接照常），
+     * 用户可在 Mesh 页用搜索开关手动开启。
+     */
+    var autoDiscovery: Boolean
+        get() = getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+            .getBoolean("auto_discovery", true)
+        set(value) {
+            getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+                .edit().putBoolean("auto_discovery", value).apply()
+        }
+
     /** 调试统计内核（真机调试中心数据源；内存态，重启清零）。 */
     val debugStats by lazy { com.meshchat.app.mesh.debug.DebugStats() }
 
@@ -134,6 +147,14 @@ class MeshChatApplication : Application() {
         } else {
             service.start()
         }
+        // v1.1.49：打开应用时自动搜索关闭 → 启动后不自动广播+扫描（服务/心跳/已建立连接照常）
+        applyAutoDiscovery()
+    }
+
+    /** 按"打开应用时自动搜索"设置同步发现层状态（关闭时暂停广播+扫描）。 */
+    private fun applyAutoDiscovery() {
+        if (!autoDiscovery && service.discoveryEnabled.value) service.suspendDiscovery()
+        else if (autoDiscovery && !service.discoveryEnabled.value) service.resumeDiscovery()
     }
 
     override fun onCreate() {
@@ -143,6 +164,7 @@ class MeshChatApplication : Application() {
         // 此刻 MainActivity 尚未创建、Android 12+ 限制前台服务后台启动，故直接启动 Mesh 逻辑本体（幂等），
         // 前台服务由 MainActivity onCreate/onResume 的 startMesh() 补上（App 已在前台，无启动限制）。
         runCatching { service.start() }
+        applyAutoDiscovery()
     }
 
     /**
@@ -162,7 +184,11 @@ class MeshChatApplication : Application() {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 if (state == BluetoothAdapter.STATE_ON) {
                     Log.i("MeshApp", "bluetooth ON -> rebuild BLE transport (restartDiscovery)")
-                    mainHandler.postDelayed({ runCatching { service.restartDiscovery() } }, 500L)
+                    mainHandler.postDelayed({
+                        runCatching { service.restartDiscovery() }
+                        // v1.1.49：自动搜索关闭时，重建链路后仍保持"不广播+不扫描"（GATT/心跳照常）
+                        applyAutoDiscovery()
+                    }, 500L)
                 }
             }
         }
