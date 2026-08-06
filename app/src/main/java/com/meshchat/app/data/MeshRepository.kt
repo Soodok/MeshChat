@@ -34,9 +34,10 @@ interface MeshRepository {
     val discoveryEnabled: kotlinx.coroutines.flow.StateFlow<Boolean>
     fun suspendDiscovery()
     fun resumeDiscovery()
-    /** v1.1.50 群消息：已订阅群列表 / 创建群（返回群 ID）/ 发送群消息。 */
+    /** v1.1.50 群消息：已订阅群列表 / 创建群（返回群 ID）/ 加入群（输入群 ID 本地订阅）/ 发送群消息。 */
     fun observeGroups(): Flow<List<com.meshchat.app.mesh.service.GroupInfo>>
     fun createGroup(groupName: String): String
+    fun joinGroup(groupId: String)
     fun sendGroupMessage(groupId: String, text: String)
 }
 
@@ -120,6 +121,8 @@ class MeshRepositoryImpl(
     override fun observeGroups(): Flow<List<com.meshchat.app.mesh.service.GroupInfo>> = service.groups
 
     override fun createGroup(groupName: String): String = service.createGroup(groupName)
+
+    override fun joinGroup(groupId: String) = service.joinGroup(groupId)
 
     override fun sendGroupMessage(groupId: String, text: String) = service.sendGroupMessage(groupId, text)
 

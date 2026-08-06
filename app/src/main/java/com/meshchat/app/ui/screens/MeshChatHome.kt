@@ -66,6 +66,7 @@ fun MeshChatHome(
     /** v1.1.50 群列表（已订阅群）。 */
     groups: List<com.meshchat.app.mesh.service.GroupInfo>,
     onCreateGroup: (String) -> Unit,
+    onJoinGroup: (String) -> Unit,
     pendingInvites: Set<String>,
     invites: Map<String, Long>,
     localShortId: String,
@@ -319,10 +320,11 @@ fun MeshChatHome(
                     onChatSelected = { onOpenConversation(it) }, // 进入所选会话（id = 对端短 ID），而非硬编码"我"
                     onToggleArchived = onToggleConversationArchived,
                     onDeleteConversation = onDeleteConversation,
-                    // v1.1.50：群组分区 + 创建群 + 进入群会话
+                    // v1.1.50：群组分区 + 创建群/加入群 + 进入群会话
                     groups = groups,
                     onGroupSelected = onOpenConversation,
                     onCreateGroup = onCreateGroup,
+                    onJoinGroup = onJoinGroup,
                 )
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),

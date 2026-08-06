@@ -76,8 +76,8 @@ private const val GROUP_MAX_RESENDS = 3                  // 群消息重发上�
 private const val GROUP_CONFIRM_TIMEOUT_MS = 30_000L     // 群消息总超时：30s 无任一成员确认 → "可能未送达"（诚实标注）
 private const val GROUP_RECEIPT_CHANCE = 0.3             // 群回执节流概率：30%（仿真：带宽 +50-100% 换发送方真实感知）
 private const val GROUP_RECEIPT_DELAY_MAX_MS = 500L      // 群回执随机延迟上界：0-500ms（错峰防风暴）
-private const val GROUP_DUP_WINDOW_MS = 10_000L          // 内容指纹时间窗：10s（> 5s 重发间隔 + 泛洪延迟 1-2s；5s 窗会漏判）
-private const val GROUP_DUP_MAX_PER_KEY = 3              // 同指纹窗口内时间戳队列上限（防异常增长）
+private const val GROUP_DUP_WINDOW_MS = 600_000L       // 内容指纹键存活期：10 分钟（键唯一=一个 msgId 一条；覆盖重启恢复重发的长间隔）
+private const val GROUP_DUP_MAX_PER_KEY = 3             // 同指纹窗口内时间戳队列上限（防异常增长）
 private const val GROUP_RECEIPT_ID_PREFIX = "G$"         // 群回执 id 前缀：与点对点（envelope.id 键）命名空间隔离
 
 // ===== 缓存维护（移植队友 v1.0.11）：长期运行清理过期投递记录与长期未见节点 =====
@@ -366,18 +366,22 @@ class MeshService(
             while (isActive) {
                 delay(REFRESH_INTERVAL_MS)
                 val now = System.currentTimeMillis()
-                heartbeatTick(now)
-                resendPendingReceipts(now)
-                // v1.1.50：待确认群消息重发（固定 5s 新 id 重发 ≤3 次 + 30s 超时"可能未送达" + 指纹表清理）
-                resendPendingGroupReceipts(now)
-                // 缓存维护：启动 force + 每 6h 节流（清过期 outbox/30 天未见节点）
-                prunePersistentCaches(now)
-                // 中继转发 outbox 重发（每 1s 节流，≤3 次）：转发丢帧兜底，尽力而为
-                resendOutbox(now)
-                // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
-                tickSessionState(now)
-                // 文件传输接收超时清理（60s 无进展丢弃）
-                transfer.tick(now)
+                // 单轮异常只跳过本轮（审查 S2）：pendingGroupReceipts 等 LinkedHashMap 与接收协程并发
+                // 修改可能抛 CME，无隔离会杀死整个 tick（心跳/重发/缓存维护全停）
+                runCatching {
+                    heartbeatTick(now)
+                    resendPendingReceipts(now)
+                    // v1.1.50：待确认群消息重发（固定 5s 新 id 重发 ≤3 次 + 30s 超时"可能未送达" + 指纹表清理）
+                    resendPendingGroupReceipts(now)
+                    // 缓存维护：启动 force + 每 6h 节流（清过期 outbox/30 天未见节点）
+                    prunePersistentCaches(now)
+                    // 中继转发 outbox 重发（每 1s 节流，≤3 次）：转发丢帧兜底，尽力而为
+                    resendOutbox(now)
+                    // 会话状态机每 0.2s 检测一次：向已接受邀请的对端持续重发确认，直至其确认或超时
+                    tickSessionState(now)
+                    // 文件传输接收超时清理（60s 无进展丢弃）
+                    transfer.tick(now)
+                }.onFailure { Log.w(TAG, "tick iteration failed", it) }
             }
         }
         // 独立心跳协程：与 200ms tick 解耦，支持 50ms 级高频调试档（间隔实时读取可动态调节）
@@ -563,15 +567,24 @@ class MeshService(
     }
 
     /**
-     * 内容指纹去重（v1.1.50）：fingerprint = (groupId|srcId|text) + 10s 时间窗。
-     * 时间基准用 envelope.ts 差值比较（抵消跨设备时钟不同步）；每次到达都记录时间戳（窗口随到达滑动）。
-     * 新 id 重发/环路重复帧在窗口内 → 重复（不落库、不回执）。**仅已订阅节点落库/回执前调用，
-     * 中继节点绝不用此表拦帧**——转发只看 DedupCache（envelope.id 防环），两层去重各司其职。
+     * 群消息内容指纹去重（v1.1.50，msgId 锚修订）：fingerprint = (groupId|srcId|msgId)。
+     *
+     * 锚选 **msgId**（逻辑消息 ID）而非文本：重发帧 msgId 不变 = 同一逻辑消息 → 判重复不落库；
+     * 新消息 msgId 不同 = 合法新消息 → 不误杀（text 作锚会吞掉同群同发送者 10s 内连发的相同文本，
+     * 如应急场景连发"收到"——审查 M2 发现）。
+     *
+     * 时间基准用**本机时间**：键唯一（一个 msgId 一条），窗口只是"键存活期"（10 分钟，覆盖
+     * 重启恢复重发的长间隔），不再用 envelope.ts 差值——原 text 锚方案下清理/判定时钟基准混用，
+     * 跨设备时钟偏差 >10s 时误删指纹导致重发帧重复投递（审查 M3 发现）。
+     *
+     * **仅已订阅节点落库/回执前调用，中继节点绝不用此表拦帧**——转发只看 DedupCache（envelope.id 防环），
+     * 两层去重各司其职。
      */
     internal fun isGroupDup(envelope: MeshEnvelope, body: GroupBody): Boolean {
-        val text = body.text ?: return false
-        val fingerprint = "${body.groupId}|${envelope.srcId}|$text"
-        val now = envelope.ts
+        val msgId = body.msgId
+        if (msgId.isBlank()) return false
+        val fingerprint = "${body.groupId}|${envelope.srcId}|$msgId"
+        val now = System.currentTimeMillis()
         val q = groupMsgFingerprints.computeIfAbsent(fingerprint) { ArrayDeque() }
         synchronized(q) {
             while (q.isNotEmpty() && now - q.firstOrNull()!! > GROUP_DUP_WINDOW_MS) q.removeFirst()
@@ -810,6 +823,11 @@ class MeshService(
         Log.w(TAG, "restore ${undelivered.size} undelivered group messages for retransmission")
         val now = System.currentTimeMillis()
         for (m in undelivered) {
+            // 防御（审查 S4）：异常 convId 不匹配 group- 前缀时跳过，避免把整个 convId 当 groupId 寻址
+            if (!m.convId.startsWith("group-")) {
+                Log.w(TAG, "skip group resend restore ${m.id}: unexpected convId ${m.convId}")
+                continue
+            }
             val groupId = m.convId.removePrefix("group-")
             pendingGroupReceipts.putIfAbsent(
                 "$GROUP_RECEIPT_ID_PREFIX${m.id}",
@@ -1382,8 +1400,9 @@ class MeshService(
             }
             "GROUP" -> {
                 // ===== v1.1.50 群消息（广播域模型）=====
-                // dstId=groupId≠本机，不走 ForwardingDecision（会判 Forward 只转发不落库）——
-                // 显式双动作：已订阅 → 落库+回执；然后无条件转发（订阅者即中继，泛洪延伸所有成员）。
+                // dstId=groupId≠本机，**投递**不走 ForwardingDecision（会判 Forward 只转发不落库）——
+                // 显式双动作：已订阅 → 落库+回执；随后**转发**仍复用 route（ForwardingDecision 只会判
+                // Forward，DedupCache 防环 + TTL 递减 + 抖动错峰）；订阅者即中继，泛洪延伸所有成员。
                 val body = envelope.body as? GroupBody ?: return
                 if (body.op == "JOIN") {
                     // 群创建帧（MVP 仅传播群名）：学习群名，不落库不回执

@@ -1457,4 +1457,42 @@ class MeshServiceTest {
         assertEquals("30s 超时标可能未送达", MessageStatus.FAILED, store.queryMessages("group-G1").first().status)
         service.stop()
     }
+
+    @Test
+    fun `same text twice with different msgId both delivered`() {
+        // 审查 M2 修复：指纹锚为 msgId（非 text）——同群同发送者连发相同文本是合法消息，不得误杀
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.joinGroup("G1")
+        service.handleFrame(groupMsgFrame("e1", "A", "G1", "好的", "m1", "小明", ts = 1))
+        service.handleFrame(groupMsgFrame("e2", "A", "G1", "好的", "m2", "小明", ts = 2))
+        assertEquals("同文本不同 msgId 都落库", 2, store.queryMessages("group-G1").size)
+        // 同 msgId 的新 id 重发帧：判重复不落库
+        service.handleFrame(groupMsgFrame("e3", "A", "G1", "好的", "m2", "小明", ts = 3))
+        assertEquals("同 msgId 重发不重复落库", 2, store.queryMessages("group-G1").size)
+        service.stop()
+    }
+
+    @Test
+    fun `group conversations not restored as known peers`() {
+        // 审查 S3 修复：peers 表为空 + 消息历史只有群消息 → 群 ID 不得被当对端节点恢复
+        val store = InMemoryMeshStore()
+        store.insertMessage(
+            StoredMessage(
+                id = "m1", convId = "group-G1", kind = "GROUP", srcId = "A", dstId = "G1",
+                text = "hi", ts = 1, status = MessageStatus.DELIVERED,
+            ),
+        )
+        val service = MeshService(
+            transport = CountingTransport(), store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        Thread.sleep(100)
+        assertTrue("群 ID 不得被当对端节点恢复", service.peers.value.none { it.shortId == "G1" })
+        service.stop()
+    }
 }

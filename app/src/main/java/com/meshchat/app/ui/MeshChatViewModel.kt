@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class MeshChatViewModel(
@@ -246,10 +247,13 @@ class MeshChatViewModel(
      *  未打开会话时发射空列表——否则 flatMapLatest 会 fallback 到 conv-ME，进入会话瞬间短暂显示上个会话/自环消息，
      *  列表 size 突变导致自动滚动被反复打断（视觉上"滚到底又弹回顶"）。 */
     val messages: StateFlow<List<ChatMessage>> = combine(
-        conversationTarget.flatMapLatest { target ->
-            if (target == null) flowOf(emptyList())
-            else repository.observeMessages(if (isGroupTarget(target)) "group-$target" else "conv-$target")
-        },
+        // 审查 M1 修复：flatMapLatest 触发时同步判定会话键（读 _groupTargetIds），
+        // 创建群后立即打开会话也走 group-<id>，不再依赖异步 groups 刷新
+        conversationTarget.map { target -> target to (target != null && isGroupTarget(target)) }
+            .flatMapLatest { (target, isGroup) ->
+                if (target == null) flowOf(emptyList())
+                else repository.observeMessages(if (isGroup) "group-$target" else "conv-$target")
+            },
         fileProgressMap,
     ) { list, progressMap ->
         list.map { m -> if (m.file != null && m.id in progressMap) m.copy(file = progressMap[m.id]) else m }
@@ -280,8 +284,16 @@ class MeshChatViewModel(
     val groups: StateFlow<List<com.meshchat.app.mesh.service.GroupInfo>> = repository.observeGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** v1.1.50：会话目标是否为群（groupId 在已订阅群集合中）。 */
-    private fun isGroupTarget(target: String): Boolean = groups.value.any { it.id == target }
+    /**
+     * 已确认的群目标 ID（审查 M1 修复）：createGroup/joinGroup 成功后**同步登记**。
+     * service.groups 是 combine 跨协程异步刷新，创建群后立即 openConversation 时可能读到旧值，
+     * 导致消息流误用 conv-<groupId>（群消息"消失"）。此集合提供同步判定源，消除竞态窗口。
+     */
+    private val _groupTargetIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /** v1.1.50：会话目标是否为群（groupId 在已订阅群集合中）。同步源优先，异步 groups 兜底。 */
+    private fun isGroupTarget(target: String): Boolean =
+        target in _groupTargetIds.value || groups.value.any { it.id == target }
 
     val pendingInvites: StateFlow<Set<String>> = repository.observePendingInvites()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
@@ -354,12 +366,24 @@ class MeshChatViewModel(
         }
     }
 
-    /** v1.1.50 创建群：生成群 ID + 本地订阅 + 广播群创建帧，创建后直接进入群会话。 */
+    /** v1.1.50 创建群：生成群 ID + 本地订阅 + 广播群创建帧，创建后直接进入群会话。
+     *  _groupTargetIds 先同步登记（审查 M1），openConversation 的消息流才能立即走 group- 会话键。 */
     fun createGroup(groupName: String) {
         if (groupName.isBlank()) return
         viewModelScope.launch {
             val groupId = repository.createGroup(groupName.trim())
+            _groupTargetIds.update { it + groupId }
             openConversation(groupId)
+        }
+    }
+
+    /** v1.1.50 加入群（审查 M4 修复）：输入群 ID 本地订阅（持久化），加入后进入群会话。 */
+    fun joinGroup(groupId: String) {
+        if (groupId.isBlank()) return
+        viewModelScope.launch {
+            repository.joinGroup(groupId.trim())
+            _groupTargetIds.update { it + groupId.trim() }
+            openConversation(groupId.trim())
         }
     }
 

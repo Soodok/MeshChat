@@ -107,7 +107,11 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
     }
 
     override fun loadKnownPeerIds(): List<String> = runBlocking {
-        db.messageDao().knownConvIds().map { it.substringAfterLast("-") }.filter { it != "ME" }
+        // v1.1.50：群会话键（group-<id>）不得反推为对端节点（群 ID 不是 peer 短 ID）
+        db.messageDao().knownConvIds()
+            .filter { !it.startsWith("group-") }
+            .map { it.substringAfterLast("-") }
+            .filter { it != "ME" }
     }
 
     override fun observeConversationIds(): Flow<List<String>> = db.messageDao().knownConvIdsFlow()

@@ -74,7 +74,11 @@ class InMemoryMeshStore : MeshStore {
         messages.filter { it.kind == "GROUP" && it.status == MessageStatus.SENDING }
 
     override fun loadKnownPeerIds(): List<String> =
-        messages.map { it.convId.substringAfterLast("-") }.distinct().filter { it != "ME" }
+        // v1.1.50：群会话键（group-<id>）不得反推为对端节点
+        messages.map { it.convId }.distinct()
+            .filter { !it.startsWith("group-") }
+            .map { it.substringAfterLast("-") }
+            .filter { it != "ME" }
 
     override fun observeConversationIds(): Flow<List<String>> =
         flowOf(messages.map { it.convId }.distinct())

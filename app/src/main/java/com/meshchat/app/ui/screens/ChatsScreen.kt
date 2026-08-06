@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.GroupAdd
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.runtime.Composable
@@ -50,10 +51,11 @@ fun ChatsScreen(
     onChatSelected: (String) -> Unit,
     onToggleArchived: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
-    /** v1.1.50 群组：已订阅群列表 + 进入群会话 + 创建群。 */
+    /** v1.1.50 群组：已订阅群列表 + 进入群会话 + 创建群 + 加入群（审查 M4 修复：输入群 ID 订阅）。 */
     groups: List<GroupInfo> = emptyList(),
     onGroupSelected: (String) -> Unit = {},
     onCreateGroup: (String) -> Unit = {},
+    onJoinGroup: (String) -> Unit = {},
 ) {
     val active = conversations.filterNot { it.archived }
     val reachable = active.filter { it.reachability == Reachability.REACHABLE }
@@ -61,11 +63,13 @@ fun ChatsScreen(
     val archived = conversations.filter { it.archived }
     var showCreateGroup by remember { mutableStateOf(false) }
     var groupNameDraft by remember { mutableStateOf("") }
+    var showJoinGroup by remember { mutableStateOf(false) }
+    var joinGroupDraft by remember { mutableStateOf("") }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 8.dp)) {
-        // v1.1.50 群组分区：已订阅群（群名 + 群 ID）+ 创建群按钮（常显，空态给引导文案）
+        // v1.1.50 群组分区：已订阅群（群名 + 群 ID）+ 创建群/加入群按钮（常显，空态给引导文案）
         item {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -73,6 +77,9 @@ fun ChatsScreen(
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f),
                     )
+                    IconButton(onClick = { joinGroupDraft = ""; showJoinGroup = true }) {
+                        Icon(Icons.Outlined.GroupAdd, "加入群", tint = TextSecondary)
+                    }
                     IconButton(onClick = { groupNameDraft = ""; showCreateGroup = true }) {
                         Icon(Icons.Outlined.Add, "创建群", tint = Cyan)
                     }
@@ -144,6 +151,31 @@ fun ChatsScreen(
                 ) { Text("创建") }
             },
             dismissButton = { TextButton(onClick = { showCreateGroup = false }) { Text("取消") } },
+        )
+    }
+    // v1.1.50（审查 M4 修复）：加入已有群——输入创建者告知的群 ID（8 字符），本地订阅即加入
+    if (showJoinGroup) {
+        AlertDialog(
+            onDismissRequest = { showJoinGroup = false },
+            title = { Text("加入群") },
+            text = {
+                OutlinedTextField(
+                    value = joinGroupDraft,
+                    onValueChange = { joinGroupDraft = it },
+                    placeholder = { Text("群 ID（向创建者获取）") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showJoinGroup = false
+                        if (joinGroupDraft.isNotBlank()) onJoinGroup(joinGroupDraft)
+                    },
+                    enabled = joinGroupDraft.isNotBlank(),
+                ) { Text("加入") }
+            },
+            dismissButton = { TextButton(onClick = { showJoinGroup = false }) { Text("取消") } },
         )
     }
 }

@@ -41,6 +41,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             sessions = sessions,
             groups = groups,
             onCreateGroup = viewModel::createGroup,
+            onJoinGroup = viewModel::joinGroup,
             pendingInvites = pendingInvites,
             invites = invites,
             localShortId = viewModel.localShortId,

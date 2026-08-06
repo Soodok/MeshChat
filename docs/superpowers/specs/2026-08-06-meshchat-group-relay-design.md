@@ -91,13 +91,17 @@ fun sendGroupMessageWithId(groupId: String, text: String, msgId: String) {
     //   30s 总超时仍未确认 → 状态"可能未送达"（琥珀色，诚实标注——回执只能证明至少一个成员收到）
 }
 
-// ===== 两层去重各司其职（2026-08-06 确认）=====
+// ===== 两层去重各司其职（2026-08-06 确认，msgId 锚修订 2026-08-06 审查）=====
 // ① DedupCache（节点级，envelope.id）：防转发环——重发的新 id 必须放行（不在此表命中）；
-// ② 内容指纹（应用级，收方本地）：防重复投递——(groupId|srcId|text) + 10s 时间窗，
+// ② 内容指纹（应用级，收方本地）：防重复投递——(groupId|srcId|msgId) + 存活期，
 //    落库/回执前检查。中继节点【绝不用指纹拦帧】（只转发，不管内容是否重复）。
-// 指纹实现：fingerprint = "$groupId|$srcId|$text"
-//   时间窗 10s（> 5s 重发间隔 + 泛洪延迟 1-2s，否则重发帧漏判成非重复；最初 5s 是错的，已修正）
-//   时间基准用 envelope.ts 差值比较（抵消跨设备时钟不同步）
+// 指纹实现：fingerprint = "$groupId|$srcId|$msgId"
+//   【锚用 msgId 而非 text（审查 M2 修订）】：重发帧 msgId 不变 = 同一逻辑消息 → 判重复；
+//   新消息 msgId 不同 = 合法新消息 → 不误杀（text 作锚会吞掉同群同发送者短时间内连发的相同文本，
+//   如应急连发"收到"；且 text 锚无法覆盖重启恢复重发（ts 隔数小时窗口已滑过）导致重复落库）
+//   存活期 10 分钟（键唯一=一个 msgId 一条；覆盖重启恢复重发的长间隔；最初 10s 窗口是错的，已修正）
+//   时间基准用本机时间（审查 M3 修订）：键唯一后窗口只是"键存活期"，不再需要跨设备 ts 差值——
+//   原方案判定用 envelope.ts（发送方时钟）而清理用本机时钟，偏差 >10s 时误删指纹 → 重发帧重复投递
 //   存储 ConcurrentHashMap<String, ArrayDeque<Long>>：同指纹窗口内时间戳队列（≤3 条），
 //   tick 顺带清理空键（防长期运行内存增长）
 ```
@@ -154,9 +158,11 @@ handleReceipt: id.startsWith("G$") → pendingGroupReceipts.remove(id) 命中 �
 
 ### 3.6 UI
 
-- **群列表**：聊天页（ChatsScreen）顶部新增"群组"分区——已订阅群（群名 + 最后消息摘要，可最小化）；"创建群"按钮 → 输入群名 → 生成 groupId + 本地订阅 + 广播群创建帧（带群名，可选）。
+- **群列表**：聊天页（ChatsScreen）顶部新增"群组"分区——已订阅群（群名 + 群 ID，可最小化）；"创建群"按钮 → 输入群名 → 生成 groupId + 本地订阅 + 广播群创建帧（带群名，可选）。
+- **加入群（2026-08-06 审查 M4 修复）**：群组分区新增"加入群"按钮 → 输入创建者告知的 8 字符群 ID → 本地订阅（持久化）+ 进入群会话。JOIN 帧仅传播群名，不自动订阅（防陌生群误订阅）。非创建者据此加入已有群。
 - **群会话页**：复用 ConversationScreen，`conversationTarget` 支持群（target=groupId，会话键 group-<groupId>）；发送走 `sendGroupMessage`；**气泡显示发送者昵称**（群聊必需，点对点不显示）。
 - **导航**：MeshChatHome 增加群入口路由（与 profileDetail 类似的 detail 机制）。
+- **创建群后立即进入会话（2026-08-06 审查 M1 修复）**：ViewModel 以同步集合登记已确认群目标 ID（`_groupTargetIds`），消息流/发送的群判定不再依赖异步 `groups` 合成流——消除"创建群后消息流误用 conv-<groupId>"的时序竞态。
 
 ### 3.7 边界与错误处理
 
@@ -179,8 +185,10 @@ handleReceipt: id.startsWith("G$") → pendingGroupReceipts.remove(id) 命中 �
 4. `group name learned from group message`：收到带 groupName 的 GROUP → groups 表更新。
 5. `group message ttl exhausted not forwarded`：TTL≤1 不扩散。
 6. `group receipt throttled and confirms sender`：成员收到群消息 → 节流回执；发送方收任一有效回执 → 状态 DELIVERED。
-7. `group message resent with new id until timeout`：群消息固定 5s 新 id 重发 ≤3 次（不依赖确认）、30s 超时标"可能未送达"；已收成员对新 id 重发**不回执**（内容指纹识别）。
-8. 既有 147 例全量回归。
+7. `group message resent with new id until timeout`：群消息固定 5s 新 id 重发 ≤3 次（不依赖确认）、30s 超时标"可能未送达"；已收成员对新 id 重发**不回执**（msgId 指纹识别）。
+8. `same text twice with different msgId both delivered`（审查 M2 回归）：同文本不同 msgId 都落库；同 msgId 重发不重复落库。
+9. `group conversations not restored as known peers`（审查 S3 回归）：群会话键不反推为对端节点。
+10. 既有 147 例全量回归。
 
 ### 3.9 极端网络仿真（决策依据，已入库可复现）
 
