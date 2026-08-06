@@ -43,10 +43,11 @@ MeshChat 现状：点对点 TEXT 经中继最多 2 跳可达（v1.1.0）；**无
 |--------|------|------|
 | 群模型 | **广播域**：群消息 dstId=groupId，全网泛洪转发，已订阅节点投递落库 | 无中心/应急场景最自然；复用现有多跳泛洪，零成员管理 |
 | 成员管理 | **无**：加入/退出 = 本地订阅/取消订阅 groupId（持久化） | JOIN/LEAVE op 预留但 MVP 不做成员表/群主/邀请 |
-| 群消息确认 | **不做**（MVP）：群消息落库即 DELIVERED | 多成员回执泛洪放大流量；避免发送方卡"发送中" |
+| 群消息确认 | **节流回执 + 有限重发**（修订：原草案"不做"被仿真否决）——成员 30% 概率+0-500ms 随机延迟回执一次；发送方收任一有效回执 → DELIVERED，30s 超时 → "可能未送达"（琥珀）；未确认群消息每 5s 重发 ≤3 次 | 仿真见 §3.9：无回执下全员到达率仅 0-48%（虚假"已送达"）；全回执带宽翻倍且仍只确认"至少一个成员"；节流回执带宽 +50-100% 换来发送方真实感知 |
 | 群 ID | 发送方生成（复用 ShortIdGen 风格，8 字符），创建时带群名 | 短（帧预算）+ 全网唯一 |
 | 群名传播 | 随群消息/群创建广播携带 groupName，接收方学习 | 无中央目录，靠消息扩散 |
 | 群通知 | 群消息弹通知（与点对点一致） | 应急场景需可见 |
+| 状态语义（诚实标注） | "已送达" = 至少一个成员确认（**非全员**）；"可能未送达" = 超时无确认 | 群消息做不到低成本全员确认（泛洪丢包），必须诚实标注防虚假送达感 |
 
 ### 3.2 协议变更（MeshEnvelope.kt）
 
@@ -70,10 +71,16 @@ data class GroupBody(
 fun sendGroupMessage(groupId: String, text: String) {
     // envelope: kind="GROUP", dstId=groupId, convId="group-$groupId"
     // body=GroupBody(op="MSG", groupId, groupName=本机已知群名, text, displayName)
-    // 本地立即落库（convId="group-$groupId", DELIVERED——MVP 无回执，不卡发送中）
+    // 本地落库（convId="group-$groupId", SENDING——待确认，不直接 DELIVERED）
+    // 登记 pendingReceipts（复用现有机制，key=envelope.id）→ 收到任一有效回执 → DELIVERED
     // 广播（走 route → 泛洪转发）
+    // tick 每 5s：pendingReceipts 中未确认群消息重发（≤3 次），重发即新泛洪机会（提升全员到达率）
+    // 30s 超时仍未确认 → 状态"可能未送达"（琥珀色，诚实标注——回执只能证明至少一个成员收到）
 }
 ```
+
+- 群消息与点对点消息共用 `pendingReceipts`/`resendPendingReceipts`（重发退避/次数相同）。
+- 群消息重发频率低于点对点（群消息重发会全网放大），用独立节流（5s/≤3 次）。
 
 ### 3.4 群消息接收（广播域模型，MeshService handleEnvelope 新增 "GROUP" 分支）
 
@@ -83,11 +90,14 @@ kind == "GROUP":
   if (body.groupId in joinedGroups) {
       route(envelope)                       // 已订阅 → Deliver 落库
       learnGroupName(body.groupId, body.groupName)  // 群名学习
+      maybeSendGroupReceipt(envelope)        // 30% 概率 + 0-500ms 随机延迟 → RECEIPT 泛洪回传（节流防风暴）
   } else if (envelope.ttl - 1 > 0) {
       route(envelope, jitter = true)        // 未订阅 → 纯中继转发（与 TEXT 对称）
   }
 ```
 
+- 回执复用现有 RECEIPT 机制（dstId=srcId，泛洪回传 + "receipt-$id" 去重）：发送方 `pendingReceipts` 命中即 DELIVERED。
+- 节流必要性（仿真）：全成员回执带宽放大 ~2x；30% 概率+随机延迟降至 ~1.5-2x 且确认延迟仅 +100-150ms。
 - `route` 的 Deliver 分支：`toStoredMessage` 增加 GroupBody 分支（`text = body.text`，convId 用信封的 `group-<groupId>`，**不是** `conv-$srcId`——群会话键与点对点命名空间隔离）。需区分：GroupBody 的 convId 在 `MeshEnvelope.toStoredMessage` 中按 `convId` 字段直用，而非重写为 `conv-$srcId`。
 - 群名学习：`groups: ConcurrentHashMap<groupId, name>` + 持久化。
 - 已订阅判定：`joinedGroups: Set<String>`（SharedPreferences 持久化，同 SessionStore 模式）。
@@ -109,19 +119,37 @@ kind == "GROUP":
 |------|------|
 | 群消息风暴 | TTL 8 + DedupCache + 50-250ms 抖动（复用 TEXT 中继，全网每节点最多转发一次） |
 | 重复群消息 | dedup 按信封 id 收敛 |
+| 回执风暴 | 30% 概率 + 0-500ms 随机延迟 + RECEIPT "receipt-$id" 全网去重一次（三层节流） |
 | 群名冲突/更新 | 后到覆盖（简单，无校验） |
 | 未订阅节点收到群消息 | 只转发不落库不通知 |
 | 群消息 TTL 耗尽 | 转发停止，Drop |
 | 发送方未订阅自己创建的群 | 创建即订阅（本地） |
+| 群消息超时无确认 | 状态"可能未送达"（琥珀色），30s 后不再重发 |
 
 ### 3.8 阶段 A 单测（MeshServiceTest 新增）
 
-1. `group message delivered to subscriber and stored in group conversation`：已订阅节点收到 GROUP → 落库 convId=group-x、text 正确、不回执。
+1. `group message delivered to subscriber and stored in group conversation`：已订阅节点收到 GROUP → 落库 convId=group-x、text 正确。
 2. `group message forwarded by non subscriber without storing`：未订阅节点转发、insertMessage 不被调用。
 3. `group body round trips groupId and displayName`：编解码。
 4. `group name learned from group message`：收到带 groupName 的 GROUP → groups 表更新。
 5. `group message ttl exhausted not forwarded`：TTL≤1 不扩散。
-6. 既有 147 例全量回归。
+6. `group receipt throttled and confirms sender`：成员收到群消息 → 节流回执；发送方收任一有效回执 → 状态 DELIVERED。
+7. `group message resent until confirmed or timeout`：未确认群消息 5s 重发 ≤3 次、30s 超时标"可能未送达"。
+8. 既有 147 例全量回归。
+
+### 3.9 极端网络仿真（决策依据，已入库可复现）
+
+`app/src/test/java/com/meshchat/app/mesh/sim/GroupRelaySimulationTest.kt`——离散事件仿真（链式拓扑、一跳 100ms、TTL 8、转发抖动 50-250ms、每跳独立丢包、40 次蒙特卡洛）：
+
+| 场景 | 全员到达率 | NONE 发送方感知 | 节流回执确认 | 带宽代价 |
+|------|-----------|----------------|-------------|---------|
+| 5 节点/20% 丢包 | 48% | 立即"已送达"（假） | ~440ms | 1.68x |
+| 5 节点/40% 丢包 | 13% | 立即"已送达"（假） | ~194ms | 1.47x |
+| 8 节点/20% 丢包 | 28% | 立即"已送达"（假） | ~434ms | 1.86x |
+| 8 节点/40% 丢包 | 20% | 立即"已送达"（假） | ~185ms | 1.52x |
+| 12 节点/30% 丢包 | 0% | 立即"已送达"（假） | ~341ms | 2.04x |
+
+**结论**：① 无回执 = 虚假确认（到达率 0-48% 却显示"已送达"）→ **否决"不加回执"**；② 全回执只确认"至少一个成员收到"且带宽翻倍 → 全员确认在泛洪下不可行；③ **节流回执（30% 概率+随机延迟）是折中**：带宽 +50-100%、确认延迟 190-440ms、发送方有真实感知；④ 有限重发（5s×3）把"新泛洪机会"给丢包窗口后的成员，直接提升全员到达率；⑤ 状态诚实标注："已送达"= 至少一个成员，"可能未送达"= 超时。
 
 ## 4. 阶段 B：多跳补墙（v1.1.51）
 
