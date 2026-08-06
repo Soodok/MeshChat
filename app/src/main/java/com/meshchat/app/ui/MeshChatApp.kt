@@ -18,6 +18,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
     val peers by viewModel.peers.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val groups by viewModel.groups.collectAsStateWithLifecycle()
     val pendingInvites by viewModel.pendingInvites.collectAsStateWithLifecycle()
     val invites by viewModel.invites.collectAsStateWithLifecycle()
     val currentConversation by viewModel.currentConversation.collectAsStateWithLifecycle()
@@ -38,6 +39,8 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             conversations = conversations,
             peers = peers,
             sessions = sessions,
+            groups = groups,
+            onCreateGroup = viewModel::createGroup,
             pendingInvites = pendingInvites,
             invites = invites,
             localShortId = viewModel.localShortId,

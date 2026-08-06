@@ -1,7 +1,7 @@
 # MeshChat 群组交流 + 多跳补全 设计规格
 
 - 日期：2026-08-06
-- 状态：方案待用户审查
+- 状态：**阶段 A 已确认并实施（v1.1.50，2026-08-06）**；阶段 B 待实施（v1.1.51）
 - 目标版本：阶段 A（群消息 MVP）= v1.1.50；阶段 B（多跳补墙）= v1.1.51
 - 依赖：v1.1.0 多跳中继（TEXT 纯中继 / RECEIPT 泛洪 / 2 跳路由已实装）
 
@@ -55,8 +55,11 @@ MeshChat 现状：点对点 TEXT 经中继最多 2 跳可达（v1.1.0）；**无
 @Serializable
 @SerialName("GROUP")
 data class GroupBody(
-    val op: String,                 // "MSG"（MVP）；"JOIN"/"LEAVE" 预留
-    val groupId: String,            // 新增：群唯一 ID（8 字符）
+    val op: String,                 // "MSG"（消息）/ "JOIN"（创建传播群名，MVP）；"LEAVE" 预留
+    val groupId: String,            // 新增：群唯一 ID（8 字符，创建者生成）
+    val msgId: String = "",         // 新增（2026-08-06 确认）：逻辑消息 ID = 首次发送的 envelope.id；
+                                    // 重发新 envelope 时不变，回执按此匹配（新增字段比"回执按 envelope.id"更可靠——
+                                    // 新 id 重发后首帧 id 与重发帧 id 不同，按首帧 id 匹配才能跨帧确认同一逻辑消息）
     val groupName: String? = null,  // 群名（创建时携带，随消息传播）
     val text: String? = null,
     val displayName: String = "",   // 新增：发送者昵称（群聊需区分谁说的，同 TextBody）
@@ -64,47 +67,84 @@ data class GroupBody(
 ```
 
 - 兼容：老版本无 GROUP 功能（死代码），加字段零兼容负担；新版本不发旧格式 GROUP。
+- `msgId` 语义：首帧 `envelope.id == body.msgId`；重发帧 `envelope.id` 更换、`body.msgId` 不变——**内容指纹去重（§3.3）与群回执（§3.4，`"G$msgId"`）都以 msgId/内容为锚，而非 envelope.id**。
 
 ### 3.3 群消息发送（MeshService）
 
 ```kotlin
 fun sendGroupMessage(groupId: String, text: String) {
-    // envelope: kind="GROUP", dstId=groupId, convId="group-$groupId"
-    // body=GroupBody(op="MSG", groupId, groupName=本机已知群名, text, displayName)
-    // 本地落库（convId="group-$groupId", SENDING——待确认，不直接 DELIVERED）
-    // 登记 pendingReceipts（复用现有机制，key=envelope.id）→ 收到任一有效回执 → DELIVERED
-    // 广播（走 route → 泛洪转发）
-    // 重发（v1.1.50 修订 v2，仿真 §3.9 铁证）：
-    //   每 5s 重发一次，用【新 envelope id】（新 id = 新泛洪，能推进到未收节点；
-    //   同 id 重发被节点级去重挡住，完全无效——首次泛洪已标记沿途节点，重发帧推不动）
-    //   固定重发 2~3 次，【不依赖确认状态】——确认来自近端成员（<300ms），
-    //   依赖它会让重发在远端最需要时永不触发（瞬时丢包场景到达率 0%）
-    // 30s 超时仍未确认 → 状态"可能未送达"（琥珀色，诚实标注——回执只能证明至少一个成员收到）
+    val msgId = UUID.randomUUID().toString()          // 逻辑消息 ID（= 首帧 envelope.id）
+    sendGroupMessageWithId(groupId, text, msgId)
 }
+
+fun sendGroupMessageWithId(groupId: String, text: String, msgId: String) {
+    // envelope: kind="GROUP", dstId=groupId, convId="group-$groupId", id=msgId（首帧）
+    // body=GroupBody(op="MSG", groupId, msgId, groupName=本机已知群名, text, displayName)
+    // 本地落库（convId="group-$groupId", SENDING——待确认，不直接 DELIVERED，id=msgId）
+    // 登记 pendingGroupReceipts["G$msgId"] = PendingGroupMsg(...)   ← 独立队列，键带 "G$" 前缀与点对点隔离
+    // 广播（走 route → 泛洪转发，本机不抖动）
+    // 重发（2026-08-06 修订 v2，仿真 §3.9.1 铁证）：
+    //   每 5s 重发一次，用【新 envelope id】（新 id = 新泛洪，能推进到未收节点；
+    //   同 id 重发被节点级 DedupCache 挡住，完全无效——首次泛洪已标记沿途节点，重发帧推不动）
+    //   固定重发 ≤3 次、【不依赖确认状态】——确认来自近端成员（<300ms），
+    //   依赖它会让重发在远端最需要时永不触发（瞬时丢包场景到达率 0%→88% 靠新 id 重发救活）
+    //   30s 总超时仍未确认 → 状态"可能未送达"（琥珀色，诚实标注——回执只能证明至少一个成员收到）
+}
+
+// ===== 两层去重各司其职（2026-08-06 确认）=====
+// ① DedupCache（节点级，envelope.id）：防转发环——重发的新 id 必须放行（不在此表命中）；
+// ② 内容指纹（应用级，收方本地）：防重复投递——(groupId|srcId|text) + 10s 时间窗，
+//    落库/回执前检查。中继节点【绝不用指纹拦帧】（只转发，不管内容是否重复）。
+// 指纹实现：fingerprint = "$groupId|$srcId|$text"
+//   时间窗 10s（> 5s 重发间隔 + 泛洪延迟 1-2s，否则重发帧漏判成非重复；最初 5s 是错的，已修正）
+//   时间基准用 envelope.ts 差值比较（抵消跨设备时钟不同步）
+//   存储 ConcurrentHashMap<String, ArrayDeque<Long>>：同指纹窗口内时间戳队列（≤3 条），
+//   tick 顺带清理空键（防长期运行内存增长）
 ```
 
-- 群消息与点对点消息共用 `pendingReceipts`（确认/重发节流），但**重发必须新 id**（点对点重发同 id 依赖"重复即补回执"逻辑，群消息没有该逻辑）。
+- 群消息与点对点消息的**重发机制不同**：点对点同 id 重发靠"重复即补回执"特殊逻辑（接收方对 dedup 命中帧补发 RECEIPT）；群消息没有该逻辑，**必须新 id 重发**（仿真铁证）。
 - 重发频率低于点对点（群消息重发会全网放大）：5s/≤3 次。
-- **UI 内容级去重（重发副作用的必需配套）**：新 id 重发会让已收成员重复收到同内容（仿真 2.3-6 次/运行）→ 群会话落库按 `(groupId + 文本 + srcId + 时间窗 5s)` 指纹去重，防止重复气泡。
+- **UI 内容级去重（重发副作用的必需配套）**：新 id 重发会让已收成员重复收到同内容（仿真 2.3-6 次/运行）→ 群会话落库按内容指纹去重，防止重复气泡。
 
 ### 3.4 群消息接收（广播域模型，MeshService handleEnvelope 新增 "GROUP" 分支）
 
 ```
 kind == "GROUP":
   body = envelope.body as? GroupBody ?: return
-  if (body.groupId in joinedGroups) {
-      route(envelope)                       // 已订阅 → Deliver 落库（落库前内容指纹去重，见 §3.3）
-      learnGroupName(body.groupId, body.groupName)  // 群名学习
-      maybeSendGroupReceipt(envelope)        // 30% 概率 + 0-500ms 随机延迟 → RECEIPT 泛洪回传（节流防风暴；重发的新 id 帧不回执——已收成员按内容指纹识别）
-  } else if (envelope.ttl - 1 > 0) {
-      route(envelope, jitter = true)        // 未订阅 → 纯中继转发（与 TEXT 对称）
+  if (body.op == "JOIN") {                      // 创建传播帧（MVP 仅传群名）
+      learnGroupName(body.groupId, body.groupName)
+  } else if (body.groupId in joinedGroups) {    // 已订阅 → 显式双动作（落库 + 回执）
+      // ⚠️ 不走 ForwardingDecision：dstId=groupId≠本机会判 Forward（只转发不落库）——2026-08-06 确认的投递路径修正
+      if (!isGroupDup(envelope, body)) {        // 内容指纹去重（§3.3）：新 id 重发/环路重复不重复落库
+          learnGroupName(body.groupId, body.groupName)  // 群名学习
+          markSeen(envelope.srcId, body.displayName)    // 昵称学习（同 TEXT，供气泡显示/通知）
+          store.insertMessage(envelope.toStoredMessage())  // convId = 信封的 group-<groupId>（不是 conv-$srcId）
+          onIncomingMessage(...)                // 群通知（与点对点一致，打开 group-<groupId>）
+          maybeSendGroupReceipt(envelope, body) // 节流回执：30% 概率 + 0-500ms 随机延迟（重发的新 id 帧不回执——内容指纹识别）
+      }
   }
+  if (envelope.ttl - 1 > 0) {                   // 无条件转发（已订阅也转发：订阅者即中继，泛洪才能延伸到所有成员）
+      route(envelope, jitter = true)            // 复用 ForwardingDecision（DedupCache 防环 + TTL 递减 + 抖动）
+  }
+
+// ===== 群回执（2026-08-06 确认：独立队列 + "G$" 前缀命名空间）=====
+maybeSendGroupReceipt(envelope, body):
+  if (random.nextDouble() >= 0.30) return                     // 30% 节流（仿真：带宽 +50-100% 换真实感知）
+  scope.launch { delay(random 0-500ms)
+      if (!isGroupDup(envelope, body)) return@launch           // 内容指纹识别：已收成员对新 id 重发不回执
+      dedup.mark("receipt-G$msgId")                            // 回执去重键与点对点（receipt-$id）隔离
+      broadcast RECEIPT {"id":"G$msgId","srcId":本机,"dstId":发送方}  // 泛洪回传，复用 "receipt-$id" 去重防环
+  }
+
+handleReceipt: id.startsWith("G$") → pendingGroupReceipts.remove(id) 命中 → 该 msgId 标 DELIVERED
+              （"已送达" = 至少一个成员确认，非全员——诚实标注）
 ```
 
-- 回执复用现有 RECEIPT 机制（dstId=srcId，泛洪回传 + "receipt-$id" 去重）：发送方 `pendingReceipts` 命中即 DELIVERED。
+- 回执泛洪复用现有 RECEIPT 机制（`"receipt-$id"` 去重 + 中间节点转发一次），发送方 `pendingGroupReceipts` 命中即 DELIVERED。
 - 节流必要性（仿真）：全成员回执带宽放大 ~2x；30% 概率+随机延迟降至 ~1.5-2x 且确认延迟仅 +100-150ms。
+- **群回执与点对点回执隔离**：点对点 `pendingReceipts` 键 = envelope.id（UUID）；群回执 id = `"G$msgId"`（"G$" 前缀 + 逻辑 msgId）——`handleReceipt` 按前缀路由到独立群队列，互不干扰；`handleFrame` RECEIPT 分支的"发送方命中"判断同时查两个队列。
 - `route` 的 Deliver 分支：`toStoredMessage` 增加 GroupBody 分支（`text = body.text`，convId 用信封的 `group-<groupId>`，**不是** `conv-$srcId`——群会话键与点对点命名空间隔离）。需区分：GroupBody 的 convId 在 `MeshEnvelope.toStoredMessage` 中按 `convId` 字段直用，而非重写为 `conv-$srcId`。
-- 群名学习：`groups: ConcurrentHashMap<groupId, name>` + 持久化。
+- 群名学习：`groupNames: Map<groupId, name>` + 持久化（GroupStore.loadNames/saveNames）。
 - 已订阅判定：`joinedGroups: Set<String>`（SharedPreferences 持久化，同 SessionStore 模式）。
 
 ### 3.5 存储（GroupStore）

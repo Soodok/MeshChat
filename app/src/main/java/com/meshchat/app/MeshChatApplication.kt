@@ -17,6 +17,7 @@ import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.service.MeshChatService
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.service.NotificationHelper
+import com.meshchat.app.mesh.service.SharedPrefsGroupStore
 import com.meshchat.app.mesh.service.SharedPrefsSessionStore
 import com.meshchat.app.mesh.storage.EncryptedMeshStore
 import com.meshchat.app.mesh.storage.MeshDatabase
@@ -114,9 +115,10 @@ class MeshChatApplication : Application() {
             fileSaver = AndroidFileSaver(this),
             tmpDir = { File(filesDir, "transfers") },
             sessionStore = SharedPrefsSessionStore(this),
-            onIncomingMessage = { fromId, fromName, text ->
-                // 会话键 = conv-<发送者短ID>（接收方统一命名，见 toStoredMessage）
-                notifications.showMessage(fromName, text.take(80), "conv-$fromId")
+            groupStore = SharedPrefsGroupStore(this),   // v1.1.50：群订阅/群名持久化
+            onIncomingMessage = { fromId, fromName, text, convId ->
+                // v1.1.50：convId = 群会话键（group-<id>）或点对点 conv-<fromId>，通知点击直达对应会话
+                notifications.showMessage(fromName, text.take(80), convId)
             },
             onFileSaved = { fileName -> notifications.showFileSaved(fileName) },
             debugStats = debugStats,

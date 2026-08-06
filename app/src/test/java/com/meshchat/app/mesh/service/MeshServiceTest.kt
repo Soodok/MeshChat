@@ -4,6 +4,7 @@ import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
+import com.meshchat.app.mesh.protocol.GroupBody
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
@@ -800,18 +801,20 @@ class MeshServiceTest {
     @Test
     fun `incoming text triggers onIncomingMessage with peer name`() {
         val transport = CountingTransport()
-        val received = mutableListOf<Triple<String, String, String>>()
+        data class Notify(val fromId: String, val fromName: String, val text: String, val convId: String)
+        val received = mutableListOf<Notify>()
         val service = MeshService(
             transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
-            onIncomingMessage = { fromId, fromName, text -> received.add(Triple(fromId, fromName, text)) },
+            onIncomingMessage = { fromId, fromName, text, convId -> received.add(Notify(fromId, fromName, text, convId)) },
         )
         service.start()
         service.handleFrame(pingFrame("OTHER", "老王"))   // 先让昵称入表
         service.handleFrame(textFrame("t1", "OTHER", "ME", "你好"))
         assertTrue(received.isNotEmpty())
-        assertEquals("OTHER", received.first().first)
-        assertEquals("老王", received.first().second)
-        assertEquals("你好", received.first().third)
+        assertEquals("OTHER", received.first().fromId)
+        assertEquals("老王", received.first().fromName)
+        assertEquals("你好", received.first().text)
+        assertEquals("conv-OTHER", received.first().convId)
         service.stop()
     }
 
@@ -883,7 +886,7 @@ class MeshServiceTest {
         val service = MeshService(
             transport = CountingTransport(), store = store,
             identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
-            onIncomingMessage = { _, _, _ -> notified++ },
+            onIncomingMessage = { _, _, _, _ -> notified++ },
         )
         service.handleFrame(textFrame("t1", "A", "C", "hi"))
         Thread.sleep(300)
@@ -1229,6 +1232,194 @@ class MeshServiceTest {
         val c = service.peers.value.filter { it.shortId == "C" }
         assertEquals("同 id 只保留一条", 1, c.size)
         assertTrue("一跳直连优先（relayVia 清空）", c.first().relayVia.isBlank())
+        service.stop()
+    }
+
+    // ===== v1.1.50 群消息 MVP =====
+
+    /** 群消息帧（MSG）：id = envelope id；msgId = 逻辑消息 ID（重发帧换 id 保持 msgId）。 */
+    private fun groupMsgFrame(
+        id: String, srcId: String, groupId: String, text: String, msgId: String,
+        displayName: String = "", groupName: String? = null, ttl: Int = 8, ts: Long = 1,
+    ) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(
+                id = id, kind = "GROUP", srcId = srcId, dstId = groupId, convId = "group-$groupId",
+                ttl = ttl, ts = ts,
+                body = GroupBody(op = "MSG", groupId = groupId, msgId = msgId, groupName = groupName, text = text, displayName = displayName),
+            ),
+        ).toByteArray(),
+    )
+
+    /** 群创建帧（JOIN，仅传播群名）。 */
+    private fun groupJoinFrame(id: String, srcId: String, groupId: String, groupName: String, ts: Long = 1) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(
+                id = id, kind = "GROUP", srcId = srcId, dstId = groupId, convId = "group-$groupId",
+                ttl = 8, ts = ts,
+                body = GroupBody(op = "JOIN", groupId = groupId, groupName = groupName),
+            ),
+        ).toByteArray(),
+    )
+
+    @Test
+    fun `group message delivered to subscriber and stored in group conversation`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.joinGroup("G1", "应急群")
+        assertEquals(setOf("G1"), service.joinedGroups.value)
+        service.handleFrame(groupMsgFrame("e1", "A", "G1", "hi", "m1", "小明", ts = 1))
+        val stored = store.queryMessages("group-G1")
+        assertEquals(1, stored.size)
+        assertEquals("hi", stored.first().text)
+        assertEquals("GROUP", stored.first().kind)
+        assertEquals(MessageStatus.DELIVERED, stored.first().status)
+        assertEquals("接收方落库 id = 信封 id（真实首帧时 = msgId）", "e1", stored.first().id)
+        service.stop()
+    }
+
+    @Test
+    fun `group message forwarded by non subscriber without storing`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(groupMsgFrame("e1", "A", "G1", "hi", "m1", "小明", ttl = 8, ts = 1))
+        Thread.sleep(300)   // 等转发抖动 50-250ms
+        val forwarded = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+            .firstOrNull { it.dstId == "G1" }
+        assertTrue("未订阅节点应转发群消息", forwarded != null)
+        assertEquals(7, forwarded?.ttl)
+        assertTrue("未订阅不落库", store.queryMessages("group-G1").isEmpty())
+        service.stop()
+    }
+
+    @Test
+    fun `group body round trips groupId and displayName`() {
+        val body = GroupBody(op = "MSG", groupId = "G1", msgId = "m1", groupName = "应急群", text = "hi", displayName = "小明")
+        val env = MeshEnvelope(id = "m1", kind = "GROUP", srcId = "A", dstId = "G1", convId = "group-G1", ttl = 8, ts = 1, body = body)
+        val decoded = MeshJson.decodeEnvelope(MeshJson.encodeEnvelope(env))
+        val g = decoded.body as GroupBody
+        assertEquals("GROUP", decoded.kind)
+        assertEquals("G1", g.groupId)
+        assertEquals("m1", g.msgId)
+        assertEquals("应急群", g.groupName)
+        assertEquals("hi", g.text)
+        assertEquals("小明", g.displayName)
+    }
+
+    @Test
+    fun `group name learned from group message and join frame`() {
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.joinGroup("G1")
+        service.handleFrame(groupMsgFrame("e1", "A", "G1", "hi", "m1", "小明", groupName = "应急群", ts = 1))
+        Thread.sleep(100)   // groups 合成流异步刷新
+        assertTrue("随消息学习群名", service.groups.value.any { it.id == "G1" && it.name == "应急群" })
+        // JOIN 帧先学到群名、后加入：加入后应显示已学群名
+        service.handleFrame(groupJoinFrame("j1", "B", "G2", "通知群", ts = 2))
+        service.joinGroup("G2")
+        Thread.sleep(100)
+        assertTrue("随创建帧学习群名", service.groups.value.any { it.id == "G2" && it.name == "通知群" })
+        service.stop()
+    }
+
+    @Test
+    fun `group message ttl exhausted not forwarded`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(groupMsgFrame("e1", "A", "G1", "hi", "m1", "小明", ttl = 1, ts = 1))
+        Thread.sleep(300)
+        assertTrue("TTL≤1 不再转发", transport.frames.none { it.type == FrameType.DATA })
+        assertTrue("TTL 耗尽不落库", store.queryMessages("group-G1").isEmpty())
+        service.stop()
+    }
+
+    @Test
+    fun `group receipt throttled and confirms sender`() {
+        // 成员 B（订阅者，测试注入 100% 回执概率 + 0ms 延迟；生产默认 30% + 0-500ms）
+        val memberStore = InMemoryMeshStore()
+        val memberTransport = CountingTransport()
+        val member = MeshService(
+            transport = memberTransport, store = memberStore,
+            identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+            groupReceiptChance = 1.0, groupReceiptDelayMaxMs = 0L,
+        )
+        member.joinGroup("G1")
+        member.handleFrame(groupMsgFrame("e1", "A", "G1", "hi", "m1", "小明", ts = 1))
+        Thread.sleep(100)   // 等 0ms 延迟回执协程发出
+        val receipts = memberTransport.frames.filter { it.type == FrameType.RECEIPT }
+        assertEquals("成员应以 30%（测试注入 100%）概率回执一次", 1, receipts.size)
+        assertTrue("回执 id = G\$msgId", receipts.first().payloadText.contains("G\$m1"))
+        // 同 msgId 的新 id 重发帧（e2）：内容指纹去重 → 不落库、不回执
+        member.handleFrame(groupMsgFrame("e2", "A", "G1", "hi", "m1", "小明", ts = 5_001))
+        Thread.sleep(100)
+        assertEquals("新 id 重发不回执", 1, memberTransport.frames.count { it.type == FrameType.RECEIPT })
+        assertEquals("新 id 重发不重复落库", 1, memberStore.queryMessages("group-G1").size)
+        // 发送方 A：收任一有效回执（G$m1）→ "已送达"（至少一个成员确认）
+        val senderStore = InMemoryMeshStore()
+        val sender = MeshService(
+            transport = CountingTransport(), store = senderStore,
+            identity = LocalIdentity(shortId = "A"), dedup = DedupCache(),
+        )
+        sender.sendGroupMessageWithId("G1", "hi", "m1")
+        assertEquals(MessageStatus.SENDING, senderStore.queryMessages("group-G1").first().status)
+        sender.handleFrame(receiptFrame("G\$m1"))
+        assertEquals(MessageStatus.DELIVERED, senderStore.queryMessages("group-G1").first().status)
+        sender.stop()
+        member.stop()
+    }
+
+    @Test
+    fun `group message resent with new id until timeout`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.sendGroupMessageWithId("G1", "hi", "m1")
+        val firstId = MeshJson.decodeEnvelope(transport.frames.last { it.type == FrameType.DATA }.payloadText).id
+        assertEquals("首帧 id = 逻辑 msgId", "m1", firstId)
+
+        // 5s 前不重发（+100ms 裕量防毫秒级时钟偏移）
+        service.resendPendingGroupReceipts(t0 + 4_000)
+        assertEquals(1, transport.frames.count { it.type == FrameType.DATA })
+
+        // 5s → 新 envelope id 重发（msgId 不变——回执按 msgId 匹配）
+        service.resendPendingGroupReceipts(t0 + 5_100)
+        val resendEnv = MeshJson.decodeEnvelope(transport.frames.last { it.type == FrameType.DATA }.payloadText)
+        assertEquals("重发必须新 envelope id", false, resendEnv.id == firstId)
+        assertEquals("m1", (resendEnv.body as GroupBody).msgId)
+        assertEquals("hi", (resendEnv.body as GroupBody).text)
+
+        // ≤3 次重发（t+5/10/15s）；第 4 个窗口（t+20s）不再重发
+        service.resendPendingGroupReceipts(t0 + 10_100)
+        service.resendPendingGroupReceipts(t0 + 15_100)
+        service.resendPendingGroupReceipts(t0 + 20_100)
+        assertEquals("首帧 + 3 次重发 = 4 帧", 4, transport.frames.count { it.type == FrameType.DATA })
+
+        // 30s 总超时 → "可能未送达"（FAILED，UI 渲染琥珀）
+        service.resendPendingGroupReceipts(t0 + 30_100)
+        assertEquals(MessageStatus.FAILED, store.queryMessages("group-G1").first().status)
         service.stop()
     }
 }

@@ -27,8 +27,8 @@ class MeshEnvelopeTest {
 
     private val group = MeshEnvelope(
         id = "msg-3", kind = "GROUP", srcId = "A001", dstId = "g-1",
-        convId = "g-1", ttl = 8, ts = 1700000000002,
-        body = GroupBody(op = "JOIN", groupName = "营地"),
+        convId = "group-g-1", ttl = 8, ts = 1700000000002,
+        body = GroupBody(op = "JOIN", groupId = "g-1", groupName = "营地"),
     )
 
     @Test

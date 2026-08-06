@@ -19,12 +19,17 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.ChatPreview
 import com.meshchat.app.data.Reachability
+import com.meshchat.app.mesh.service.GroupInfo
 import com.meshchat.app.ui.components.PresenceAvatar
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider as MeshDivider
@@ -44,12 +50,48 @@ fun ChatsScreen(
     onChatSelected: (String) -> Unit,
     onToggleArchived: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    /** v1.1.50 群组：已订阅群列表 + 进入群会话 + 创建群。 */
+    groups: List<GroupInfo> = emptyList(),
+    onGroupSelected: (String) -> Unit = {},
+    onCreateGroup: (String) -> Unit = {},
 ) {
     val active = conversations.filterNot { it.archived }
     val reachable = active.filter { it.reachability == Reachability.REACHABLE }
     val queued = active.filter { it.reachability == Reachability.QUEUED }
     val archived = conversations.filter { it.archived }
+    var showCreateGroup by remember { mutableStateOf(false) }
+    var groupNameDraft by remember { mutableStateOf("") }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 8.dp)) {
+        // v1.1.50 群组分区：已订阅群（群名 + 群 ID）+ 创建群按钮（常显，空态给引导文案）
+        item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "群组",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = { groupNameDraft = ""; showCreateGroup = true }) {
+                        Icon(Icons.Outlined.Add, "创建群", tint = Cyan)
+                    }
+                }
+            }
+            if (groups.isEmpty()) {
+                item {
+                    Text(
+                        text = "无已加入群 · 点右上角 + 创建",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+                    )
+                }
+            }
+            items(groups, key = { it.id }) { group ->
+                GroupRow(group, onClick = { onGroupSelected(group.id) })
+            }
+            item { Spacer(Modifier.height(6.dp)) }
         if (active.isEmpty() && archived.isEmpty()) {
             item {
                 Text(
@@ -79,6 +121,63 @@ fun ChatsScreen(
                 }
             }
         }
+    }
+    if (showCreateGroup) {
+        AlertDialog(
+            onDismissRequest = { showCreateGroup = false },
+            title = { Text("创建群") },
+            text = {
+                OutlinedTextField(
+                    value = groupNameDraft,
+                    onValueChange = { groupNameDraft = it },
+                    placeholder = { Text("群名") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCreateGroup = false
+                        if (groupNameDraft.isNotBlank()) onCreateGroup(groupNameDraft)
+                    },
+                    enabled = groupNameDraft.isNotBlank(),
+                ) { Text("创建") }
+            },
+            dismissButton = { TextButton(onClick = { showCreateGroup = false }) { Text("取消") } },
+        )
+    }
+}
+
+/** v1.1.50 群行：群名 + 群 ID（广播域标识，短 ID 风格）。 */
+@Composable
+private fun GroupRow(group: GroupInfo, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 24.dp, end = 24.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.foundation.layout.Box(
+                Modifier
+                    .height(34.dp)
+                    .width(34.dp)
+                    .background(Cyan.copy(alpha = 0.12f), androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.Groups, null, tint = Cyan, modifier = Modifier.width(20.dp).height(20.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(group.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(group.id, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
+            Text("群聊", style = MaterialTheme.typography.bodySmall, color = Cyan)
+        }
+        HorizontalDivider(color = MeshDivider)
     }
 }
 

@@ -247,7 +247,8 @@ class MeshChatViewModel(
      *  列表 size 突变导致自动滚动被反复打断（视觉上"滚到底又弹回顶"）。 */
     val messages: StateFlow<List<ChatMessage>> = combine(
         conversationTarget.flatMapLatest { target ->
-            if (target == null) flowOf(emptyList()) else repository.observeMessages("conv-$target")
+            if (target == null) flowOf(emptyList())
+            else repository.observeMessages(if (isGroupTarget(target)) "group-$target" else "conv-$target")
         },
         fileProgressMap,
     ) { list, progressMap ->
@@ -274,6 +275,13 @@ class MeshChatViewModel(
 
     val sessions: StateFlow<Set<String>> = repository.observeSessions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /** v1.1.50 群列表（已订阅群：id + 显示名）。 */
+    val groups: StateFlow<List<com.meshchat.app.mesh.service.GroupInfo>> = repository.observeGroups()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** v1.1.50：会话目标是否为群（groupId 在已订阅群集合中）。 */
+    private fun isGroupTarget(target: String): Boolean = groups.value.any { it.id == target }
 
     val pendingInvites: StateFlow<Set<String>> = repository.observePendingInvites()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
@@ -335,17 +343,32 @@ class MeshChatViewModel(
         readTimes.value = readTimes.value + (peerId to now)
     }
 
-    /** 向当前会话发送消息：目标取当前会话，而非硬编码"我"（修复发消息永远自环）。 */
+    /** 向当前会话发送消息：目标取当前会话，而非硬编码"我"（修复发消息永远自环）。
+     *  v1.1.50：群会话走 sendGroupMessage（泛洪广播域），点对点走 sendText。 */
     fun sendMessage(text: String) {
         if (text.isBlank()) return
         val target = conversationTarget.value ?: return
-        viewModelScope.launch { repository.sendText("conv-$target", text.trim()) }
+        viewModelScope.launch {
+            if (isGroupTarget(target)) repository.sendGroupMessage(target, text.trim())
+            else repository.sendText("conv-$target", text.trim())
+        }
     }
 
-    /** 发送文件到当前会话（串行：传输中 sendFile 内部拒绝）。size 为 0 时拒绝（空文件不支持）。 */
+    /** v1.1.50 创建群：生成群 ID + 本地订阅 + 广播群创建帧，创建后直接进入群会话。 */
+    fun createGroup(groupName: String) {
+        if (groupName.isBlank()) return
+        viewModelScope.launch {
+            val groupId = repository.createGroup(groupName.trim())
+            openConversation(groupId)
+        }
+    }
+
+    /** 发送文件到当前会话（串行：传输中 sendFile 内部拒绝）。size 为 0 时拒绝（空文件不支持）。
+     *  群会话不支持文件（文件多跳 = 阶段 C 范围外），直接忽略。 */
     fun sendFile(openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long) {
         if (size <= 0) return
         val target = conversationTarget.value ?: return
+        if (isGroupTarget(target)) return
         viewModelScope.launch {
             repository.sendFile("conv-$target", target, openSource, fileName, mime, size)
         }

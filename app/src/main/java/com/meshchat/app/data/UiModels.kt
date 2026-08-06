@@ -29,6 +29,7 @@ data class ChatMessage(
     val time: String,
     val delivery: String? = null,
     val file: FileUiMeta? = null,
+    val senderName: String? = null,  // v1.1.50 群聊：非本机消息显示发送者昵称（点对点为 null）
 )
 
 data class FileUiMeta(

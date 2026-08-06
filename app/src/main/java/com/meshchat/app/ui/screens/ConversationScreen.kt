@@ -64,6 +64,8 @@ fun ConversationScreen(
     onSendMessage: (String) -> Unit,
     onPickFile: (() -> Unit)? = null,
     onOpenFile: (ChatMessage) -> Unit = {},
+    /** v1.1.50 群会话：标题状态行改群聊语义（广播域），气泡显示发送者昵称。 */
+    isGroup: Boolean = false,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
     // 消息列表滚动：进入会话强制滚底；新消息到达且用户已在底部附近时跟随滚动（上滑看历史不被打断）
@@ -106,7 +108,7 @@ fun ConversationScreen(
     }
     Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
         // 会话状态 + 对端网络状况已合并进标题栏（名字下方一行），不再单独占内容空间
-        ConversationHeader(title, connected, peerPresence, relayVia, onBack)
+        ConversationHeader(title, connected, peerPresence, relayVia, onBack, isGroup)
         Text(
             today,
             color = TextSecondary,
@@ -128,13 +130,14 @@ fun ConversationScreen(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // v1.1.50：群会话不支持文件（文件多跳 = 阶段 C），隐藏附件按钮
             IconButton(onClick = { onPickFile?.invoke() }, enabled = onPickFile != null) {
                 Icon(Icons.Outlined.AttachFile, "添加附件", tint = TextSecondary)
             }
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                placeholder = { Text("输入消息") },
+                placeholder = { Text(if (isGroup) "发送到群" else "输入消息") },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
@@ -156,6 +159,7 @@ private fun ConversationHeader(
     peerPresence: com.meshchat.app.mesh.transport.PeerPresence?,
     relayVia: String = "",
     onBack: () -> Unit,
+    isGroup: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -171,33 +175,46 @@ private fun ConversationHeader(
         Spacer(Modifier.width(12.dp))
         Column {
             Text(title, style = MaterialTheme.typography.titleLarge)
-            // 会话建立状态 + 对端网络状况合并为一行（圆点 + 文字），不再单独占内容空间
-            val presence = peerPresence ?: com.meshchat.app.mesh.transport.PeerPresence.SEARCHING
-            val statusColor = when {
-                // v1.1.0 经中继可达：绿色（消息可送达，仅路径不同）
-                relayVia.isNotBlank() -> MeshGreen
-                !connected -> MeshAmber
-                presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
-                presence == com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
-                else -> MeshAmber
-            }
-            val statusText = when {
-                // v1.1.0：对端非一跳但在线，经中继可达——消息由中间节点转发
-                relayVia.isNotBlank() -> "经 $relayVia 可达 · 消息经中继送达"
-                !connected -> "等待对方接受对话请求…"
-                presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
-                presence == com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
-                presence == com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> "对方断线重连中…"
-                else -> "对方离线 · 消息将排队待对方上线"
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(7.dp).background(statusColor, androidx.compose.foundation.shape.CircleShape))
-                Text(
-                    statusText,
-                    color = statusColor,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(start = 6.dp),
-                )
+            if (isGroup) {
+                // v1.1.50 群会话：广播域语义（无"对方"概念，消息经泛洪送达全网订阅者）
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).background(Cyan, androidx.compose.foundation.shape.CircleShape))
+                    Text(
+                        "群聊 · 消息经泛洪送达",
+                        color = Cyan,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+            } else {
+                // 会话建立状态 + 对端网络状况合并为一行（圆点 + 文字），不再单独占内容空间
+                val presence = peerPresence ?: com.meshchat.app.mesh.transport.PeerPresence.SEARCHING
+                val statusColor = when {
+                    // v1.1.0 经中继可达：绿色（消息可送达，仅路径不同）
+                    relayVia.isNotBlank() -> MeshGreen
+                    !connected -> MeshAmber
+                    presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> MeshGreen
+                    presence == com.meshchat.app.mesh.transport.PeerPresence.OFFLINE -> TextSecondary
+                    else -> MeshAmber
+                }
+                val statusText = when {
+                    // v1.1.0：对端非一跳但在线，经中继可达——消息由中间节点转发
+                    relayVia.isNotBlank() -> "经 $relayVia 可达 · 消息经中继送达"
+                    !connected -> "等待对方接受对话请求…"
+                    presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
+                    presence == com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
+                    presence == com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> "对方断线重连中…"
+                    else -> "对方离线 · 消息将排队待对方上线"
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).background(statusColor, androidx.compose.foundation.shape.CircleShape))
+                    Text(
+                        statusText,
+                        color = statusColor,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
             }
         }
     }
@@ -206,6 +223,15 @@ private fun ConversationHeader(
 @Composable
 private fun MessageBubble(message: ChatMessage, onOpenFile: (ChatMessage) -> Unit) {
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = if (message.sentByMe) Alignment.End else Alignment.Start) {
+        // v1.1.50 群聊：非本机消息显示发送者昵称（点对点 senderName 为 null 不显示）
+        if (!message.sentByMe && message.senderName != null) {
+            Text(
+                text = message.senderName,
+                style = MaterialTheme.typography.bodySmall,
+                color = Cyan,
+                modifier = Modifier.padding(start = 6.dp, bottom = 4.dp),
+            )
+        }
         Box(
             modifier = Modifier
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))

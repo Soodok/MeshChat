@@ -63,6 +63,9 @@ fun MeshChatHome(
     conversations: List<ChatPreview>,
     peers: List<MeshPeer>,
     sessions: Set<String>,
+    /** v1.1.50 群列表（已订阅群）。 */
+    groups: List<com.meshchat.app.mesh.service.GroupInfo>,
+    onCreateGroup: (String) -> Unit,
     pendingInvites: Set<String>,
     invites: Map<String, Long>,
     localShortId: String,
@@ -181,8 +184,11 @@ fun MeshChatHome(
 
     if (conversationTarget != null) {
         val target = conversationTarget!!
+        // v1.1.50：群会话（groupId 在已订阅群中）——标题用群名，状态行/附件按钮按群语义
+        val isGroupConv = groups.any { it.id == target }
         val title = when {
             target == "ME" -> "我"
+            isGroupConv -> groups.firstOrNull { it.id == target }?.name ?: target
             else -> peers.firstOrNull { it.shortId == target }?.name ?: target
         }
         val connected = target == "ME" || target in sessions
@@ -197,8 +203,9 @@ fun MeshChatHome(
             relayVia = relayVia,
             onBack = { onOpenConversation(null) },
             onSendMessage = onSendMessage,
-            onPickFile = { filePicker.launch(arrayOf("*/*")) },
+            onPickFile = if (isGroupConv) null else ({ filePicker.launch(arrayOf("*/*")) }),
             onOpenFile = onOpenFile,
+            isGroup = isGroupConv,
         )
         return
     }
@@ -309,9 +316,13 @@ fun MeshChatHome(
                 MainDestination.CHATS -> ChatsScreen(
                     modifier = Modifier.padding(contentPadding),
                     conversations = conversations,
-                    onChatSelected = { onOpenConversation(it) }, // 进入所选会话（id = 对端短 ID），而非硬编码“我”
+                    onChatSelected = { onOpenConversation(it) }, // 进入所选会话（id = 对端短 ID），而非硬编码"我"
                     onToggleArchived = onToggleConversationArchived,
                     onDeleteConversation = onDeleteConversation,
+                    // v1.1.50：群组分区 + 创建群 + 进入群会话
+                    groups = groups,
+                    onGroupSelected = onOpenConversation,
+                    onCreateGroup = onCreateGroup,
                 )
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),

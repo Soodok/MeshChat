@@ -34,6 +34,10 @@ interface MeshRepository {
     val discoveryEnabled: kotlinx.coroutines.flow.StateFlow<Boolean>
     fun suspendDiscovery()
     fun resumeDiscovery()
+    /** v1.1.50 群消息：已订阅群列表 / 创建群（返回群 ID）/ 发送群消息。 */
+    fun observeGroups(): Flow<List<com.meshchat.app.mesh.service.GroupInfo>>
+    fun createGroup(groupName: String): String
+    fun sendGroupMessage(groupId: String, text: String)
 }
 
 class MeshRepositoryImpl(
@@ -46,7 +50,10 @@ class MeshRepositoryImpl(
             // 会话集合 + 消息历史反推的对话兜底：即使会话关系持久化丢失/重装，最近对话列表也不空（持久化效果）
             val latestByConversation = messages.groupBy { it.convId }
                 .mapValues { (_, entries) -> entries.maxByOrNull { it.ts }!! }
-            val ids = (sessionIds + latestByConversation.keys.map { it.substringAfterLast("-") })
+            // v1.1.50：群会话（group-<id>）从点对点列表排除（群会话在"群组"分区展示）
+            val ids = (sessionIds + latestByConversation.keys
+                .filter { !it.startsWith("group-") }
+                .map { it.substringAfterLast("-") })
                 .distinct()
                 .filter { it.isNotBlank() && it != "ME" }
             ids.map { id ->
@@ -110,6 +117,12 @@ class MeshRepositoryImpl(
 
     override fun rejectInvite(peerId: String) = service.rejectInvite(peerId)
 
+    override fun observeGroups(): Flow<List<com.meshchat.app.mesh.service.GroupInfo>> = service.groups
+
+    override fun createGroup(groupName: String): String = service.createGroup(groupName)
+
+    override fun sendGroupMessage(groupId: String, text: String) = service.sendGroupMessage(groupId, text)
+
     override fun deleteConversation(peerId: String) {
         store.deleteConversation("conv-$peerId")
         service.removeSession(peerId)
@@ -140,10 +153,12 @@ class MeshRepositoryImpl(
         val sentByMe = srcId == service.shortId
         // v1.1.0：发往 2 跳目标（经中继可达）的消息，送达文案追加"经中继"标注路径
         val viaRelay = sentByMe && service.relayViaFor(dstId) != null
+        val isGroup = kind == "GROUP"
+        // v1.1.50 群消息状态诚实标注：FAILED 群消息渲染"可能未送达"（回执只能证明至少一个成员收到，非全员）
         val delivery = when (status) {
             MessageStatus.SENDING -> "正在通过 Mesh 发送"
             MessageStatus.DELIVERED -> "已通过 Mesh 送达"
-            MessageStatus.FAILED -> "未送达"
+            MessageStatus.FAILED -> if (isGroup) "可能未送达" else "未送达"
         } + if (viaRelay) " · 经中继" else ""
         val file = if (kind == "FILE") {
             val meta = runCatching {
@@ -157,6 +172,10 @@ class MeshRepositoryImpl(
                 uri = meta["downloadsUri"]?.takeIf { it.isNotBlank() },
             )
         } else null
+        // v1.1.50 群聊气泡昵称：非本机群消息解析发送者昵称（markSeen 已学习，回退短 ID）
+        val senderName = if (isGroup && !sentByMe) {
+            service.peers.value.firstOrNull { it.shortId == srcId }?.displayName?.ifBlank { srcId } ?: srcId
+        } else null
         return ChatMessage(
             id = id,
             text = text ?: "",
@@ -164,6 +183,7 @@ class MeshRepositoryImpl(
             time = time,
             delivery = delivery,
             file = file,
+            senderName = senderName,
         )
     }
 }

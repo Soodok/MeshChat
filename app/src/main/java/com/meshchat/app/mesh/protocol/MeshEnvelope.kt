@@ -63,9 +63,12 @@ data class PresenceBody(
 @Serializable
 @SerialName("GROUP")
 data class GroupBody(
-    val op: String,           // JOIN | LEAVE | MSG
-    val groupName: String? = null,
+    val op: String,                 // "MSG"（消息）/ "JOIN"（创建传播群名，MVP）；"LEAVE" 预留
+    val groupId: String,            // 群唯一 ID（8 字符，创建者生成）
+    val msgId: String = "",         // 逻辑消息 ID（= 首次发送的 envelope.id；重发新 envelope 时不变，回执按此匹配）
+    val groupName: String? = null,  // 群名（创建时携带，随消息传播学习）
     val text: String? = null,
+    val displayName: String = "",   // 发送者昵称（群聊区分谁说的，同 TextBody）
 ) : EnvelopeBody
 
 @Serializable

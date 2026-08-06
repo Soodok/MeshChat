@@ -9,11 +9,13 @@ import com.meshchat.app.mesh.debug.FrameKind
 import com.meshchat.app.mesh.debug.PeerDebugInfo
 import com.meshchat.app.mesh.debug.RouteDecision
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.identity.ShortIdGen
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileBodyV2
 import com.meshchat.app.mesh.protocol.FrameType
+import com.meshchat.app.mesh.protocol.GroupBody
 import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
@@ -46,8 +48,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -63,6 +69,16 @@ private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送
 private const val MAX_RESEND_INTERVAL_MS = 30_000L // 重发退避封顶：3s→6s→12s→24s→30s，永不 FAILED（零容错，持续确认）
 private const val RECEIPT_REPEAT_INTERVAL_MS = 3_000L    // 接收方重复回执周期（近期消息周期性补发）
 private const val RECEIPT_REPEAT_WINDOW_MS = 180_000L    // 重复回执窗口：收到消息后 3min 内周期性补发（覆盖长时间后台空窗）
+
+// ===== v1.1.50 群消息 MVP =====
+private const val GROUP_RESEND_INTERVAL_MS = 5_000L      // 群消息重发间隔：固定 5s（新 id 重发 = 新泛洪，仿真铁证）
+private const val GROUP_MAX_RESENDS = 3                  // 群消息重发上限：≤3 次（不依赖确认——确认来自近端 <300ms，依赖它会杀掉重发）
+private const val GROUP_CONFIRM_TIMEOUT_MS = 30_000L     // 群消息总超时：30s 无任一成员确认 → "可能未送达"（诚实标注）
+private const val GROUP_RECEIPT_CHANCE = 0.3             // 群回执节流概率：30%（仿真：带宽 +50-100% 换发送方真实感知）
+private const val GROUP_RECEIPT_DELAY_MAX_MS = 500L      // 群回执随机延迟上界：0-500ms（错峰防风暴）
+private const val GROUP_DUP_WINDOW_MS = 10_000L          // 内容指纹时间窗：10s（> 5s 重发间隔 + 泛洪延迟 1-2s；5s 窗会漏判）
+private const val GROUP_DUP_MAX_PER_KEY = 3              // 同指纹窗口内时间戳队列上限（防异常增长）
+private const val GROUP_RECEIPT_ID_PREFIX = "G$"         // 群回执 id 前缀：与点对点（envelope.id 键）命名空间隔离
 
 // ===== 缓存维护（移植队友 v1.0.11）：长期运行清理过期投递记录与长期未见节点 =====
 private const val CACHE_MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1_000L  // 缓存维护周期：每 6h 一次（tick 节流）
@@ -97,6 +113,9 @@ interface RfcommChannel {
     fun sendTo(peerId: String, frame: MeshFrame)
 }
 
+/** 群列表条目（v1.1.50）：id + 显示名（缺省"群-<id>"，随消息/创建帧学习群名后更新）。 */
+data class GroupInfo(val id: String, val name: String)
+
 class MeshService(
     private val transport: MeshTransport,
     private val store: MeshStore,
@@ -113,8 +132,13 @@ class MeshService(
         override fun load(): Set<String> = emptySet()
         override fun save(sessions: Set<String>) {}
     },
-    /** 收到新消息回调（fromId/fromName/text）：MeshChatService 注入用于弹通知。 */
-    private val onIncomingMessage: (fromId: String, fromName: String, text: String) -> Unit = { _, _, _ -> },
+    /** 群组订阅/群名持久化（v1.1.50；默认 Noop，生产注入 SharedPrefsGroupStore）。 */
+    private val groupStore: GroupStore = NoopGroupStore,
+    /** 群回执节流参数（v1.1.50；测试注入确定性，生产默认 30% + 0-500ms）。 */
+    private val groupReceiptChance: Double = GROUP_RECEIPT_CHANCE,
+    private val groupReceiptDelayMaxMs: Long = GROUP_RECEIPT_DELAY_MAX_MS,
+    /** 收到新消息回调（fromId/fromName/text/convId）：MeshChatService 注入用于弹通知。convId = 群会话键或 conv-<fromId>。 */
+    private val onIncomingMessage: (fromId: String, fromName: String, text: String, convId: String) -> Unit = { _, _, _, _ -> },
     /** 文件接收完成回调（fileName）：通知「文件已保存」。 */
     private val onFileSaved: (fileName: String) -> Unit = {},
     /** 调试统计内核（默认独立实例，生产由 Application 注入共享单例）。 */
@@ -263,6 +287,33 @@ class MeshService(
     /** 已接受邀请、正在向对端持续重发确认的节点：peerId -> 重发开始时间戳。 */
     private val _ackRetries = MutableStateFlow<Map<String, Long>>(emptyMap())
 
+    // ===== v1.1.50 群消息 MVP =====
+    /** 已订阅群 ID 集合（本地订阅 = 加入群，持久化）。 */
+    private val _joinedGroups = MutableStateFlow<Set<String>>(emptySet())
+    val joinedGroups: StateFlow<Set<String>> = _joinedGroups.asStateFlow()
+    /** 群名：groupId -> name（随消息/创建帧学习，持久化）。用 StateFlow 承载——groups 合成流才能响应群名更新。 */
+    private val _groupNames = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val groupNames: Map<String, String> get() = _groupNames.value
+    /** 群列表（合成流）：joinedGroups × groupNames。 */
+    val groups: StateFlow<List<GroupInfo>> = combine(_joinedGroups, _groupNames) { ids, names ->
+        ids.sorted().map { GroupInfo(it, names[it] ?: "群-$it") }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** 待确认群消息：逻辑 msgId -> 状态。重发用**新 envelope id**（同 id 被节点级去重挡住，仿真铁证无效）。 */
+    private class PendingGroupMsg(
+        val groupId: String,
+        val text: String,
+        val msgId: String,
+        val groupName: String?,
+        val firstSentAt: Long,
+        var lastSentAt: Long,
+        var retries: Int = 0,
+    )
+    /** 群回执队列：键 "G$msgId"（"G$" 前缀与点对点 pendingReceipts 的 envelope.id 键命名空间隔离）。 */
+    private val pendingGroupReceipts = LinkedHashMap<String, PendingGroupMsg>()
+    /** 群消息内容指纹去重表（新 id 重发副作用）：fingerprint -> 最近时间戳队列（10s 窗口，≤3 条）。 */
+    private val groupMsgFingerprints = ConcurrentHashMap<String, ArrayDeque<Long>>()
+
     fun start() {
         if (started) return // 幂等：防止「开始附近发现」被重复点击导致重复启动
         started = true
@@ -270,6 +321,8 @@ class MeshService(
         _sessions.value = sessionStore.load()   // 重启恢复已建立的会话关系
         restoreKnownPeers()                     // 重启恢复已知节点（寻找中状态，心跳/扫描补在线）
         restorePendingReceipts()                // 重启恢复未确认消息（进程被杀后重发不丢失）
+        _joinedGroups.value = groupStore.loadJoined()   // v1.1.50：重启恢复已订阅群
+        _groupNames.value = groupStore.loadNames()      // v1.1.50：重启恢复已学群名
         transport.start()
         rfcomm?.start()
         receiveJob = scope.launch {
@@ -314,6 +367,8 @@ class MeshService(
                 val now = System.currentTimeMillis()
                 heartbeatTick(now)
                 resendPendingReceipts(now)
+                // v1.1.50：待确认群消息重发（固定 5s 新 id 重发 ≤3 次 + 30s 超时"可能未送达" + 指纹表清理）
+                resendPendingGroupReceipts(now)
                 // 缓存维护：启动 force + 每 6h 节流（清过期 outbox/30 天未见节点）
                 prunePersistentCaches(now)
                 // 中继转发 outbox 重发（每 1s 节流，≤3 次）：转发丢帧兜底，尽力而为
@@ -438,6 +493,158 @@ class MeshService(
         // 登记待确认：回执（RECEIPT）是广播帧可能丢失，由 resendPendingReceipts 超时重发收敛
         pendingReceipts[envelope.id] = PendingText(envelope, System.currentTimeMillis(), ackKey = ackKeyFor(envelope.id))
         route(envelope)
+    }
+
+    // ===== v1.1.50 群消息 =====
+    /** 发送群消息：msgId = 逻辑消息 ID（= 首帧 envelope.id）；重发新 envelope 时不变，回执按 "G$msgId" 匹配。 */
+    fun sendGroupMessage(groupId: String, text: String) {
+        sendGroupMessageWithId(groupId, text, UUID.randomUUID().toString())
+    }
+
+    /**
+     * 发送群消息（带显式 msgId，测试/恢复用）：本地落库 SENDING（id=msgId）、登记群回执队列、
+     * 首帧广播走 route 泛洪。重发由 resendPendingGroupReceipts 驱动——**必须新 envelope id**
+     * （同 id 重发被节点级 DedupCache 挡住完全无效，仿真 §3.9.1 铁证），msgId 保持不变。
+     */
+    fun sendGroupMessageWithId(groupId: String, text: String, msgId: String) {
+        val now = System.currentTimeMillis()
+        val groupName = groupNames[groupId]
+        val envelope = MeshEnvelope(
+            id = msgId, kind = "GROUP",
+            srcId = identity.shortId, dstId = groupId, convId = "group-$groupId",
+            ttl = DEFAULT_TTL, ts = now,
+            body = GroupBody(
+                op = "MSG", groupId = groupId, msgId = msgId,
+                groupName = groupName, text = text, displayName = identity.displayName,
+            ),
+        )
+        store.insertMessage(
+            StoredMessage(
+                id = msgId, convId = "group-$groupId", kind = "GROUP",
+                srcId = identity.shortId, dstId = groupId, text = text, ts = now,
+                status = MessageStatus.SENDING,
+            ),
+        )
+        pendingGroupReceipts["$GROUP_RECEIPT_ID_PREFIX$msgId"] =
+            PendingGroupMsg(groupId, text, msgId, groupName, firstSentAt = now, lastSentAt = now)
+        route(envelope)   // 本机发起广播（不抖动），邻居泛洪转发
+    }
+
+    /** 创建群：生成 8 字符群 ID + 本地订阅 + 广播群创建帧（op=JOIN，带群名）传播群名。 */
+    fun createGroup(groupName: String): String {
+        val groupId = ShortIdGen.generate(8)
+        joinGroup(groupId, groupName)
+        // 群名也随每条消息传播（sendGroupMessage 带 groupName），JOIN 帧仅用于"创建后尚未发消息"时让邻居早学群名
+        val env = MeshEnvelope(
+            id = UUID.randomUUID().toString(), kind = "GROUP",
+            srcId = identity.shortId, dstId = groupId, convId = "group-$groupId",
+            ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
+            body = GroupBody(op = "JOIN", groupId = groupId, groupName = groupName),
+        )
+        route(env)
+        return groupId
+    }
+
+    /** 加入群 = 本地订阅 groupId（持久化）；群名非空时一并学习。 */
+    fun joinGroup(groupId: String, groupName: String? = null) {
+        if (groupId in _joinedGroups.value) return
+        _joinedGroups.update { it + groupId }
+        groupStore.saveJoined(_joinedGroups.value)
+        if (!groupName.isNullOrBlank()) learnGroupName(groupId, groupName)
+    }
+
+    /** 群名学习（后到覆盖，持久化；groups 合成流随 _groupNames 更新自动刷新）。 */
+    private fun learnGroupName(groupId: String, groupName: String?) {
+        if (groupName.isNullOrBlank()) return
+        if (_groupNames.value[groupId] == groupName) return
+        _groupNames.value = _groupNames.value + (groupId to groupName)
+        groupStore.saveNames(_groupNames.value)
+    }
+
+    /**
+     * 内容指纹去重（v1.1.50）：fingerprint = (groupId|srcId|text) + 10s 时间窗。
+     * 时间基准用 envelope.ts 差值比较（抵消跨设备时钟不同步）；每次到达都记录时间戳（窗口随到达滑动）。
+     * 新 id 重发/环路重复帧在窗口内 → 重复（不落库、不回执）。**仅已订阅节点落库/回执前调用，
+     * 中继节点绝不用此表拦帧**——转发只看 DedupCache（envelope.id 防环），两层去重各司其职。
+     */
+    internal fun isGroupDup(envelope: MeshEnvelope, body: GroupBody): Boolean {
+        val text = body.text ?: return false
+        val fingerprint = "${body.groupId}|${envelope.srcId}|$text"
+        val now = envelope.ts
+        val q = groupMsgFingerprints.computeIfAbsent(fingerprint) { ArrayDeque() }
+        synchronized(q) {
+            while (q.isNotEmpty() && now - q.firstOrNull()!! > GROUP_DUP_WINDOW_MS) q.removeFirst()
+            val isDup = q.isNotEmpty()
+            q.addLast(now)
+            if (q.size > GROUP_DUP_MAX_PER_KEY) q.removeFirst()
+            return isDup
+        }
+    }
+
+    /**
+     * 群回执（节流，v1.1.50）：成员收到群消息后 30% 概率 + 0-500ms 随机延迟 → RECEIPT 泛洪回传。
+     * 回执 id = "G$msgId"（与点对点命名空间隔离）；发送方收任一有效回执 → DELIVERED（"已送达"=至少一个成员）。
+     * 重发的新 id 帧不回执：同 msgId 的回执去重键（receipt-G$msgId）在调度时即标记，后续同逻辑消息帧直接跳过。
+     */
+    private fun maybeSendGroupReceipt(envelope: MeshEnvelope, body: GroupBody) {
+        val msgId = body.msgId
+        if (msgId.isBlank()) return
+        if (Random.nextDouble() >= groupReceiptChance) return   // 30% 节流（仿真：带宽 +50-100% 换真实感知）
+        val receiptId = "$GROUP_RECEIPT_ID_PREFIX$msgId"
+        // 本成员已为这个逻辑消息发过回执 → 不再发（新 id 重发帧走这里，同 msgId 只回执一次）
+        if (dedup.contains("receipt-$receiptId")) return
+        dedup.mark("receipt-$receiptId")
+        val delayMs = if (groupReceiptDelayMaxMs <= 0) 0L else Random.nextLong(0L, groupReceiptDelayMaxMs + 1L)
+        scope.launch {
+            delay(delayMs)
+            val receipt = "{\"id\":\"$receiptId\",\"srcId\":\"${identity.shortId}\",\"dstId\":\"${envelope.srcId}\"}"
+            debugStats.recordSent(FrameKind.RECEIPT, receipt.toByteArray().size)
+            transport.broadcast(MeshFrame(FrameType.RECEIPT, receipt.toByteArray()))
+        }
+    }
+
+    /**
+     * 待确认群消息重发（tick 每 200ms 调用）：固定 5s 重发一次、**新 envelope id**（新泛洪）、≤3 次、
+     * 不依赖确认（确认来自近端 <300ms，依赖它会杀掉重发）；30s 总超时 → "可能未送达"（FAILED 渲染琥珀）
+     * 并移出队列。顺带清理内容指纹表的空键（窗口滑过后删除，防长期运行内存增长）。
+     */
+    internal fun resendPendingGroupReceipts(now: Long) {
+        val fit = groupMsgFingerprints.entries.iterator()
+        while (fit.hasNext()) {
+            val (_, q) = fit.next()
+            synchronized(q) {
+                while (q.isNotEmpty() && now - q.firstOrNull()!! > GROUP_DUP_WINDOW_MS) q.removeFirst()
+                if (q.isEmpty()) fit.remove()
+            }
+        }
+        val it = pendingGroupReceipts.entries.iterator()
+        while (it.hasNext()) {
+            val (key, p) = it.next()
+            if (now - p.lastSentAt < GROUP_RESEND_INTERVAL_MS) continue
+            // 30s 总超时 → "可能未送达"（诚实标注：回执只能证明至少一个成员收到），停止重发
+            if (now - p.firstSentAt >= GROUP_CONFIRM_TIMEOUT_MS) {
+                store.updateMessageStatus(p.msgId, MessageStatus.FAILED)
+                it.remove()
+                continue
+            }
+            // 已重发满 ≤3 次：停止重发，等 30s 总超时收尾（避免无限广播空耗带宽）
+            if (p.retries >= GROUP_MAX_RESENDS) continue
+            p.retries++
+            p.lastSentAt = now
+            Log.w(TAG, "resend group msg=${p.msgId} retry=${p.retries} (new envelope id)")
+            debugStats.recordResend(p.msgId)
+            val envelope = MeshEnvelope(
+                id = UUID.randomUUID().toString(),   // 新 id = 新泛洪（同 id 被节点级去重挡住，仿真铁证无效）
+                kind = "GROUP",
+                srcId = identity.shortId, dstId = p.groupId, convId = "group-${p.groupId}",
+                ttl = DEFAULT_TTL, ts = now,
+                body = GroupBody(
+                    op = "MSG", groupId = p.groupId, msgId = p.msgId,
+                    groupName = p.groupName, text = p.text, displayName = identity.displayName,
+                ),
+            )
+            broadcastData(envelope)
+        }
     }
 
     /** 发送文件：fileId 即消息 id（落库占位）；返回 null 表示传输中（串行约束）或目标为空。 */
@@ -944,7 +1151,8 @@ class MeshService(
                 // （泛洪终点，停止重发，避免无谓的多一跳广播）。
                 val id = Regex("\"id\":\"([^\"]+)\"").find(frame.payloadText)?.groupValues?.get(1)
                 if (id != null) {
-                    if (pendingReceipts.containsKey(id)) {
+                    // v1.1.50：群回执（id="G$msgId"）也在此收敛——发送方命中任一队列即本地确认，不再转发
+                    if (pendingReceipts.containsKey(id) || pendingGroupReceipts.containsKey(id)) {
                         handleReceipt(frame)
                     } else {
                         val key = "receipt-$id"
@@ -1148,6 +1356,28 @@ class MeshService(
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
                 transfer.onFileAck(envelope)
             }
+            "GROUP" -> {
+                // ===== v1.1.50 群消息（广播域模型）=====
+                // dstId=groupId≠本机，不走 ForwardingDecision（会判 Forward 只转发不落库）——
+                // 显式双动作：已订阅 → 落库+回执；然后无条件转发（订阅者即中继，泛洪延伸所有成员）。
+                val body = envelope.body as? GroupBody ?: return
+                if (body.op == "JOIN") {
+                    // 群创建帧（MVP 仅传播群名）：学习群名，不落库不回执
+                    learnGroupName(body.groupId, body.groupName)
+                } else if (body.groupId in _joinedGroups.value) {
+                    if (!isGroupDup(envelope, body)) {   // 内容指纹去重：新 id 重发/环路重复不重复落库
+                        learnGroupName(body.groupId, body.groupName)
+                        markSeen(envelope.srcId, body.displayName)   // 昵称学习（同 TEXT，供气泡/通知显示）
+                        store.insertMessage(envelope.toStoredMessage())
+                        maybeSendGroupReceipt(envelope, body)
+                        // 群通知（与点对点一致；convId=group-<groupId> 点击直达群会话）
+                        val fromName = peerEntries[envelope.srcId]?.info?.displayName?.ifBlank { envelope.srcId } ?: envelope.srcId
+                        onIncomingMessage(envelope.srcId, fromName, body.text ?: "", envelope.convId)
+                    }
+                }
+                // 无条件转发（已订阅也转发；DedupCache 防环 + TTL 递减 + 抖动错峰）
+                if (envelope.ttl - 1 > 0) route(envelope, jitter = true)
+            }
             else -> {
                 // 投递以目标寻址为准：发往本机的消息直接投递，不依赖会话白名单
                 //（会话是内存态，重启即空；若按 srcId in sessions 拦截，会话丢失后消息被误丢）
@@ -1186,7 +1416,7 @@ class MeshService(
                 // 收到消息回调（通知用）：仅对端发来的 TEXT 触发
                 if (envelope.kind == "TEXT" && envelope.srcId != identity.shortId) {
                     val fromName = peerEntries[envelope.srcId]?.info?.displayName?.ifBlank { envelope.srcId } ?: envelope.srcId
-                    onIncomingMessage(envelope.srcId, fromName, (envelope.body as? TextBody)?.text ?: "")
+                    onIncomingMessage(envelope.srcId, fromName, (envelope.body as? TextBody)?.text ?: "", "conv-${envelope.srcId}")
                 }
             }
             is ForwardDecision.Forward -> {
@@ -1237,17 +1467,27 @@ class MeshService(
     private fun handleReceipt(frame: MeshFrame) {
         val text = frame.payloadText
         val id = Regex("\"id\":\"([^\"]+)\"").find(text)?.groupValues?.get(1) ?: return
-        store.updateMessageStatus(id, MessageStatus.DELIVERED)
-        pendingReceipts.remove(id)
-        debugStats.recordConfirmed(id)
+        if (id.startsWith(GROUP_RECEIPT_ID_PREFIX)) {
+            // v1.1.50 群回执：id="G$msgId" → 路由到独立群队列；"已送达" = 至少一个成员确认（非全员，诚实标注）
+            if (pendingGroupReceipts.remove(id) != null) {
+                store.updateMessageStatus(id.removePrefix(GROUP_RECEIPT_ID_PREFIX), MessageStatus.DELIVERED)
+                debugStats.recordConfirmed(id)
+            }
+        } else {
+            store.updateMessageStatus(id, MessageStatus.DELIVERED)
+            pendingReceipts.remove(id)
+            debugStats.recordConfirmed(id)
+        }
     }
 
     private fun MeshEnvelope.toStoredMessage(): StoredMessage {
-        val text = (body as? TextBody)?.text
-        // 会话键以「发送者短 ID」为统一命名基准（conv-<srcId>）：
-        // 发送方用对端 ID 命名、接收方用发送者 ID 命名会导致收发双方读写不同会话键，消息存了却查不到。
+        val text = (body as? TextBody)?.text ?: (body as? GroupBody)?.text
+        // 会话键：TEXT 以「发送者短 ID」为统一命名基准（conv-<srcId>）——发送方用对端 ID 命名、
+        // 接收方用发送者 ID 命名会导致收发双方读写不同会话键，消息存了却查不到。
+        // GROUP 用信封自带 convId（group-<groupId>）——群会话键与点对点命名空间隔离。
+        val convId = if (body is GroupBody) convId else "conv-$srcId"
         return StoredMessage(
-            id = id, convId = "conv-$srcId", kind = kind, srcId = srcId, dstId = dstId,
+            id = id, convId = convId, kind = kind, srcId = srcId, dstId = dstId,
             text = text, ts = ts, status = MessageStatus.DELIVERED,
         )
     }
