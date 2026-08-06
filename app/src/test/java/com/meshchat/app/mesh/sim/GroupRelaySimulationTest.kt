@@ -28,12 +28,28 @@ class GroupRelaySimulationTest {
 
     private enum class AckMode { NONE, ALL, RANDOM }
 
+    /** 丢包剖面：CONSTANT = 全程恒定丢包；TRANSIENT = 前 8s 高丢包后恢复（遮挡/移动场景，重发价值最大）。 */
+    private enum class DropProfile { CONSTANT, TRANSIENT }
+
     private data class Config(
         val nodes: Int,      // 节点数（链长 = nodes-1）
         val members: Int,    // 群成员数（含发送方 A1，取链头 members 个）
         val dropP: Double,   // 每跳广播丢包率
         val ackMode: AckMode,
-    )
+        /** 发送方重发次数（v1.1.50 修订：未确认群消息每 5s 重发同 msgId）。 */
+        val resends: Int = 0,
+        /** true = 确认即停（收到任一回执停止重发）；false = 固定重发 N 次。 */
+        val stopOnConfirm: Boolean = false,
+        /** true = 重发用**新 msgId**（新 envelope id = 新泛洪，能推进到未收节点，代价已收节点重复接收）；false = 同 msgId（仿真已证伪：节点级去重挡住，重发完全无效）。 */
+        val newIdOnResend: Boolean = false,
+        val dropProfile: DropProfile = DropProfile.CONSTANT,
+    ) {
+        /** 时刻 t 的丢包率（瞬时剖面：前 8s 高丢包，之后 5% 正常）。 */
+        fun dropAt(t: Long): Double = when (dropProfile) {
+            DropProfile.CONSTANT -> dropP
+            DropProfile.TRANSIENT -> if (t < 8_000L) dropP else 0.05
+        }
+    }
 
     private data class Result(
         val lastArrivalMs: Double,  // 消息到达全部成员的最晚时刻
@@ -41,9 +57,10 @@ class GroupRelaySimulationTest {
         val msgFrames: Int,         // 消息帧（送达边数，即实际广播次数）
         val ackFrames: Int,         // 回执帧（送达边数）
         val allMembersReached: Boolean,  // 本次运行消息是否到达全部成员（NONE 风险核心指标）
+        val dupReceives: Int,       // 新 id 重发造成的成员重复接收次数（重复成本）
     )
 
-    // 事件：时刻 / 所在节点 / 帧种类 / msgId / 帧 srcId / 帧 dstId / ttl
+    // 事件：时刻 / 所在节点 / 帧种类 / msgId / 帧 srcId / 帧 dstId / ttl / 是否发送方重发
     private class Evt(
         val time: Long,
         val node: Int,
@@ -52,6 +69,7 @@ class GroupRelaySimulationTest {
         val srcId: Int,
         val dstId: Int,
         val ttl: Int,
+        val isResend: Boolean = false,
     ) : Comparable<Evt> {
         override fun compareTo(other: Evt): Int = time.compareTo(other.time)
     }
@@ -68,12 +86,18 @@ class GroupRelaySimulationTest {
         var senderConfirmedAt = -1L
         var msgFrames = 0
         var ackFrames = 0
+        var dupReceives = 0
 
         val queue = PriorityQueue<Evt>()
         val sender = 0
         val members = (0 until cfg.members).toSet()
         // t=0 发送方广播群消息（msgId=1）
         queue.add(Evt(0, sender, false, 1, sender, -1, 8))
+        // 预生成重发事件（5s 间隔；同 msgId 或新 msgId（每次 +1）由 newIdOnResend 决定）
+        for (i in 1..cfg.resends) {
+            val mid = if (cfg.newIdOnResend) 1 + i else 1
+            queue.add(Evt(5_000L * i, sender, false, mid, sender, -1, 8, isResend = true))
+        }
 
         while (queue.isNotEmpty()) {
             val e = queue.poll()
@@ -88,7 +112,7 @@ class GroupRelaySimulationTest {
                 if (e.ttl - 1 > 0) {
                     val jitter = 50 + rng.nextInt(200)
                     for (nb in neighbors[e.node]) {
-                        if (rng.nextDouble() < cfg.dropP) continue
+                        if (rng.nextDouble() < cfg.dropAt(e.time)) continue
                         ackFrames++
                         queue.add(Evt(e.time + 100 + jitter, nb, true, e.msgId, e.srcId, e.dstId, e.ttl - 1))
                     }
@@ -96,20 +120,24 @@ class GroupRelaySimulationTest {
                 continue
             }
             // 消息帧
+            if (e.isResend && e.node == sender && cfg.stopOnConfirm && senderConfirmedAt >= 0) continue // 确认即停策略：已确认不再重发
             if (!msgSeen[e.node].add(e.msgId)) continue
             if (e.node in members && e.node != sender && !receivedMsgAt.containsKey(e.node)) {
                 receivedMsgAt[e.node] = e.time
-                // 成员回执策略（发送方不回执给自己）
+                // 成员回执策略（发送方不回执给自己；已收成员对新 id 重发不再回执——真实实现同）
                 when (cfg.ackMode) {
                     AckMode.NONE -> Unit
                     AckMode.ALL -> scheduleAck(queue, rng, e, 0, always = true)
                     AckMode.RANDOM -> scheduleAck(queue, rng, e, 500, always = false)
                 }
+            } else if (e.node in members && e.node != sender && e.msgId > 1) {
+                // 新 id 重发到达已收成员：重复接收（UI 层需内容去重，此处统计成本）
+                dupReceives++
             }
             if (e.ttl - 1 > 0) {
                 val jitter = 50 + rng.nextInt(200)
                 for (nb in neighbors[e.node]) {
-                    if (rng.nextDouble() < cfg.dropP) continue
+                    if (rng.nextDouble() < cfg.dropAt(e.time)) continue
                     msgFrames++
                     queue.add(Evt(e.time + 100 + jitter, nb, false, e.msgId, e.srcId, e.dstId, e.ttl - 1))
                 }
@@ -118,7 +146,7 @@ class GroupRelaySimulationTest {
 
         val lastArrival = receivedMsgAt.values.maxOrNull()?.toDouble() ?: -1.0
         val allReached = (members - sender).all { receivedMsgAt.containsKey(it) }
-        return Result(lastArrival, senderConfirmedAt.toDouble(), msgFrames, ackFrames, allReached)
+        return Result(lastArrival, senderConfirmedAt.toDouble(), msgFrames, ackFrames, allReached, dupReceives)
     }
 
     private fun scheduleAck(
@@ -176,5 +204,56 @@ class GroupRelaySimulationTest {
             }
             println("-".repeat(120))
         }
+    }
+
+    /**
+     * v1.1.50 修订方案验证：**重发机制生效时的表现**（用户指定重点）。
+     * 对比两种重发策略：
+     *  - 固定重发（stopOnConfirm=false）：重发 N 次与确认解耦——群消息目的=全员到达，确认只代表近端成员；
+     *  - 确认即停（stopOnConfirm=true）：收到任一确认停止重发（原草案，仿真预期其因近端确认太快而失效）。
+     * 测量：全员到达率提升、确认延迟、消息/回执帧（带宽）。
+     */
+    @Test
+    fun `print resend mechanism effect under extreme network`() {
+        val runs = 60
+        // (label, Config)——三种重发姿势对照：无重发 / 同 id 重发（节点级去重挡住→预期无效）/ 新 id 重发（新泛洪能推进）
+        val scenarios = listOf(
+            // 场景 1：持续 40% 极端丢包，8 节点链
+            "8节点/成员8/持续40% 无重发" to Config(8, 8, 0.40, AckMode.RANDOM, resends = 0),
+            "8节点/成员8/持续40% 同id重发3次" to Config(8, 8, 0.40, AckMode.RANDOM, resends = 3),
+            "8节点/成员8/持续40% 新id重发3次" to Config(8, 8, 0.40, AckMode.RANDOM, resends = 3, newIdOnResend = true),
+            // 场景 2：瞬时丢包（前 8s 60%，之后恢复 5%）——遮挡/移动场景，重发价值最大
+            "8节点/成员8/瞬时60%→5% 无重发" to Config(8, 8, 0.60, AckMode.RANDOM, resends = 0, dropProfile = DropProfile.TRANSIENT),
+            "8节点/成员8/瞬时60%→5% 同id重发3次" to Config(8, 8, 0.60, AckMode.RANDOM, resends = 3, dropProfile = DropProfile.TRANSIENT),
+            "8节点/成员8/瞬时60%→5% 新id重发3次" to Config(8, 8, 0.60, AckMode.RANDOM, resends = 3, newIdOnResend = true, dropProfile = DropProfile.TRANSIENT),
+            // 场景 3：12 节点超长链 30% 丢包
+            "12节点/成员12/持续30% 无重发" to Config(12, 12, 0.30, AckMode.RANDOM, resends = 0),
+            "12节点/成员12/持续30% 同id重发3次" to Config(12, 12, 0.30, AckMode.RANDOM, resends = 3),
+            "12节点/成员12/持续30% 新id重发3次" to Config(12, 12, 0.30, AckMode.RANDOM, resends = 3, newIdOnResend = true),
+        )
+        println()
+        println("=".repeat(130))
+        println("MeshChat 群消息【重发机制】仿真（${runs} 次蒙特卡洛；节流回执 30%+随机延迟；重发 5s 间隔）")
+        println("=".repeat(130))
+        println("%-36s %-12s %-12s %-10s %-10s %-10s".format(
+            "场景", "全员到达率", "发送方确认", "消息帧", "回执帧", "重复接收"))
+        println("-".repeat(130))
+        for ((label, cfg) in scenarios) {
+            val results = (0 until runs).map { simulate(cfg, seed = 2000 + it) }
+            val reachRate = results.count { it.allMembersReached }.toDouble() / runs * 100
+            val confirm = avg(results.map { it.confirmMs })
+            val msgF = results.map { it.msgFrames }.average()
+            val ackF = results.map { it.ackFrames }.average()
+            val dup = results.map { it.dupReceives }.average()
+            println("%-36s %-12s %-12s %-10s %-10s %-10s".format(
+                label,
+                "%.0f%%".format(reachRate),
+                if (confirm >= 0) "%.0f ms".format(confirm) else "无确认",
+                "%.1f".format(msgF),
+                "%.1f".format(ackF),
+                "%.1f".format(dup),
+            ))
+        }
+        println("-".repeat(130))
     }
 }

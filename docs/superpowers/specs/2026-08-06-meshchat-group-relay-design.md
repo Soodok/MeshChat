@@ -74,13 +74,18 @@ fun sendGroupMessage(groupId: String, text: String) {
     // 本地落库（convId="group-$groupId", SENDING——待确认，不直接 DELIVERED）
     // 登记 pendingReceipts（复用现有机制，key=envelope.id）→ 收到任一有效回执 → DELIVERED
     // 广播（走 route → 泛洪转发）
-    // tick 每 5s：pendingReceipts 中未确认群消息重发（≤3 次），重发即新泛洪机会（提升全员到达率）
+    // 重发（v1.1.50 修订 v2，仿真 §3.9 铁证）：
+    //   每 5s 重发一次，用【新 envelope id】（新 id = 新泛洪，能推进到未收节点；
+    //   同 id 重发被节点级去重挡住，完全无效——首次泛洪已标记沿途节点，重发帧推不动）
+    //   固定重发 2~3 次，【不依赖确认状态】——确认来自近端成员（<300ms），
+    //   依赖它会让重发在远端最需要时永不触发（瞬时丢包场景到达率 0%）
     // 30s 超时仍未确认 → 状态"可能未送达"（琥珀色，诚实标注——回执只能证明至少一个成员收到）
 }
 ```
 
-- 群消息与点对点消息共用 `pendingReceipts`/`resendPendingReceipts`（重发退避/次数相同）。
-- 群消息重发频率低于点对点（群消息重发会全网放大），用独立节流（5s/≤3 次）。
+- 群消息与点对点消息共用 `pendingReceipts`（确认/重发节流），但**重发必须新 id**（点对点重发同 id 依赖"重复即补回执"逻辑，群消息没有该逻辑）。
+- 重发频率低于点对点（群消息重发会全网放大）：5s/≤3 次。
+- **UI 内容级去重（重发副作用的必需配套）**：新 id 重发会让已收成员重复收到同内容（仿真 2.3-6 次/运行）→ 群会话落库按 `(groupId + 文本 + srcId + 时间窗 5s)` 指纹去重，防止重复气泡。
 
 ### 3.4 群消息接收（广播域模型，MeshService handleEnvelope 新增 "GROUP" 分支）
 
@@ -88,9 +93,9 @@ fun sendGroupMessage(groupId: String, text: String) {
 kind == "GROUP":
   body = envelope.body as? GroupBody ?: return
   if (body.groupId in joinedGroups) {
-      route(envelope)                       // 已订阅 → Deliver 落库
+      route(envelope)                       // 已订阅 → Deliver 落库（落库前内容指纹去重，见 §3.3）
       learnGroupName(body.groupId, body.groupName)  // 群名学习
-      maybeSendGroupReceipt(envelope)        // 30% 概率 + 0-500ms 随机延迟 → RECEIPT 泛洪回传（节流防风暴）
+      maybeSendGroupReceipt(envelope)        // 30% 概率 + 0-500ms 随机延迟 → RECEIPT 泛洪回传（节流防风暴；重发的新 id 帧不回执——已收成员按内容指纹识别）
   } else if (envelope.ttl - 1 > 0) {
       route(envelope, jitter = true)        // 未订阅 → 纯中继转发（与 TEXT 对称）
   }
@@ -134,7 +139,7 @@ kind == "GROUP":
 4. `group name learned from group message`：收到带 groupName 的 GROUP → groups 表更新。
 5. `group message ttl exhausted not forwarded`：TTL≤1 不扩散。
 6. `group receipt throttled and confirms sender`：成员收到群消息 → 节流回执；发送方收任一有效回执 → 状态 DELIVERED。
-7. `group message resent until confirmed or timeout`：未确认群消息 5s 重发 ≤3 次、30s 超时标"可能未送达"。
+7. `group message resent with new id until timeout`：群消息固定 5s 新 id 重发 ≤3 次（不依赖确认）、30s 超时标"可能未送达"；已收成员对新 id 重发**不回执**（内容指纹识别）。
 8. 既有 147 例全量回归。
 
 ### 3.9 极端网络仿真（决策依据，已入库可复现）
@@ -150,6 +155,23 @@ kind == "GROUP":
 | 12 节点/30% 丢包 | 0% | 立即"已送达"（假） | ~341ms | 2.04x |
 
 **结论**：① 无回执 = 虚假确认（到达率 0-48% 却显示"已送达"）→ **否决"不加回执"**；② 全回执只确认"至少一个成员收到"且带宽翻倍 → 全员确认在泛洪下不可行；③ **节流回执（30% 概率+随机延迟）是折中**：带宽 +50-100%、确认延迟 190-440ms、发送方有真实感知；④ 有限重发（5s×3）把"新泛洪机会"给丢包窗口后的成员，直接提升全员到达率；⑤ 状态诚实标注："已送达"= 至少一个成员，"可能未送达"= 超时。
+
+#### 3.9.1 重发机制仿真（修订 v2 依据，同文件第二测试方法）
+
+60 次蒙特卡洛，三种重发姿势对照：
+
+| 场景 | 无重发 | 同 id 重发×3 | 新 id 重发×3 |
+|------|--------|-------------|-------------|
+| 8 节点/持续 40% 到达率 | 5% | 5%（**无效**） | 8%（3.4x 帧换 1.6x 到达） |
+| 8 节点/瞬时 60%→5%（遮挡恢复） | 0% | 0%（**无效**） | **88%**（重发救活） |
+| 12 节点/持续 30% | 0% | 0%（无效） | 0%（超长链救不了） |
+
+**铁证**：
+- **同 id 重发完全无效**（帧数、到达率与无重发完全一致）——节点级去重（DedupCache "见过即丢弃"）在首次泛洪已标记沿途节点，同 id 重发帧到不了未收节点（必经之路全被去重挡住）。点对点重发同 id 有效是因为"重复即补回执"特殊逻辑，群消息没有。
+- **必须新 id 重发**：新 envelope id = 新泛洪，能推进到未收节点；**瞬时丢包（前 8s 60% 后恢复）到达率 0%→88%**——遮挡/移动是最常见真实场景，重发价值巨大；持续恶劣链路性价比低（帧 3.4x 换到达 1.6x）但无害；超长链（12 节点 11 跳）重发 3 次救不了（到达率指数衰减，物理限制，接受）。
+- **确认来自近端（<300ms）→ 重发必须固定执行、不依赖确认**：若"确认即停"，近端快速确认会杀掉重发，瞬时场景到达率回到 0%（仿真验证）。
+- **新 id 重发的副作用**：已收成员重复接收（2.3-6 次/运行）→ **UI 内容级去重**必需（§3.3）。
+- **确认延迟**：新 id 重发下确认 1.0-7.9s（近端首轮漏收时靠重发补），无重发 224-285ms（但那是"近端确认"不是"全员到达"）。
 
 ## 4. 阶段 B：多跳补墙（v1.1.51）
 
