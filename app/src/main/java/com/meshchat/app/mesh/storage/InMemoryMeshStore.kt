@@ -70,6 +70,9 @@ class InMemoryMeshStore : MeshStore {
     override fun loadUndeliveredTexts(): List<StoredMessage> =
         messages.filter { it.kind == "TEXT" && it.status == MessageStatus.SENDING }
 
+    override fun loadUndeliveredGroups(): List<StoredMessage> =
+        messages.filter { it.kind == "GROUP" && it.status == MessageStatus.SENDING }
+
     override fun loadKnownPeerIds(): List<String> =
         messages.map { it.convId.substringAfterLast("-") }.distinct().filter { it != "ME" }
 

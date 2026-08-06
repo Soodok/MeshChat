@@ -102,6 +102,10 @@ class RoomMeshStore(private val db: MeshDatabase) : MeshStore {
         db.messageDao().undeliveredTexts().map { it.toDomain() }
     }
 
+    override fun loadUndeliveredGroups(): List<StoredMessage> = runBlocking {
+        db.messageDao().undeliveredGroups().map { it.toDomain() }
+    }
+
     override fun loadKnownPeerIds(): List<String> = runBlocking {
         db.messageDao().knownConvIds().map { it.substringAfterLast("-") }.filter { it != "ME" }
     }

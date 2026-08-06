@@ -1422,4 +1422,39 @@ class MeshServiceTest {
         assertEquals(MessageStatus.FAILED, store.queryMessages("group-G1").first().status)
         service.stop()
     }
+
+    @Test
+    fun `undelivered group messages restored on start and resent with fresh timeout`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        // 模拟进程被杀前未确认的群消息（SENDING 落库，ts 已是 1 小时前——重启后 30s 超时必须重新计时）
+        store.insertMessage(
+            StoredMessage(
+                id = "m1", convId = "group-G1", kind = "GROUP", srcId = "ME", dstId = "G1",
+                text = "hi", status = MessageStatus.SENDING, ts = System.currentTimeMillis() - 3_600_000,
+            ),
+        )
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        // 恢复后立即可用新 id 重发（lastSentAt 置过期，不等 5s）
+        val t0 = System.currentTimeMillis()
+        service.resendPendingGroupReceipts(t0 + 100)
+        val resendEnv = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+            .lastOrNull { it.dstId == "G1" }
+        assertTrue("重启后未确认群消息应立即重发", resendEnv != null)
+        assertEquals("m1", (resendEnv!!.body as GroupBody).msgId)
+        assertEquals("重发必须新 id", false, resendEnv.id == "m1")
+        // 30s 总超时从重启时刻重新计时（旧 ts 已过 1 小时，若沿用会立即标 FAILED）。
+        // 注意 t+29s 时距上次重发已满 5s 会再触发一次重发（lastSentAt 推进），
+        // 故超时断言推到 t+34s（间隔满 5s 且 30s 总超时已过）。
+        service.resendPendingGroupReceipts(t0 + 29_000)
+        assertEquals("30s 前仍 SENDING", MessageStatus.SENDING, store.queryMessages("group-G1").first().status)
+        service.resendPendingGroupReceipts(t0 + 34_100)
+        assertEquals("30s 超时标可能未送达", MessageStatus.FAILED, store.queryMessages("group-G1").first().status)
+        service.stop()
+    }
 }

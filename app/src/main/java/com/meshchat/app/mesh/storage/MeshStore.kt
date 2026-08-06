@@ -46,6 +46,8 @@ interface MeshStore {
     fun loadPeers(): List<PeerEntity>
     /** 进程重启后恢复未确认（SENDING）的 TEXT，重建重发队列。 */
     fun loadUndeliveredTexts(): List<StoredMessage>
+    /** 进程重启后恢复未确认（SENDING）的群消息（v1.1.50），重建群重发队列。 */
+    fun loadUndeliveredGroups(): List<StoredMessage>
     /** 从消息历史反推已知对端短 ID（peers 表为空时的兜底）。 */
     fun loadKnownPeerIds(): List<String>
     /** 从消息历史反推的对话 convId 列表（最近对话持久化兜底；Room 流式响应，消息变化自动更新）。 */

@@ -322,7 +322,8 @@ class MeshService(
         restoreKnownPeers()                     // 重启恢复已知节点（寻找中状态，心跳/扫描补在线）
         restorePendingReceipts()                // 重启恢复未确认消息（进程被杀后重发不丢失）
         _joinedGroups.value = groupStore.loadJoined()   // v1.1.50：重启恢复已订阅群
-        _groupNames.value = groupStore.loadNames()      // v1.1.50：重启恢复已学群名
+        _groupNames.value = groupStore.loadNames()      // v1.1.50：重启恢复已学群名（先于群队列恢复，重发帧带正确群名）
+        restorePendingGroupReceipts()           // v1.1.50：重启恢复未确认群消息（SENDING 群消息重建重发队列）
         transport.start()
         rfcomm?.start()
         receiveJob = scope.launch {
@@ -793,6 +794,29 @@ class MeshService(
                     // 立即可重发（视为已超时），对方在线（PING）即收敛
                     lastSentAt = System.currentTimeMillis() - RECEIPT_TIMEOUT_MS,
                     ackKey = ackKeyFor(m.id),
+                ),
+            )
+        }
+    }
+
+    /**
+     * 重启恢复未确认群消息（v1.1.50）：进程被杀后 pendingGroupReceipts 丢失，从库中 SENDING 状态的
+     * GROUP 消息重建群重发队列。**firstSentAt 重置为重启时刻**（旧 ts 可能是数小时前，直接用会让
+     * 30s 总超时立即触发标"可能未送达"）；lastSentAt 置为过期 → 下一个 tick 立即可用新 id 重发。
+     */
+    private fun restorePendingGroupReceipts() {
+        val undelivered = runCatching { store.loadUndeliveredGroups() }.getOrDefault(emptyList())
+        if (undelivered.isEmpty()) return
+        Log.w(TAG, "restore ${undelivered.size} undelivered group messages for retransmission")
+        val now = System.currentTimeMillis()
+        for (m in undelivered) {
+            val groupId = m.convId.removePrefix("group-")
+            pendingGroupReceipts.putIfAbsent(
+                "$GROUP_RECEIPT_ID_PREFIX${m.id}",
+                PendingGroupMsg(
+                    groupId = groupId, text = m.text ?: "", msgId = m.id,
+                    groupName = groupNames[groupId],
+                    firstSentAt = now, lastSentAt = now - GROUP_RESEND_INTERVAL_MS,
                 ),
             )
         }

@@ -29,6 +29,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE status = 'SENDING' AND kind = 'TEXT'")
     suspend fun undeliveredTexts(): List<MessageEntity>
 
+    @Query("SELECT * FROM messages WHERE status = 'SENDING' AND kind = 'GROUP'")
+    suspend fun undeliveredGroups(): List<MessageEntity>
+
     @Query("SELECT DISTINCT convId FROM messages")
     suspend fun knownConvIds(): List<String>
 

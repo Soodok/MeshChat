@@ -120,6 +120,9 @@ class EncryptedMeshStore(
     override fun loadUndeliveredTexts(): List<StoredMessage> =
         delegate.loadUndeliveredTexts().map { it.decryptSensitive() }
 
+    override fun loadUndeliveredGroups(): List<StoredMessage> =
+        delegate.loadUndeliveredGroups().map { it.decryptSensitive() }
+
     override fun loadKnownPeerIds(): List<String> = delegate.loadKnownPeerIds()
 
     override fun observeConversationIds(): Flow<List<String>> = delegate.observeConversationIds()
