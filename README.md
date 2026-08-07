@@ -88,7 +88,7 @@ An embedded decentralized backend: every node acts as both client and relay; mes
 - 端到端加密当前为演示级占位（Cipher 接口预留），未接入真实密钥协商 / E2E encryption is a demo-grade placeholder (Cipher interface reserved); no real key agreement yet.
 - 多跳中继的路由学习与 UI 显示当前支持 2 跳（一跳直连 + 二跳经单一中继），2 跳以上不显示路由 / Multi-hop routing supports 2 hops (direct + one relay); beyond 2 hops routes are not displayed.
 - Wi-Fi Direct 高速载体、群聊为规划项 / Wi-Fi Direct transport and group chat are planned.
-- 蓝牙传输有效范围受设备与遮挡影响，空旷室内通常为数十米内（实测以机型为准） / Effective BLE range depends on device and obstacles; typically tens of meters indoors in open space (verify per device).
+- 蓝牙传输有效范围受设备与遮挡影响，空旷室内通常为数三十米内（实测以机型为准） / Effective BLE range depends on device and obstacles; typically thirty of meters indoors in open space (verify per device).
 
 ## 设计基准 / Design Baseline
 
