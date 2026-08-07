@@ -81,7 +81,6 @@ fun AppLockScreen(
     var password by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var showBioError by remember { mutableStateOf(false) }
-    var biometricPrompt by remember { mutableStateOf<BiometricPrompt?>(null) }
 
     // 锁定倒计时轮询（0.5s 刷新）
     val lockoutRemaining = remember { mutableLongStateOf(0L) }
@@ -93,17 +92,51 @@ fun AppLockScreen(
         }
     }
 
-    // BiometricPrompt 需要 FragmentActivity 宿主（MainActivity 已改基类）
+    // v1.1.62 指纹认证改用系统 API：android.hardware.biometrics.BiometricPrompt（API 30+ 才公开 Builder）。
+    // 原 androidx.biometric 兼容层在部分设备（华为/部分 ROM）点击 authenticate 抛异常 → 主线程崩溃卡退；
+    // 系统 API 直接弹系统认证对话框、无 Fragment 依赖，且 authenticate 全链路 runCatching 兜底。
+    // 注：系统 BiometricPrompt 构造器为 @hide（package-private），公开用法 = Builder.build() + authenticate(callback,...)。
+    //     API 28/29 系统 API 仍不可用（Builder 无 setAllowedAuthenticators），只能走 androidx。
+    val biometricCallback = remember(context) {
+        object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
+                // 认证成功 → keystore 已解锁生物密钥 → 解密 DEK（认证后解密，兼容认证前 init 被拒的 ROM）
+                if (!onFinishBiometricUnlock()) showBioError = true
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                showBioError = true
+            }
+
+            override fun onAuthenticationFailed() {
+                showBioError = true
+            }
+        }
+    }
+    val systemBiometricPrompt: android.hardware.biometrics.BiometricPrompt? = remember(context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.hardware.biometrics.BiometricPrompt.Builder(context)
+                .setTitle("指纹解锁 MeshChat")
+                .setSubtitle("验证指纹以解锁应用")
+                // 强生物识别 + 设备凭据兜底（有指纹用指纹；无指纹可 PIN/密码，避免"无匹配认证器"异常）
+                .setAllowedAuthenticators(
+                    android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                        android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+                )
+                .build()
+        } else null
+    }
+
+    // API 26/27/28/29（无公开系统 BiometricPrompt）兜底：androidx 兼容层（需 FragmentActivity 宿主）
     val activity = context as? FragmentActivity
+    var androidxPrompt by remember { mutableStateOf<BiometricPrompt?>(null) }
     LaunchedEffect(activity) {
-        if (activity == null) return@LaunchedEffect
-        val executor = ContextCompat.getMainExecutor(context)
-        biometricPrompt = BiometricPrompt(
+        if (activity == null || Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) return@LaunchedEffect
+        androidxPrompt = BiometricPrompt(
             activity,
-            executor,
+            ContextCompat.getMainExecutor(context),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    // v1.1.59：认证成功后解密（keystore 已解锁生物密钥），兼容华为/部分 ROM 认证前 init 被拒
                     if (!onFinishBiometricUnlock()) showBioError = true
                 }
 
@@ -121,20 +154,32 @@ fun AppLockScreen(
     fun unlockWithFingerprint() {
         showBioError = false
         error = null
-        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            BiometricPrompt.PromptInfo.Builder()
-                .setTitle("指纹解锁 MeshChat")
-                .setSubtitle("验证指纹以解锁应用")
-                .setAllowedAuthenticators(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG)
-                .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && systemBiometricPrompt != null) {
+            runCatching {
+                // API 29+ 统一四参签名：authenticate(CryptoObject, CancellationSignal, Executor, AuthenticationCallback)。
+                // CryptoObject 传 null（官方文档允许；Kotlin stub 标注 non-null 故用 null as 断言绕过）。
+                systemBiometricPrompt.authenticate(
+                    null as android.hardware.biometrics.BiometricPrompt.CryptoObject,
+                    android.os.CancellationSignal(),          // 不主动取消认证
+                    ContextCompat.getMainExecutor(context),   // 回调线程
+                    biometricCallback,
+                )
+            }.onFailure { t ->
+                android.util.Log.e(TAG, "system biometric authenticate failed", t)
+                error = "指纹认证启动失败，请用密码解锁"
+            }
         } else {
-            BiometricPrompt.PromptInfo.Builder()
+            // API 26-29 兜底
+            val info = BiometricPrompt.PromptInfo.Builder()
                 .setTitle("指纹解锁 MeshChat")
                 .setSubtitle("验证指纹以解锁应用")
                 .setNegativeButtonText("取消")
                 .build()
+            runCatching { androidxPrompt?.authenticate(info) }.onFailure { t ->
+                android.util.Log.e(TAG, "androidx biometric authenticate failed", t)
+                error = "指纹认证启动失败，请用密码解锁"
+            }
         }
-        biometricPrompt?.authenticate(info)
     }
 
     fun unlockWithPassword() {
@@ -308,3 +353,4 @@ fun AppLockScreen(
 }
 
 private const val MAX_FAILURES = 5
+private const val TAG = "AppLockScreen"

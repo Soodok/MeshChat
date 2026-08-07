@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.61（versionCode 123，构建时间 2026-08-07）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.62（versionCode 124，构建时间 2026-08-07）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -335,8 +335,14 @@ app/src/main/java/com/meshchat/app/
   - **复查发现②（本版修复）**：顶部"发现节点 ${peers.size}"统计整个 peers 流含 **OFFLINE 历史残留**（NORMAL/SILENT 下对方离场/关蓝牙 15s+ 变 OFFLINE，Mesh 页 nearbyPeers 过滤后不显示、顶部却仍计数）——与"没搜到就不该显示"矛盾。
   - **修复（前端）**：MeshChatHome 顶部统计改 `peers.count { presence != OFFLINE && lastSeenAt > 0L }`——与 Mesh 页"附近节点"同口径；NORMAL/SILENT 下对方离场即归 0，CLOSED 仍由服务层过滤非会话（立即 0）。SEARCHING 恢复节点（lastSeenAt==0）不计入（Mesh 页同不显示）。
   - 测试 **181/181 通过**（前端一行口径改动，无新增测试）。APK `MeshChat-v1.1.61-debug.apk`（22,189,715 B）/ `MeshChat-v1.1.61-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证：NORMAL/SILENT 下对方离场 → 顶部数字 15s 内归 0（与 Mesh 页同步）；对方在场（ONLINE/UNRESPONSIVE）→ 正常显示。
+- **v1.1.62 指纹解锁改直接调用系统 API（2026-08-07，用户实测"指纹点击会应用卡退，能不能直接调用系统 API"）**：
+  - **崩溃根因**：原 androidx.biometric 兼容层 `authenticate(PromptInfo)` 无异常保护，在部分设备（华为/部分 ROM）+ Compose 锁屏覆盖 + FragmentActivity 场景下 authenticate 抛异常（Fragment 状态冲突/认证器不匹配）→ 主线程崩溃卡退。
+  - **修复（系统 API）**：API 30+ 改用 `android.hardware.biometrics.BiometricPrompt`（**Builder.build() + authenticate(CryptoObject, CancellationSignal, Executor, AuthenticationCallback) 四参签名**）——直接弹系统认证对话框，**无 Fragment 依赖**；CryptoObject 传 null（官方允许，`null as` 断言绕过 Kotlin stub non-null 标注）；authenticate 全链路 runCatching 兜底（失败显示"指纹认证启动失败"而非崩溃）。API 26-29 保留 androidx 兜底（系统 BiometricPrompt 构造器 @hide、Builder 无 setAllowedAuthenticators 不可用）。
+  - **踩坑记录（重要）**：① 系统 BiometricPrompt 构造器是 package-private（@hide），公开用法只有 Builder；② API 34+ 的 authenticate 签名变体（CancellationSignal, Executor, AuthenticationCallback）与 29-33 的四参签名在 compileSdk 36 共存，`javap` 确认 SDK 36 stub 仅暴露 `authenticate(CryptoObject, CancellationSignal, Executor, AuthenticationCallback)`（API 29+）与三参（34+）——**统一用四参**；③ Builder.setAuthenticationCallback 不存在（误记）；④ Kotlin 里四参的 CryptoObject/CancellationSignal 标注 non-null，CryptoObject 用 `null as ...CryptoObject` 绕过（运行时合法），CancellationSignal 用真实实例。
+  - 测试 **181/181 通过**（UI 流程改动，无新增测试）。APK `MeshChat-v1.1.62-debug.apk`（22,189,715 B）/ `MeshChat-v1.1.62-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证：API 30+ 设备（Android 11+）锁定屏点指纹 → 弹系统认证 → 解锁成功不再卡退；无指纹设备显示提示；API 26-29 设备走 androidx 兜底。
 
 ### 已验证内容
+- **v1.1.62 指纹系统 API 改造验证**：`testDebugUnitTest` **181/181 通过，0 失败**（UI 流程改动，无新增测试；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 124 / versionName 1.1.62）；APK `MeshChat-v1.1.62-debug.apk`（22,189,715 B）/ `MeshChat-v1.1.62-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证：① API 30+ 设备锁定屏点指纹 → 系统认证弹窗 → 解锁不再卡退 ② 认证失败/取消 → 显示提示不崩溃 ③ 无指纹设备 → 显示"未检测到可用指纹"提示。
 - **v1.1.61 发现节点口径统一验证**：`testDebugUnitTest` **181/181 通过，0 失败**（前端一行口径改动，无新增测试；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 123 / versionName 1.1.61）；APK `MeshChat-v1.1.61-debug.apk`（22,189,715 B）/ `MeshChat-v1.1.61-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证：NORMAL/SILENT 下对方离场 → 顶部 15s 内归 0；对方在场 → 正常显示。
 - **v1.1.60 发现节点计数修复验证**：`testDebugUnitTest` **181/181 通过，0 失败**（+1：CLOSED discovery mode hides non-session peers——NORMAL 历史节点可见 → CLOSED 非会话隐藏/会话联系人保留 → 恢复 NORMAL 全量恢复；存量 180 项全回归；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 122 / versionName 1.1.60）；APK `MeshChat-v1.1.60-debug.apk`（22,189,715 B）/ `MeshChat-v1.1.60-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证：① 无会话+无历史节点+关搜索 → 顶部"发现节点 0" ② 已会话联系人+关搜索 → 顶部仍显示联系人。
 - **v1.1.59 三处修复验证**：`testDebugUnitTest` **180/180 通过，0 失败**（无新增测试，纯 UI/指纹流程改动：删 BiometricUnlockRequest/认证后解密；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 121 / versionName 1.1.59）；APK `MeshChat-v1.1.59-debug.apk`（22,189,715 B）/ `MeshChat-v1.1.59-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证：① 指纹解锁（华为/Android 16）② 通用设置滚动 ③ 安全中心密码设置入口。
@@ -438,7 +444,8 @@ app/src/main/java/com/meshchat/app/
   - 单测 +7（规格 12.1 全部覆盖），72/72 通过。范围外：文件/握手/群组多跳、3 跳+、加密、路由持久化。
 
 ### 下一步首要任务
-0. **v1.1.61 发现节点口径真机验证（当前版本，优先）**：① NORMAL/SILENT 下对方离场/关蓝牙 → 顶部"发现节点"15s 内归 0（与 Mesh 页同步）② 对方在场（ONLINE/UNRESPONSIVE）→ 顶部正常显示 ③ SILENT 下陌生人仍可见（可连接建关系）④ 关搜索（CLOSED）→ 立即 0 ⑤ 顺手回归 v1.1.60 场景。
+0. **v1.1.62 指纹系统 API 真机验证（当前版本，优先）**：① Android 11+（API 30+）锁定屏点指纹 → 弹系统认证 → 解锁成功不再卡退 ② 认证失败/取消/超时 → 提示不崩溃 ③ 若无指纹 → 显示"未检测到可用指纹"提示 ④ 密码解锁仍正常 ⑤ 连续 5 次错误锁定 30s 正常。
+1. **v1.1.61 发现节点口径真机验证（v1.1.62 顺带）**：① NORMAL/SILENT 下对方离场 → 顶部"发现节点"15s 内归 0 ② 对方在场 → 正常显示 ③ SILENT 下陌生人仍可见 ④ 关搜索 → 立即 0。
 1. **v1.1.60 发现节点计数真机验证（v1.1.61 顺带）**：无会话+无历史节点+关搜索 → 顶部"发现节点 0"；已会话联系人+关搜索 → 顶部仍显示联系人。
 1. **v1.1.59 三处修复真机验证（v1.1.60 顺带）**：① 指纹解锁：锁定屏点指纹按钮 → 弹系统认证 → 成功解锁（重点华为设备；若仍失败需 logcat 看 `AppLock`/BiometricPrompt 错误码）② 通用设置：可滚动到底看到"应用锁"区 ③ 安全中心：应用锁区块可设/改/移除密码。
 1. **v1.1.58 应用锁真机验证（v1.1.59 顺带）**：设密码 → 回前台锁定 → 密码/指纹解锁；连续 5 次错误 → 30s 锁定倒计时；锁定态通知不显示内容；设密码后重启会话密钥仍可解密；FLAG_SECURE 截图黑屏；移除密码后密钥库回退明文。
@@ -524,3 +531,4 @@ app/src/main/java/com/meshchat/app/
 - **v1.1.59 三处修复（本次 2026-08-07）**：`security/lock/AppLockManager.kt`（**删除 BiometricUnlockRequest/createBiometricUnlock/unlockWithBiometric，改 finishBiometricUnlockAfterAuth 认证后解密**）、`ui/screens/AppLockScreen.kt`（**BiometricPrompt 纯认证去 CryptoObject + 无指纹提示文案**）、`ui/screens/ProfileDetailScreens.kt`（**GeneralSettingsScreen 根 Column 加 verticalScroll；LockPasswordDialog/LockDialog private→internal**）、`ui/screens/SecurityCenterScreen.kt`（**新增应用锁区块：状态点+设/改/移除密码按钮+对话框**）、`ui/MeshChatViewModel.kt`（finishBiometricUnlockAfterAuth）、`ui/MeshChatApp.kt`（解锁屏参数）、`ui/screens/MeshChatHome.kt`（security 分支传参）、`app/build.gradle.kts`（v1.1.59/121）、`AI_CONTEXT.md`
 - **v1.1.60 发现节点计数修复（本次 2026-08-07）**：`mesh/service/MeshService.kt`（**refreshPeers 在 discoveryMode==CLOSED 时只输出已会话节点（shortId in _sessions），非会话历史节点与 2 跳中继剔除，恢复 NORMAL 全量恢复——修复顶部"发现节点"把历史残留算入**）、`MeshServiceTest.kt`（**+1 CLOSED hides non-session peers**）、`app/build.gradle.kts`（v1.1.60/122）、`AI_CONTEXT.md`
 - **v1.1.61 发现节点口径统一（本次 2026-08-07）**：`ui/screens/MeshChatHome.kt`（**顶部"发现节点"改 `peers.count { presence!=OFFLINE && lastSeenAt>0L }`——与 Mesh 页"附近节点"同口径，OFFLINE 历史残留不计入；SILENT 复查确认不过滤非会话=设计正确**）、`app/build.gradle.kts`（v1.1.61/123）、`AI_CONTEXT.md`
+- **v1.1.62 指纹解锁改系统 API（本次 2026-08-07）**：`ui/screens/AppLockScreen.kt`（**API 30+ 用 android.hardware.biometrics.BiometricPrompt（Builder+四参 authenticate），无 Fragment 依赖防崩溃；authenticate runCatching 兜底；API 26-29 保留 androidx**）、`app/build.gradle.kts`（v1.1.62/124）、`AI_CONTEXT.md`
