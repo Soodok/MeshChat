@@ -1,6 +1,8 @@
 package com.meshchat.app.mesh.service
 
+import com.meshchat.app.mesh.crypto.MeshCrypto
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.protocol.EnvelopeBody
 import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.FrameType
@@ -9,6 +11,7 @@ import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
 import com.meshchat.app.mesh.protocol.PresenceBody
+import com.meshchat.app.mesh.protocol.SecBody
 import com.meshchat.app.mesh.protocol.TextBody
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.storage.InMemoryMeshStore
@@ -27,6 +30,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -120,6 +124,7 @@ class MeshServiceTest {
         )
         service.start()
 
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText(convId = "c2", dstId = "OTHER", text = "hello")
         val frame = transport.incoming.replayCache.firstOrNull { it.type == FrameType.DATA }
         val envelope = frame?.let { MeshJson.decodeEnvelope(it.payloadText) }
@@ -460,6 +465,7 @@ class MeshServiceTest {
             dedup = DedupCache(), debugStats = stats,
         )
         service.start()
+        service.seedSessionKeyForTesting("B")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-B", "B", "hi")
         val msgId = store.queryMessages("conv-B").single().id
         // 模拟对端回 RECEIPT（id 与消息一致）
@@ -605,6 +611,7 @@ class MeshServiceTest {
         val service = MeshService(
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-OTHER", "OTHER", "hi")
         assertEquals(1, transport.broadcastCount)
 
@@ -623,6 +630,7 @@ class MeshServiceTest {
         val service = MeshService(
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-OTHER", "OTHER", "hi")
         assertEquals(1, transport.broadcastCount)
 
@@ -639,6 +647,7 @@ class MeshServiceTest {
         val service = MeshService(
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-OTHER", "OTHER", "hi")
         val msgId = store.queryMessages("conv-OTHER").first().id
         assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
@@ -712,6 +721,7 @@ class MeshServiceTest {
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         service.start()
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-OTHER", "OTHER", "hi")
         val msgId = store.queryMessages("conv-OTHER").first().id
         assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
@@ -770,6 +780,7 @@ class MeshServiceTest {
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         val t0 = System.currentTimeMillis()
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-OTHER", "OTHER", "hi")
         val msgId = store.queryMessages("conv-OTHER").first().id
         assertEquals(MessageStatus.SENDING, store.queryMessages("conv-OTHER").first().status)
@@ -864,6 +875,7 @@ class MeshServiceTest {
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         val t0 = System.currentTimeMillis()
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText("conv-OTHER", "OTHER", "hi")
         val msgId = store.queryMessages("conv-OTHER").first().id
         service.resendPendingReceipts(t0 + 6_000)
@@ -1067,6 +1079,7 @@ class MeshServiceTest {
         service.start()
 
         service.setResendPolicy(10_000, 60_000)
+        service.seedSessionKeyForTesting("OTHER")   // v1.1.57 E2EE：非自环发送需会话密钥
         service.sendText(convId = "c1", dstId = "OTHER", text = "hi")  // 非会话节点 → 转发，pendingReceipts 登记未确认
         val t0 = System.currentTimeMillis() + 5_000      // 距发送约 5s < 新基础 10s
         transport.frames.clear()
@@ -1442,6 +1455,7 @@ class MeshServiceTest {
             transport = CountingTransport(), store = senderStore,
             identity = LocalIdentity(shortId = "A"), dedup = DedupCache(),
         )
+        sender.seedGroupKeyForTesting("G1")   // v1.1.57 群聊对称加密：发送需群密钥
         sender.sendGroupMessageWithId("G1", "hi", "m1")
         assertEquals(MessageStatus.SENDING, senderStore.queryMessages("group-G1").first().status)
         sender.handleFrame(receiptFrame("G\$m1"))
@@ -1459,6 +1473,8 @@ class MeshServiceTest {
             identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         val t0 = System.currentTimeMillis()
+        val gk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }   // v1.1.57 显式群密钥（测试解密验证用）
+        service.seedGroupKeyForTesting("G1", gk)
         service.sendGroupMessageWithId("G1", "hi", "m1")
         val firstId = MeshJson.decodeEnvelope(transport.frames.last { it.type == FrameType.DATA }.payloadText).id
         assertEquals("首帧 id = 逻辑 msgId", "m1", firstId)
@@ -1467,12 +1483,15 @@ class MeshServiceTest {
         service.resendPendingGroupReceipts(t0 + 4_000)
         assertEquals(1, transport.frames.count { it.type == FrameType.DATA })
 
-        // 5s → 新 envelope id 重发（msgId 不变——回执按 msgId 匹配）
+        // 5s → 新 envelope id 重发（msgId 不变——回执按 msgId 匹配）；body 群密钥加密（SecBody）
         service.resendPendingGroupReceipts(t0 + 5_100)
         val resendEnv = MeshJson.decodeEnvelope(transport.frames.last { it.type == FrameType.DATA }.payloadText)
         assertEquals("重发必须新 envelope id", false, resendEnv.id == firstId)
-        assertEquals("m1", (resendEnv.body as GroupBody).msgId)
-        assertEquals("hi", (resendEnv.body as GroupBody).text)
+        val sec = resendEnv.body as SecBody
+        val inner = MeshCrypto.decrypt(gk, sec.iv, sec.cipher, "GROUP|group-G1")!!
+        val gb = MeshJson.json.decodeFromString(EnvelopeBody.serializer(), inner.decodeToString()) as GroupBody
+        assertEquals("m1", gb.msgId)
+        assertEquals("hi", gb.text)
 
         // ≤3 次重发（t+5/10/15s）；第 4 个窗口（t+20s）不再重发
         service.resendPendingGroupReceipts(t0 + 10_100)
@@ -1501,6 +1520,8 @@ class MeshServiceTest {
             transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         service.start()
+        val gk = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }   // v1.1.57 显式群密钥（恢复重发解密验证用）
+        service.seedGroupKeyForTesting("G1", gk)
         // 恢复后立即可用新 id 重发（lastSentAt 置过期，不等 5s）
         val t0 = System.currentTimeMillis()
         service.resendPendingGroupReceipts(t0 + 100)
@@ -1509,7 +1530,10 @@ class MeshServiceTest {
             .map { MeshJson.decodeEnvelope(it.payloadText) }
             .lastOrNull { it.dstId == "G1" }
         assertTrue("重启后未确认群消息应立即重发", resendEnv != null)
-        assertEquals("m1", (resendEnv!!.body as GroupBody).msgId)
+        val gsec = resendEnv!!.body as SecBody
+        val ginner = MeshCrypto.decrypt(gk, gsec.iv, gsec.cipher, "GROUP|group-G1")!!
+        val gresend = MeshJson.json.decodeFromString(EnvelopeBody.serializer(), ginner.decodeToString()) as GroupBody
+        assertEquals("m1", gresend.msgId)
         assertEquals("重发必须新 id", false, resendEnv.id == "m1")
         // 30s 总超时从重启时刻重新计时（旧 ts 已过 1 小时，若沿用会立即标 FAILED）。
         // 注意 t+29s 时距上次重发已满 5s 会再触发一次重发（lastSentAt 推进），
@@ -1576,5 +1600,125 @@ class MeshServiceTest {
         val group = service.groups.value.first { it.id == "G1" }
         assertEquals("去重发言者数", 2, group.memberCount)
         service.stop()
+    }
+
+    // ===== v1.1.57 端到端加密（E2EE）=====
+
+    private fun inviteWithKey(srcId: String, dstId: String, pubKey: String) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(
+                id = UUID.randomUUID().toString(), kind = "INVITE",
+                srcId = srcId, dstId = dstId, convId = "conv-$dstId",
+                ttl = 8, ts = 0, body = TextBody("对话请求", pubKey = pubKey),
+            ),
+        ).toByteArray(),
+    )
+
+    private fun ackWithKey(srcId: String, dstId: String, pubKey: String) = MeshFrame(
+        FrameType.DATA,
+        MeshJson.encodeEnvelope(
+            MeshEnvelope(
+                id = UUID.randomUUID().toString(), kind = "INVITE_ACK",
+                srcId = srcId, dstId = dstId, convId = "conv-$dstId",
+                ttl = 8, ts = 0, body = TextBody("已接受", pubKey = pubKey),
+            ),
+        ).toByteArray(),
+    )
+
+    @Test
+    fun `e2ee handshake derives matching keys and encrypted text round trips`() {
+        val aStore = InMemoryMeshStore()
+        val bStore = InMemoryMeshStore()
+        val aTransport = CountingTransport()
+        val bTransport = CountingTransport()
+        val a = MeshService(
+            transport = aTransport, store = aStore, identity = LocalIdentity(shortId = "A"), dedup = DedupCache(),
+        )
+        val b = MeshService(
+            transport = bTransport, store = bStore, identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+        )
+        // 握手：A INVITE（带 A 公钥）→ B 派生；B ACK（带 B 公钥）→ A 派生
+        b.handleFrame(inviteWithKey("A", "B", a.publicKeyB64ForTest))
+        a.handleFrame(ackWithKey("B", "A", b.publicKeyB64ForTest))
+        // A → B 发送（有会话密钥 → 加密）
+        assertTrue("有会话密钥应可发送", a.sendText("conv-B", "B", "hello"))
+        val env = MeshJson.decodeEnvelope(aTransport.frames.last { it.type == FrameType.DATA }.payloadText)
+        assertTrue("空中消息应为密文", env.body is SecBody)
+        assertTrue("路由字段保持明文", env.dstId == "B" && env.kind == "TEXT")
+        // B 收到 → 解密 → 落库（conv-A = 发送者视角）
+        b.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray()))
+        val stored = bStore.queryMessages("conv-A").first()
+        assertEquals("hello", stored.text)
+        assertEquals(MessageStatus.DELIVERED, stored.status)
+        // 反向 B → A 同样加密往返
+        assertTrue("B 发 A", b.sendText("conv-A", "A", "reply"))
+        val env2 = MeshJson.decodeEnvelope(bTransport.frames.last { it.type == FrameType.DATA }.payloadText)
+        assertTrue(env2.body is SecBody)
+        a.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env2).toByteArray()))
+        assertTrue("A 收到 B 加密回复", aStore.queryMessages("conv-B").any { it.text == "reply" })
+        a.stop(); b.stop()
+    }
+
+    @Test
+    fun `text send without session key is refused under mandatory encryption`() {
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = transport, store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        assertFalse("无会话密钥应拒绝发送", service.sendText("conv-OTHER", "OTHER", "hi"))
+        assertTrue("拒绝发送不应广播任何帧", transport.frames.isEmpty())
+        // 自环仍可用（本机内部投递，不经空中）
+        assertTrue(service.sendText("conv-ME", "ME", "self"))
+        assertEquals("self", store.queryMessages("conv-ME").first().text)
+        service.stop()
+    }
+
+    @Test
+    fun `plaintext text from legacy peer still delivered for upgrade transition`() {
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // 老版本（明文 TextBody，无 pubKey）→ 新版本保留投递（升级过渡可读）
+        service.handleFrame(textFrame("m1", "OTHER", "ME", "legacy hi"))
+        assertEquals("legacy hi", store.queryMessages("conv-OTHER").first().text)
+        assertEquals(MessageStatus.DELIVERED, store.queryMessages("conv-OTHER").first().status)
+        service.stop()
+    }
+
+    @Test
+    fun `group key distributed via join frame enables encrypted group messages`() {
+        val creatorStore = InMemoryMeshStore()
+        val memberStore = InMemoryMeshStore()
+        val creatorTransport = CountingTransport()
+        val memberTransport = CountingTransport()
+        val creator = MeshService(
+            transport = creatorTransport, store = creatorStore,
+            identity = LocalIdentity(shortId = "A"), dedup = DedupCache(),
+        )
+        val member = MeshService(
+            transport = memberTransport, store = memberStore,
+            identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+        )
+        // A 创建群：生成群密钥随 JOIN 帧广播
+        val gid = creator.createGroup("应急")
+        val joinEnv = MeshJson.decodeEnvelope(creatorTransport.frames.last { it.type == FrameType.DATA }.payloadText)
+        // B 订阅 + 收 JOIN → 学习群密钥
+        member.joinGroup(gid)
+        member.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(joinEnv).toByteArray()))
+        // A 发群消息（群密钥加密）
+        creator.sendGroupMessageWithId(gid, "hi all", "m1")
+        val env = MeshJson.decodeEnvelope(creatorTransport.frames.last { it.type == FrameType.DATA }.payloadText)
+        assertTrue("群消息应为密文", env.body is SecBody)
+        // B 收到 → 群密钥解密 → 落库
+        member.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray()))
+        val stored = memberStore.queryMessages("group-$gid").first()
+        assertEquals("hi all", stored.text)
+        assertEquals(MessageStatus.DELIVERED, stored.status)
+        creator.stop(); member.stop()
     }
 }

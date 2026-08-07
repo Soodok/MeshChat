@@ -9,7 +9,13 @@ sealed interface EnvelopeBody
 
 @Serializable
 @SerialName("TEXT")
-data class TextBody(val text: String, val replyTo: String? = null, val displayName: String = "") : EnvelopeBody
+data class TextBody(
+    val text: String,
+    val replyTo: String? = null,
+    val displayName: String = "",
+    /** v1.1.57 E2EE：握手（INVITE/INVITE_ACK）携带本机 ECDH P-256 公钥（SPKI Base64）；空 = 老版本不支持加密。 */
+    val pubKey: String = "",
+) : EnvelopeBody
 
 @Serializable
 @SerialName("FILE")
@@ -69,6 +75,21 @@ data class GroupBody(
     val groupName: String? = null,  // 群名（创建时携带，随消息传播学习）
     val text: String? = null,
     val displayName: String = "",   // 发送者昵称（群聊区分谁说的，同 TextBody）
+    /** v1.1.57 群聊对称加密：创建者生成的 32B 群密钥（Base64），随 JOIN/首条消息传播给成员；防被动监听。 */
+    val groupKey: String = "",
+) : EnvelopeBody
+
+/**
+ * v1.1.57 传输加密 body：内层为原 TextBody/GroupBody 的 JSON 密文（AES-256-GCM）。
+ * 路由字段（dstId/ttl/convId/kind）留在信封明文——中继零改动只转发不解密。
+ * ctx = "p2p"（点对点会话密钥）或 "group-<groupId>"（群密钥）。
+ */
+@Serializable
+@SerialName("SEC")
+data class SecBody(
+    val cipher: String,   // 内层 body JSON 的 AES-GCM 密文（Base64）
+    val iv: String,       // 12B IV（Base64）
+    val ctx: String,      // "p2p" / "group-<groupId>"
 ) : EnvelopeBody
 
 @Serializable

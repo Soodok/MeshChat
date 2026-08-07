@@ -1,6 +1,9 @@
 package com.meshchat.app.mesh.service
 
 import android.util.Log
+import com.meshchat.app.mesh.crypto.E2eeKeyStore
+import com.meshchat.app.mesh.crypto.InMemoryE2eeKeyStore
+import com.meshchat.app.mesh.crypto.MeshCrypto
 import com.meshchat.app.mesh.debug.DebugControl
 import com.meshchat.app.mesh.debug.DebugStats
 import com.meshchat.app.mesh.debug.FileStats
@@ -10,6 +13,7 @@ import com.meshchat.app.mesh.debug.PeerDebugInfo
 import com.meshchat.app.mesh.debug.RouteDecision
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.identity.ShortIdGen
+import com.meshchat.app.mesh.protocol.EnvelopeBody
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
 import com.meshchat.app.mesh.protocol.File3
@@ -20,6 +24,7 @@ import com.meshchat.app.mesh.protocol.MeshEnvelope
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.protocol.MeshJson
 import com.meshchat.app.mesh.protocol.PresenceBody
+import com.meshchat.app.mesh.protocol.SecBody
 import com.meshchat.app.mesh.protocol.TextBody
 import com.meshchat.app.mesh.quality.BluetoothQuality
 import com.meshchat.app.mesh.routing.DedupCache
@@ -144,6 +149,8 @@ class MeshService(
     private val onFileSaved: (fileName: String) -> Unit = {},
     /** 调试统计内核（默认独立实例，生产由 Application 注入共享单例）。 */
     private val debugStats: DebugStats = DebugStats(),
+    /** v1.1.57 E2EE 密钥存储（默认内存实现；生产注入 AndroidKeyStore + SharedPrefs 实现）。 */
+    private val e2eeStore: E2eeKeyStore = InMemoryE2eeKeyStore(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -309,6 +316,16 @@ class MeshService(
     private val _groupMembers = MutableStateFlow<Map<String, Int>>(emptyMap())
     /** 群成员去重集合（v1.1.54）：groupId -> 已统计过的发送者短 ID（防重复计数）。 */
     private val groupMemberIds = ConcurrentHashMap<String, MutableSet<String>>()
+
+    // ===== v1.1.57 端到端加密（E2EE）=====
+    /** 本机 ECDH P-256 密钥对（AndroidKeyStore 私钥不可导出；测试内存实现）。 */
+    private val localKeyPair: java.security.KeyPair by lazy { e2eeStore.localKeyPair() }
+    /** 本机公钥 SPKI Base64（握手交换）。 */
+    private val localPubKeyB64: String by lazy { MeshCrypto.publicKeyB64(localKeyPair) }
+    /** 对端会话密钥缓存（peerId → 32B）；启动时从 e2eeStore 惰性加载。 */
+    private val sessionKeys = ConcurrentHashMap<String, ByteArray>()
+    /** 群密钥缓存（groupId → 32B）；启动时从 e2eeStore 惰性加载。 */
+    private val groupKeys = ConcurrentHashMap<String, ByteArray>()
     /** 群列表（合成流）：joinedGroups × groupNames × groupMembers。 */
     val groups: StateFlow<List<GroupInfo>> = combine(_joinedGroups, _groupNames, _groupMembers) { ids, names, members ->
         ids.sorted().map { GroupInfo(it, names[it] ?: "群-$it", members[it] ?: 0) }
@@ -497,7 +514,26 @@ class MeshService(
         // 注意：不 cancel scope——stop 后 start() 需能再次 launch（修复"服务停止后无法再次启动"）
     }
 
-    fun sendText(convId: String, dstId: String, text: String) {
+    /**
+     * 发送点对点消息。v1.1.57 强制加密：非自环目标必须有会话密钥（握手已交换公钥派生），
+     * 无密钥（对方旧版本/未协商）→ 拒绝发送返回 false，绝不发明文。自环（dstId=本机）保持明文。
+     */
+    fun sendText(convId: String, dstId: String, text: String): Boolean {
+        val isSelfLoop = dstId == identity.shortId
+        val key = if (isSelfLoop) null else sessionKeyFor(dstId)
+        if (!isSelfLoop && key == null) {
+            Log.w(TAG, "e2ee: no session key for $dstId, refusing plaintext send")
+            return false
+        }
+        val body: EnvelopeBody
+        val enc: String
+        if (isSelfLoop) {
+            body = TextBody(text, displayName = identity.displayName)
+            enc = "none"
+        } else {
+            body = encryptBody(TextBody(text, displayName = identity.displayName), key!!, "p2p", "TEXT|$dstId")
+            enc = "aes-gcm-v1"
+        }
         val envelope = MeshEnvelope(
             id = UUID.randomUUID().toString(),
             kind = "TEXT",
@@ -506,7 +542,8 @@ class MeshService(
             convId = convId,
             ttl = DEFAULT_TTL,
             ts = System.currentTimeMillis(),
-            body = TextBody(text, displayName = identity.displayName),
+            enc = enc,
+            body = body,
         )
         store.insertMessage(
             StoredMessage(
@@ -517,6 +554,7 @@ class MeshService(
         // 登记待确认：回执（RECEIPT）是广播帧可能丢失，由 resendPendingReceipts 超时重发收敛
         pendingReceipts[envelope.id] = PendingText(envelope, System.currentTimeMillis(), ackKey = ackKeyFor(envelope.id))
         route(envelope)
+        return true
     }
 
     // ===== v1.1.50 群消息 =====
@@ -531,16 +569,23 @@ class MeshService(
      * （同 id 重发被节点级 DedupCache 挡住完全无效，仿真 §3.9.1 铁证），msgId 保持不变。
      */
     fun sendGroupMessageWithId(groupId: String, text: String, msgId: String) {
+        val groupKey = groupKeyFor(groupId)
+        if (groupKey == null) {
+            // v1.1.57 群聊对称加密：无群密钥（未创建/未收到群密钥）→ 拒绝发送（防明文广播）
+            Log.w(TAG, "e2ee: no group key for $groupId, refusing plaintext group send")
+            return
+        }
         val now = System.currentTimeMillis()
         val groupName = groupNames[groupId]
+        val inner = GroupBody(
+            op = "MSG", groupId = groupId, msgId = msgId,
+            groupName = groupName, text = text, displayName = identity.displayName,
+        )
+        val body = encryptBody(inner, groupKey, "group-$groupId", "GROUP|group-$groupId")
         val envelope = MeshEnvelope(
             id = msgId, kind = "GROUP",
             srcId = identity.shortId, dstId = groupId, convId = "group-$groupId",
-            ttl = DEFAULT_TTL, ts = now,
-            body = GroupBody(
-                op = "MSG", groupId = groupId, msgId = msgId,
-                groupName = groupName, text = text, displayName = identity.displayName,
-            ),
+            ttl = DEFAULT_TTL, ts = now, enc = "aes-gcm-v1", body = body,
         )
         store.insertMessage(
             StoredMessage(
@@ -554,16 +599,21 @@ class MeshService(
         route(envelope)   // 本机发起广播（不抖动），邻居泛洪转发
     }
 
-    /** 创建群：生成 8 字符群 ID + 本地订阅 + 广播群创建帧（op=JOIN，带群名）传播群名。 */
+    /** 创建群：生成 8 字符群 ID + 群密钥（32B，群聊对称加密）+ 本地订阅 + 广播 JOIN（带群名+群密钥）传播。 */
     fun createGroup(groupName: String): String {
         val groupId = ShortIdGen.generate(8)
+        val groupKey = MeshCrypto.randomGroupKey()
+        saveGroupKey(groupId, groupKey)
         joinGroup(groupId, groupName)
-        // 群名也随每条消息传播（sendGroupMessage 带 groupName），JOIN 帧仅用于"创建后尚未发消息"时让邻居早学群名
+        // 群名/群密钥随 JOIN 帧传播：成员加入即获得群密钥，后续群消息加密互通
         val env = MeshEnvelope(
             id = UUID.randomUUID().toString(), kind = "GROUP",
             srcId = identity.shortId, dstId = groupId, convId = "group-$groupId",
             ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
-            body = GroupBody(op = "JOIN", groupId = groupId, groupName = groupName),
+            body = GroupBody(
+                op = "JOIN", groupId = groupId, groupName = groupName,
+                groupKey = java.util.Base64.getEncoder().encodeToString(groupKey),
+            ),
         )
         route(env)
         return groupId
@@ -583,6 +633,75 @@ class MeshService(
         if (_groupNames.value[groupId] == groupName) return
         _groupNames.value = _groupNames.value + (groupId to groupName)
         groupStore.saveNames(_groupNames.value)
+    }
+
+    // ===== v1.1.57 端到端加密（E2EE）辅助 =====
+    /** HKDF info：绑定收发双方短 ID（排序保证两端派生一致且与其他对端隔离）。 */
+    private fun keyInfo(peerId: String): String =
+        "meshchat-e2ee-v1|" + listOf(identity.shortId, peerId).sorted().joinToString("|")
+
+    private fun sessionKeyFor(peerId: String): ByteArray? =
+        sessionKeys[peerId] ?: e2eeStore.sessionKey(peerId)?.also { sessionKeys[peerId] = it }
+
+    private fun groupKeyFor(groupId: String): ByteArray? =
+        groupKeys[groupId] ?: e2eeStore.groupKey(groupId)?.also { groupKeys[groupId] = it }
+
+    private fun saveGroupKey(groupId: String, key: ByteArray) {
+        groupKeys[groupId] = key
+        e2eeStore.saveGroupKey(groupId, key)
+    }
+
+    /** 收到对端公钥 → ECDH 共享秘密 → HKDF 派生会话密钥（双方各自派生相同密钥）。 */
+    private fun deriveSessionKey(peerId: String, peerPubB64: String) {
+        if (peerPubB64.isBlank()) return
+        val peerPub = runCatching { MeshCrypto.publicKeyFromB64(peerPubB64) }.getOrNull()
+            ?: run { Log.w(TAG, "e2ee: bad peer pubkey from $peerId"); return }
+        val secret = MeshCrypto.sharedSecret(localKeyPair.private, peerPub)
+        val key = MeshCrypto.deriveSessionKey(secret, keyInfo(peerId))
+        sessionKeys[peerId] = key
+        e2eeStore.saveSessionKey(peerId, key)
+    }
+
+    /** 加密内层 body（多态 JSON）为 SecBody。 */
+    private fun encryptBody(body: EnvelopeBody, key: ByteArray, ctx: String, aad: String): SecBody {
+        val inner = MeshJson.json.encodeToString(EnvelopeBody.serializer(), body)
+        val e = MeshCrypto.encrypt(key, inner.encodeToByteArray(), aad)
+        return SecBody(e.cipher, e.iv, ctx)
+    }
+
+    /** 解密 SecBody → 还原内层 body；失败（无密钥/认证失败/格式错）返回 null（丢弃，防篡改消息）。 */
+    private fun decryptSecBody(envelope: MeshEnvelope): EnvelopeBody? {
+        val sec = envelope.body as? SecBody ?: return null
+        val key = when {
+            sec.ctx == "p2p" -> sessionKeyFor(envelope.srcId)
+            sec.ctx.startsWith("group-") -> groupKeyFor(sec.ctx.removePrefix("group-"))
+            else -> null
+        }
+        if (key == null) { Log.w(TAG, "e2ee: no key ctx=${sec.ctx} src=${envelope.srcId}"); return null }
+        // AAD 与发送方一致：点对点用 dstId（中继转发不改 dstId，接收端 = 发送端视角）
+        val aad = if (sec.ctx == "p2p") "TEXT|${envelope.dstId}" else "GROUP|${sec.ctx}"
+        val plain = MeshCrypto.decrypt(key, sec.iv, sec.cipher, aad)
+            ?: run { Log.w(TAG, "e2ee: auth failed src=${envelope.srcId}"); return null }
+        return runCatching {
+            MeshJson.json.decodeFromString(EnvelopeBody.serializer(), plain.decodeToString())
+        }.getOrNull()
+    }
+
+    /** 测试辅助：直接注入对端会话密钥（模拟握手已交换公钥）。 */
+    internal fun seedSessionKeyForTesting(
+        peerId: String,
+        key: ByteArray = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) },
+    ) {
+        sessionKeys[peerId] = key
+        e2eeStore.saveSessionKey(peerId, key)
+    }
+
+    /** 测试辅助：本机 ECDH 公钥（SPKI Base64）——构造握手帧验证密钥派生。 */
+    internal val publicKeyB64ForTest: String get() = localPubKeyB64
+
+    /** 测试辅助：直接注入群密钥。 */
+    internal fun seedGroupKeyForTesting(groupId: String, key: ByteArray = MeshCrypto.randomGroupKey()) {
+        saveGroupKey(groupId, key)
     }
 
     /**
@@ -666,15 +785,22 @@ class MeshService(
             p.lastSentAt = now
             Log.w(TAG, "resend group msg=${p.msgId} retry=${p.retries} (new envelope id)")
             debugStats.recordResend(p.msgId)
+            // v1.1.57 群聊对称加密：重发同样加密（群密钥缺失则放弃——无法送达）
+            val groupKey = groupKeyFor(p.groupId) ?: run {
+                Log.w(TAG, "e2ee: resend group ${p.msgId} dropped, no group key")
+                it.remove()
+                continue
+            }
+            val inner = GroupBody(
+                op = "MSG", groupId = p.groupId, msgId = p.msgId,
+                groupName = p.groupName, text = p.text, displayName = identity.displayName,
+            )
             val envelope = MeshEnvelope(
                 id = UUID.randomUUID().toString(),   // 新 id = 新泛洪（同 id 被节点级去重挡住，仿真铁证无效）
                 kind = "GROUP",
                 srcId = identity.shortId, dstId = p.groupId, convId = "group-${p.groupId}",
-                ttl = DEFAULT_TTL, ts = now,
-                body = GroupBody(
-                    op = "MSG", groupId = p.groupId, msgId = p.msgId,
-                    groupName = p.groupName, text = p.text, displayName = identity.displayName,
-                ),
+                ttl = DEFAULT_TTL, ts = now, enc = "aes-gcm-v1",
+                body = encryptBody(inner, groupKey, "group-${p.groupId}", "GROUP|group-${p.groupId}"),
             )
             broadcastData(envelope)
         }
@@ -743,7 +869,7 @@ class MeshService(
                 convId = "conv-$peerId",
                 ttl = DEFAULT_TTL,
                 ts = System.currentTimeMillis(),
-                body = TextBody("对话请求", displayName = identity.displayName),
+                body = TextBody("对话请求", displayName = identity.displayName, pubKey = localPubKeyB64),
             ),
         )
     }
@@ -770,7 +896,7 @@ class MeshService(
                     convId = "conv-$peerId",
                     ttl = DEFAULT_TTL,
                     ts = System.currentTimeMillis(),
-                    body = TextBody("已接受"),
+                    body = TextBody("已接受", pubKey = localPubKeyB64),
                 ),
             ).toByteArray(),
         )
@@ -816,12 +942,22 @@ class MeshService(
         if (undelivered.isEmpty()) return
         Log.w(TAG, "restore ${undelivered.size} undelivered texts for retransmission")
         for (m in undelivered) {
+            // v1.1.57 强制加密：恢复重发也必须加密；无会话密钥（对方密钥已失）→ 跳过
+            val isSelfLoop = m.dstId == identity.shortId
+            val key = if (isSelfLoop) null else sessionKeyFor(m.dstId)
+            if (!isSelfLoop && key == null) {
+                Log.w(TAG, "e2ee: skip restore ${m.id}, no session key for ${m.dstId}")
+                continue
+            }
+            val body: EnvelopeBody = if (isSelfLoop) TextBody(m.text ?: "")
+                else encryptBody(TextBody(m.text ?: ""), key!!, "p2p", "TEXT|${m.dstId}")
             pendingReceipts.putIfAbsent(
                 m.id,
                 PendingText(
                     MeshEnvelope(
                         id = m.id, kind = "TEXT", srcId = m.srcId, dstId = m.dstId, convId = m.convId,
-                        ttl = DEFAULT_TTL, ts = m.ts, body = TextBody(m.text ?: ""),
+                        ttl = DEFAULT_TTL, ts = m.ts,
+                        enc = if (isSelfLoop) "none" else "aes-gcm-v1", body = body,
                     ),
                     // 立即可重发（视为已超时），对方在线（PING）即收敛
                     lastSentAt = System.currentTimeMillis() - RECEIPT_TIMEOUT_MS,
@@ -1316,8 +1452,14 @@ class MeshService(
     /** 查询对端是否经中继可达（v1.1.0）：命中路由表返回经由节点 shortId，否则 null。 */
     fun relayViaFor(peerId: String): String? = routeEntries[peerId]?.via
 
-    private fun handleEnvelope(envelope: MeshEnvelope) {
-        if (envelope.srcId == identity.shortId) return // 忽略自身回环帧
+    private fun handleEnvelope(envelopeIn: MeshEnvelope) {
+        if (envelopeIn.srcId == identity.shortId) return // 忽略自身回环帧
+        // v1.1.57 E2EE：SecBody → 解密还原内层 body（TextBody/GroupBody）再走原逻辑；
+        // 解密失败（无密钥/认证失败）→ 丢弃（防篡改/监听者注入）。信封路由字段（kind/dstId/ttl）不加密。
+        var envelope = envelopeIn
+        decryptSecBody(envelopeIn)?.let { resolved ->
+            envelope = envelopeIn.copy(body = resolved, enc = "aes-gcm-v1")
+        }
         Log.d(TAG, "recv kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId} sessions=${_sessions.value.size}")
         // 握手帧走双通道（write + notify）可能重复送达，按信封 id 去重
         if (envelope.kind == "INVITE" || envelope.kind == "INVITE_ACK") {
@@ -1328,6 +1470,8 @@ class MeshService(
             "INVITE" -> {
                 // 邀请是一跳点对点帧，仅处理发往本机的（防空广播把邀请泄露给无关节点弹窗）
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                // v1.1.57 E2EE：对端公钥 → 派生会话密钥（后续消息加密互通）
+                (envelope.body as? TextBody)?.pubKey?.let { deriveSessionKey(envelope.srcId, it) }
                 if (envelope.srcId in _sessions.value) {
                     // 已建立会话的对端再次发起请求（其确认可能丢失）：重发确认并重启重发窗口，帮助双方收敛
                     _ackRetries.update { it + (envelope.srcId to System.currentTimeMillis()) }
@@ -1339,6 +1483,8 @@ class MeshService(
             "INVITE_ACK" -> {
                 // 确认同样为一跳点对点帧，仅处理发往本机的
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                // v1.1.57 E2EE：对端公钥 → 派生会话密钥
+                (envelope.body as? TextBody)?.pubKey?.let { deriveSessionKey(envelope.srcId, it) }
                 val firstTime = envelope.srcId !in _sessions.value
                 _sessions.update { it + envelope.srcId }
                 sessionStore.save(_sessions.value)
@@ -1441,8 +1587,12 @@ class MeshService(
                 // Forward，DedupCache 防环 + TTL 递减 + 抖动错峰）；订阅者即中继，泛洪延伸所有成员。
                 val body = envelope.body as? GroupBody ?: return
                 if (body.op == "JOIN") {
-                    // 群创建帧（MVP 仅传播群名）：学习群名，不落库不回执
+                    // 群创建帧（MVP 仅传播群名+群密钥）：学习群名；携带群密钥则保存（群聊对称加密前提）
                     learnGroupName(body.groupId, body.groupName)
+                    if (body.groupKey.isNotBlank()) {
+                        val gk = runCatching { java.util.Base64.getDecoder().decode(body.groupKey) }.getOrNull()
+                        if (gk != null) saveGroupKey(body.groupId, gk)
+                    }
                 } else if (body.groupId in _joinedGroups.value) {
                     if (!isGroupDup(envelope, body)) {   // 内容指纹去重：新 id 重发/环路重复不重复落库
                         learnGroupName(body.groupId, body.groupName)

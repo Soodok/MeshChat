@@ -21,7 +21,8 @@ interface MeshRepository {
     fun observeSessions(): Flow<Set<String>>
     fun observePendingInvites(): Flow<Set<String>>
     fun observeInvites(): Flow<Map<String, Long>>
-    fun sendText(convId: String, text: String)
+    /** v1.1.57 E2EE 强制加密：返回是否发送成功（false = 无会话密钥拒绝发送，对方旧版本/未协商）。 */
+    fun sendText(convId: String, text: String): Boolean
     fun sendFile(convId: String, dstId: String, openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long): String?
     fun observeFileProgress(): Flow<com.meshchat.app.mesh.transfer.FileProgress?>
     fun sendInvite(peerId: String)
@@ -107,10 +108,10 @@ class MeshRepositoryImpl(
 
     override fun observeInvites(): Flow<Map<String, Long>> = service.invites
 
-    override fun sendText(convId: String, text: String) {
+    override fun sendText(convId: String, text: String): Boolean {
         // 自环会话（conv-ME）目标为本机短 ID，触发本地投递；节点会话目标为其短 ID
         val dstId = if (convId == "conv-ME") service.shortId else convId.substringAfterLast("-")
-        service.sendText(convId, dstId, text)
+        return service.sendText(convId, dstId, text)
     }
 
     override fun sendFile(convId: String, dstId: String, openSource: () -> java.io.InputStream, fileName: String, mime: String, size: Long): String? =

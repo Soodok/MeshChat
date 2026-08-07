@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.meshchat.app.mesh.crypto.AndroidE2eeKeyStore
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.identity.ShortIdGen
 import com.meshchat.app.mesh.routing.DedupCache
@@ -116,6 +117,7 @@ class MeshChatApplication : Application() {
             tmpDir = { File(filesDir, "transfers") },
             sessionStore = SharedPrefsSessionStore(this),
             groupStore = SharedPrefsGroupStore(this),   // v1.1.50：群订阅/群名持久化
+            e2eeStore = AndroidE2eeKeyStore(this),      // v1.1.57：E2EE 密钥（AndroidKeyStore 私钥 + SharedPrefs 派生密钥）
             onIncomingMessage = { fromId, fromName, text, convId ->
                 // v1.1.50：convId = 群会话键（group-<id>）或点对点 conv-<fromId>，通知点击直达对应会话
                 notifications.showMessage(fromName, text.take(80), convId)

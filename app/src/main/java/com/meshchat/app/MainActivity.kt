@@ -2,6 +2,7 @@ package com.meshchat.app
 
 import android.Manifest
 import android.bluetooth.BluetoothManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -42,6 +43,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    /** v1.1.57：蓝牙未开启时弹系统授权窗申请打开（ACTION_REQUEST_ENABLE），用户允许后自动启动 Mesh。 */
+    private val bluetoothEnableLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+            ensureBluetoothAndStart()
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 通知点击 → 打开对应会话（conversationRequest 由 ViewModel 订阅）
@@ -67,7 +74,14 @@ class MainActivity : ComponentActivity() {
         val manager = getSystemService(BluetoothManager::class.java)
         val adapter = manager.adapter
         if (adapter == null || !adapter.isEnabled) {
-            Toast.makeText(this, "蓝牙未开启，请先开启蓝牙后重试", Toast.LENGTH_LONG).show()
+            // v1.1.57：不再只 Toast，弹系统授权窗申请打开蓝牙；用户允许后回调重新启动
+            if (adapter != null) {
+                runCatching {
+                    bluetoothEnableLauncher.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                }.onFailure { Toast.makeText(this, "无法申请开启蓝牙，请在系统设置中手动开启", Toast.LENGTH_LONG).show() }
+            } else {
+                Toast.makeText(this, "设备不支持蓝牙", Toast.LENGTH_LONG).show()
+            }
             return
         }
         (application as MeshChatApplication).startMesh()

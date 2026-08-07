@@ -1,5 +1,11 @@
 package com.meshchat.app.ui.screens
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,6 +60,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -84,6 +91,16 @@ fun MeshScreen(
     discoveryMode: com.meshchat.app.mesh.transport.DiscoveryMode,
     onSetDiscoveryMode: (com.meshchat.app.mesh.transport.DiscoveryMode) -> Unit,
 ) {
+    // v1.1.57：蓝牙未开启时拒绝开启搜索并弹系统授权窗申请打开（ACTION_REQUEST_ENABLE）
+    val context = LocalContext.current
+    val bluetoothEnableLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { }
+    val requestBluetoothEnable = {
+        runCatching {
+            bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+        }
+    }
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
@@ -151,10 +168,15 @@ fun MeshScreen(
                 androidx.compose.material3.Switch(
                     checked = discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.SILENT,
                     onCheckedChange = { on ->
-                        onSetDiscoveryMode(
-                            if (on) com.meshchat.app.mesh.transport.DiscoveryMode.SILENT
-                            else com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL,
-                        )
+                        // 关闭静默 = 恢复可被发现（开广播）→ 蓝牙未开启则拒绝并弹窗申请
+                        if (!on && !bluetoothEnabled(context)) {
+                            requestBluetoothEnable()
+                        } else {
+                            onSetDiscoveryMode(
+                                if (on) com.meshchat.app.mesh.transport.DiscoveryMode.SILENT
+                                else com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL,
+                            )
+                        }
                     },
                 )
             }
@@ -176,7 +198,14 @@ fun MeshScreen(
                             com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED)
                             com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED,
                             com.meshchat.app.mesh.transport.DiscoveryMode.SILENT,
-                            -> onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+                            -> {
+                                // v1.1.57：开启搜索需要广播+扫描 → 蓝牙未开启则拒绝并弹窗申请
+                                if (!bluetoothEnabled(context)) {
+                                    requestBluetoothEnable()
+                                } else {
+                                    onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+                                }
+                            }
                         }
                     }
                     .padding(horizontal = 20.dp, vertical = 16.dp),
@@ -209,6 +238,12 @@ fun MeshScreen(
         item { Spacer(Modifier.height(8.dp)) }
     }
 }
+
+/** v1.1.57：本机蓝牙是否开启（广播/扫描前提）。 */
+private fun bluetoothEnabled(context: Context): Boolean =
+    runCatching {
+        (context.getSystemService(BluetoothManager::class.java))?.adapter?.isEnabled == true
+    }.getOrDefault(false)
 
 /**
  * 搜索开关状态指示（v1.1.49 录像键样式；v1.1.52 起整合进"蓝牙搜索"按钮，纯视觉不独立响应点击）：

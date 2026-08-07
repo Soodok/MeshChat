@@ -30,6 +30,14 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val oscHistory by viewModel.oscHistory.collectAsStateWithLifecycle()
     val debugLogLines by viewModel.debugLogLines.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    // v1.1.57 E2EE：发送被拒（对方未启用加密）→ Toast 提示
+    val sendRejected by viewModel.sendRejected.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(sendRejected) {
+        if (sendRejected != null) {
+            android.widget.Toast.makeText(context, sendRejected, android.widget.Toast.LENGTH_SHORT).show()
+            viewModel.consumeSendRejected()
+        }
+    }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         viewModel.recordSecurityCapabilityResult(SecurityCapability.NOTIFICATIONS, granted)
     }

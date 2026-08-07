@@ -48,6 +48,11 @@ class MeshChatViewModel(
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
 
+    /** v1.1.57 E2EE：发送被拒的一次性提示（UI collect 显示 Toast 后清空）。 */
+    private val _sendRejected = MutableStateFlow<String?>(null)
+    val sendRejected: StateFlow<String?> = _sendRejected
+    fun consumeSendRejected() { _sendRejected.value = null }
+
     /** 供 UI 展示当前会话状态。 */
     val currentConversation: StateFlow<String?> = conversationTarget
 
@@ -366,8 +371,13 @@ class MeshChatViewModel(
         if (text.isBlank()) return
         val target = conversationTarget.value ?: return
         viewModelScope.launch {
-            if (isGroupTarget(target)) repository.sendGroupMessage(target, text.trim())
-            else repository.sendText("conv-$target", text.trim())
+            if (isGroupTarget(target)) {
+                repository.sendGroupMessage(target, text.trim())
+            } else {
+                // v1.1.57 E2EE 强制加密：无会话密钥（对方旧版本/未协商）→ 拒绝发送并提示
+                val sent = repository.sendText("conv-$target", text.trim())
+                if (!sent) _sendRejected.value = "对方未启用加密，无法发送消息"
+            }
         }
     }
 
