@@ -1078,6 +1078,35 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `suspendDiscovery stops heartbeat pings until resumed`() {
+        // v1.1.52（用户反馈"停止搜索还在发包"）：搜索停止 → 心跳 PING 静默（调试中心发包计数归零），恢复后立即补发
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache(),
+        )
+        service.start()
+        val t0 = System.currentTimeMillis()
+        val pingCount = { transport.frames.count {
+            it.type == FrameType.DATA && MeshJson.decodeEnvelope(it.payloadText).kind == "PING"
+        } }
+
+        service.sendPingIfDue(t0)          // 搜索中：发 PING
+        assertEquals("搜索中应发心跳", 1, pingCount())
+
+        service.suspendDiscovery()
+        service.sendPingIfDue(t0 + 1_000)  // 已停止：心跳静默
+        service.sendPingIfDue(t0 + 2_000)
+        service.sendPingIfDue(t0 + 3_000)
+        assertEquals("搜索停止后不再发包", 1, pingCount())
+
+        service.resumeDiscovery()
+        service.sendPingIfDue(t0 + 4_000)  // 恢复后立即补发（lastPingAt 未推进）
+        assertEquals("恢复后立即补发心跳", 2, pingCount())
+        service.stop()
+    }
+
+    @Test
     fun `tx power can be adjusted via debug control and reset to default`() = runTest {
         val identity = LocalIdentity(shortId = "ME")
         val transport = InMemoryTransport()

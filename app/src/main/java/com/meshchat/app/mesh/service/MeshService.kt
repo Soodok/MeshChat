@@ -933,8 +933,14 @@ class MeshService(
      * 心跳到期检查（独立心跳协程每心跳间隔调用一次；now 可注入便于测试）。
      * 与 200ms tick 解耦，支持 50ms 级高频调试档——BLE 广播受系统约 100ms 最小间隔限制，
      * 高频档在已建立 GATT 连接通道（写/notify）上真实生效。
+     *
+     * v1.1.52（用户反馈）：搜索已停止（discoveryEnabled=false）时跳过 PING 广播——
+     * 关闭搜索 = 停广播 + 停扫描 + 停心跳发包（调试中心发送计数归零，语义一致）；
+     * 不更新 lastPingAt，恢复搜索后立即补发。已建立 GATT 连接的消息收发不受影响
+     * （TEXT/RECEIPT 走写通道仍达），仅周期性的对外广播停止。
      */
     internal fun sendPingIfDue(now: Long = System.currentTimeMillis()) {
+        if (!_discoveryEnabled.value) return   // v1.1.52：搜索停止 → 心跳静默
         if (now - lastPingAt >= heartbeatIntervalMs) {
             lastPingAt = now
             sendPing()

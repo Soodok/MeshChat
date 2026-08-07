@@ -21,12 +21,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.BluetoothSearching
+import androidx.compose.material.icons.outlined.BluetoothDisabled
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.PhoneAndroid
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -90,19 +90,18 @@ fun MeshScreen(
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peers = peers, sessions = sessions) }
         item {
+            // v1.1.52：搜索开关红键已整合进底部"蓝牙搜索"按钮（消除两键冲突），标题行不再独立放开关
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
             ) {
                 Text("附近节点（${nearbyPeers.size}）", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.weight(1f))
-                DiscoveryToggleButton(enabled = discoveryEnabled, onClick = onToggleDiscovery)
             }
         }
         if (nearbyPeers.isEmpty()) {
             item {
                 Text(
-                    text = if (discoveryEnabled) "正在扫描邻近节点…" else "搜索已停止 · 点击右侧红色按键开启",
+                    text = if (discoveryEnabled) "正在扫描邻近节点…" else "搜索已停止 · 点击下方按钮开启",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (discoveryEnabled) TextSecondary else MeshAmber,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
@@ -131,31 +130,50 @@ fun MeshScreen(
             }
         }
         item {
-            Button(
-                onClick = onStartDiscovery,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 24.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Color(0xFF081420)),
+            // v1.1.52 整合控件：搜索开关 + 重新发现合并为一个按钮（消除"红键 + 重新发现"两键冲突）。
+            // 搜索中 → 点击强制重新发现（重建 BLE）；已停止 → 点击开启搜索（恢复广播+扫描）。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 20.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (discoveryEnabled) Cyan else MeshRed.copy(alpha = 0.12f))
+                    .clickable { if (discoveryEnabled) onStartDiscovery() else onToggleDiscovery() }
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
             ) {
-                Icon(Icons.AutoMirrored.Outlined.BluetoothSearching, null)
-                Text("重新发现", modifier = Modifier.padding(start = 8.dp))
+                Icon(
+                    if (discoveryEnabled) Icons.AutoMirrored.Outlined.BluetoothSearching else Icons.Outlined.BluetoothDisabled,
+                    null,
+                    tint = if (discoveryEnabled) Color(0xFF081420) else MeshRed,
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = if (discoveryEnabled) "搜索中 · 点击重新发现" else "搜索已停止 · 点击开启",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                    color = if (discoveryEnabled) Color(0xFF081420) else MeshRed,
+                    modifier = Modifier.weight(1f),
+                )
+                // 录像键状态指示（纯视觉，点击由整行处理）
+                DiscoveryToggleButton(enabled = discoveryEnabled)
             }
         }
     }
 }
 
 /**
- * 搜索开关（v1.1.49）：录像键样式——搜索中 = 红色实心圆 + 白点（录制中），
- * 已停止 = 红色空心圆环。点击切换广播+扫描（已建立 GATT 连接收发不受影响）。
+ * 搜索开关状态指示（v1.1.49 录像键样式；v1.1.52 起整合进"蓝牙搜索"按钮，纯视觉不独立响应点击）：
+ * 搜索中 = 红色实心圆 + 白点（录制中），已停止 = 红色空心圆环 + 中心红点。
  */
 @Composable
-private fun DiscoveryToggleButton(enabled: Boolean, onClick: () -> Unit) {
+private fun DiscoveryToggleButton(enabled: Boolean) {
     val diameter = 34.dp
     val ring = 2.dp
     Box(
         modifier = Modifier
             .size(diameter)
             .clip(CircleShape)
-            .clickable(onClick = onClick)
             .then(
                 if (enabled) {
                     Modifier.background(MeshRed)
