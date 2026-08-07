@@ -202,6 +202,8 @@ private fun ConversationHeader(
                     relayVia.isNotBlank() -> "经 $relayVia 可达 · 消息经中继送达"
                     !connected -> "等待对方接受对话请求…"
                     presence == com.meshchat.app.mesh.transport.PeerPresence.ONLINE -> "对方在线 · 消息即时送达"
+                    // v1.1.55：广播可见但应用无响应（对方后台冻结/进程未恢复）——消息可能写进蓝牙栈但对方收不到
+                    presence == com.meshchat.app.mesh.transport.PeerPresence.UNRESPONSIVE -> "对方无响应 · 消息可能无法送达"
                     presence == com.meshchat.app.mesh.transport.PeerPresence.SEARCHING -> "正在寻找对方…"
                     presence == com.meshchat.app.mesh.transport.PeerPresence.RECONNECTING -> "对方断线重连中…"
                     else -> "对方离线 · 消息将排队待对方上线"

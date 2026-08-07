@@ -547,6 +547,35 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `peer visible only via scan frames is UNRESPONSIVE not online`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+        val t0 = System.currentTimeMillis()
+
+        // 对方只广播（扫描帧持续到达），从未发过协议帧（App 应用层无响应/被系统冻结）
+        transport.emitPeer(MeshPeerInfo(shortId = "OTHER", deviceAddress = "AA:BB:CC", rssi = -50))
+        Thread.sleep(200) // foundPeers collector 异步写入 peerEntries
+        service.heartbeatTick(t0 + 300)
+        assertEquals("仅扫描可见不应在线", PeerPresence.UNRESPONSIVE, service.peers.value.first().presence)
+
+        // 收到协议帧（PING）→ 应用层活跃 → ONLINE
+        service.handleFrame(pingFrame("OTHER", "老王"))
+        assertEquals("协议帧到达应在线", PeerPresence.ONLINE, service.peers.value.first().presence)
+
+        // 协议帧停发：先等 appSeenAt 真实过期（>2s），再刷扫描帧 → 广播新鲜、协议死 → UNRESPONSIVE
+        Thread.sleep(2_100)
+        transport.emitPeer(MeshPeerInfo(shortId = "OTHER", deviceAddress = "AA:BB:CC", rssi = -50))
+        Thread.sleep(200)
+        service.heartbeatTick(System.currentTimeMillis() + 100)
+        assertEquals("协议失联但广播可见应标记无响应", PeerPresence.UNRESPONSIVE, service.peers.value.first().presence)
+        service.stop()
+    }
+
+    @Test
     fun `presence transitions online then reconnecting then offline without removal`() {
         val transport = CountingTransport()
         val service = MeshService(

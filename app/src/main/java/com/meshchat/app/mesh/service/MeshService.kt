@@ -246,7 +246,14 @@ class MeshService(
     /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
     private val peerEntries = ConcurrentHashMap<String, PeerEntry>()
 
-    private data class PeerEntry(var info: MeshPeerInfo, var lastSeen: Long, var lost: Boolean)
+    /**
+     * 节点条目。v1.1.55 起区分两个"活着"信号源：
+     * - lastSeen：最近任何帧（协议+扫描）——广播可见性。
+     * - appSeenAt：最近**协议帧**（markSeen 刷新，PING/PONG/TEXT/GROUP）——应用层活跃性。
+     * - scanSeenAt：最近**扫描帧**（advertise，peerJob 刷新）——蓝牙栈广播活跃性。
+     * 协议帧失联（appSeenAt 过期）但广播新鲜（scanSeenAt 新鲜）→ UNRESPONSIVE（对方应用层无响应）。
+     */
+    private data class PeerEntry(var info: MeshPeerInfo, var lastSeen: Long, var lost: Boolean, var appSeenAt: Long = 0L, var scanSeenAt: Long = 0L)
 
     /** 上次 PING 广播时刻（tick 200ms 节流到 1s）。 */
     private var lastPingAt = 0L
@@ -361,9 +368,13 @@ class MeshService(
                     // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖；
                     // lastSeenAt 每次扫描帧到达都刷新 → info 必变 → _peers 流必 emit
                     val displayName = existing?.info?.displayName ?: ""
+                    // v1.1.55：扫描帧只刷新 lastSeen（广播可见）+ scanSeenAt，**不刷新 appSeenAt**——
+                    // advertise 只证明蓝牙栈活着，不代表应用层活跃（对方后台冻结时广播仍在，
+                    // appSeenAt 保持过期 → heartbeatTick 判 UNRESPONSIVE，诚实标注"无响应"而非假在线）
                     peerEntries[info.shortId] = PeerEntry(
                         if (existing != null) info.copy(displayName = displayName, lastSeenAt = now) else info.copy(lastSeenAt = now),
                         lastSeen = now, lost = false,
+                        appSeenAt = existing?.appSeenAt ?: 0L, scanSeenAt = now,
                     )
                     // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
                     store.upsertPeer(info.shortId, displayName.ifBlank { info.displayName }, now, info.hops)
@@ -867,15 +878,17 @@ class MeshService(
         val iterator = peerEntries.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next().value
-            val age = now - entry.lastSeen
+            val appAge = now - entry.appSeenAt    // 协议帧年龄（应用层活跃性）
+            val scanAge = now - entry.lastSeen    // 最近任何帧年龄（广播可见性）
             val presence = when {
                 entry.lastSeen == 0L && now - startupAt < SEARCHING_TIMEOUT_MS -> PeerPresence.SEARCHING  // 持久化恢复，6s 内寻找中
                 entry.lastSeen == 0L -> PeerPresence.OFFLINE              // 6s 仍未找到 → 自动失联
-                age < lostHeartbeatMs -> PeerPresence.ONLINE            // 有心跳 → 在线
-                age < OFFLINE_THRESHOLD_MS -> PeerPresence.RECONNECTING   // 短暂失联 → 断线重连中
+                appAge < lostHeartbeatMs -> PeerPresence.ONLINE          // 有协议帧（PING/PONG/TEXT）→ 应用层活跃 → 在线
+                scanAge < lostHeartbeatMs -> PeerPresence.UNRESPONSIVE   // v1.1.55：协议死但广播新鲜——对方蓝牙栈活着、应用层无响应（后台冻结/进程未恢复）
+                scanAge < OFFLINE_THRESHOLD_MS -> PeerPresence.RECONNECTING   // 短暂失联 → 断线重连中
                 else -> PeerPresence.OFFLINE                              // 长时间无响应 → 离线（保留）
             }
-            entry.lost = age > lostHeartbeatMs
+            entry.lost = scanAge > lostHeartbeatMs
             entry.info = entry.info.copy(lost = entry.lost, presence = presence)
         }
         // v1.1.0 路由清理：中继失联（lastSeen 超 OFFLINE_THRESHOLD 或已移除）→ 移除经它的路由；
@@ -1083,12 +1096,13 @@ class MeshService(
         }
     }
 
-    /** 标记节点可见：更新 lastSeen；带昵称时更新显示名并落库。 */
+    /** 标记节点可见：更新 lastSeen + appSeenAt（协议帧=应用层活跃）；带昵称时更新显示名并落库。 */
     private fun markSeen(peerId: String, displayName: String) {
         val now = System.currentTimeMillis()
         val existing = peerEntries[peerId]
         if (existing != null) {
             existing.lastSeen = now
+            existing.appSeenAt = now   // v1.1.55：协议帧到达 = 应用层活跃（区别于纯广播）
             existing.lost = false
             // 显式更新当前 peer 为在线；displayName 为空时保留已学昵称（不覆盖）。
             // lastSeenAt 每次帧到达都刷新 → info 必变 → _peers 流必 emit → UI 每帧刷新（远距离断连可感知）
@@ -1106,6 +1120,7 @@ class MeshService(
                     displayName = displayName, lost = false, presence = PeerPresence.ONLINE,
                 ),
                 lastSeen = now, lost = false,
+                appSeenAt = now,  // v1.1.55：协议帧到达 = 应用层活跃
             )
         }
         // 总是落库（昵称可能为空/扫描帧）：保证重启后节点持久化恢复，不再依赖 PING 交换

@@ -3,8 +3,14 @@ package com.meshchat.app.mesh.transport
 import com.meshchat.app.mesh.protocol.MeshFrame
 import kotlinx.coroutines.flow.SharedFlow
 
-/** 节点在线状态（三色模型：在线绿 / 寻找中·重连中黄 / 离线黑）。 */
-enum class PeerPresence { ONLINE, SEARCHING, RECONNECTING, OFFLINE }
+/**
+ * 节点在线状态（v1.1.55 四态模型：在线绿 / 无响应琥珀 / 寻找中·重连中黄 / 离线黑）。
+ * - ONLINE：最近收到协议帧（PING/PONG/TEXT）→ 应用层活跃。
+ * - UNRESPONSIVE：协议帧失联但广播（advertise）仍可见——对方蓝牙栈活着但应用层无响应
+ *   （后台冻结/进程被杀未恢复/单向链路断），"显示连上但消息送不到"的诚实标注。
+ * - SEARCHING/RECONNECTING/OFFLINE：原有失联分级。
+ */
+enum class PeerPresence { ONLINE, UNRESPONSIVE, SEARCHING, RECONNECTING, OFFLINE }
 
 /**
  * 发现模式（v1.1.53，用户最终设计）：

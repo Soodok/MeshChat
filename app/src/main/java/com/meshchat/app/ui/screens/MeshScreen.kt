@@ -265,9 +265,10 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
                 {
                     when (it.presence) {
                         PeerPresence.ONLINE -> 0
-                        PeerPresence.RECONNECTING -> 1
-                        PeerPresence.SEARCHING -> 2
-                        PeerPresence.OFFLINE -> 3
+                        PeerPresence.UNRESPONSIVE -> 1   // v1.1.55：广播可见但无响应——优先于普通失联保留显示
+                        PeerPresence.RECONNECTING -> 2
+                        PeerPresence.SEARCHING -> 3
+                        PeerPresence.OFFLINE -> 4
                     }
                 },
                 { it.shortId },
@@ -294,7 +295,8 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         topologyPeers.forEach { peer ->
             if (peer.presence == PeerPresence.OFFLINE) return@forEach
             val actualKind = when {
-                peer.presence == PeerPresence.SEARCHING || peer.presence == PeerPresence.RECONNECTING -> TopoKind.SEARCHING
+                peer.presence == PeerPresence.SEARCHING || peer.presence == PeerPresence.RECONNECTING ||
+                    peer.presence == PeerPresence.UNRESPONSIVE -> TopoKind.SEARCHING   // v1.1.55：无响应 = 黄虚线（广播可见但应用层无响应）
                 peer.shortId in sessions -> TopoKind.DIRECT
                 else -> TopoKind.REACHABLE
             }
@@ -401,11 +403,14 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         ) {
             Icon(Icons.Outlined.Hub, null, tint = Cyan, modifier = Modifier.size(19.dp))
             Spacer(Modifier.width(8.dp))
-            val onlineCount = peers.count { it.presence != PeerPresence.OFFLINE }
+            val onlineCount = peers.count { it.presence == PeerPresence.ONLINE }
             val offlineCount = peers.count { it.presence == PeerPresence.OFFLINE }
+            val unresponsiveCount = peers.count { it.presence == PeerPresence.UNRESPONSIVE }
             val sessionCount = peers.count { it.shortId in sessions }
             Text(
-                "已会话 $sessionCount · 在线 $onlineCount · 失联 $offlineCount",
+                // v1.1.55：UNRESPONSIVE（广播可见·无响应）单独计数，不再混入"在线"（避免"显示连上但送不到"的假状态）
+                if (unresponsiveCount > 0) "已会话 $sessionCount · 在线 $onlineCount · 无响应 $unresponsiveCount · 失联 $offlineCount"
+                else "已会话 $sessionCount · 在线 $onlineCount · 失联 $offlineCount",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             )
@@ -471,6 +476,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                         pending -> "等待对方接受"
                         else -> "点击发起对话"
                     }
+                    PeerPresence.UNRESPONSIVE -> "广播可见 · 应用无响应"   // v1.1.55：诚实标注"显示连上但送不到"
                     PeerPresence.SEARCHING -> "寻找中…"
                     PeerPresence.RECONNECTING -> "断线重连中…"
                     PeerPresence.OFFLINE -> "离线"
@@ -480,6 +486,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                 peer.relayVia.isNotBlank() -> MeshGreen
                 else -> when (peer.presence) {
                     PeerPresence.ONLINE -> if (connected) MeshGreen else TextSecondary
+                    PeerPresence.UNRESPONSIVE -> MeshAmber   // v1.1.55：琥珀 = 广播可见但无响应
                     PeerPresence.SEARCHING, PeerPresence.RECONNECTING -> MeshAmber
                     PeerPresence.OFFLINE -> TextSecondary
                 }

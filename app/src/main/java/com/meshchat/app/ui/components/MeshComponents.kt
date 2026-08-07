@@ -45,6 +45,8 @@ fun PresenceAvatar(presence: PeerPresence, modifier: Modifier = Modifier) {
         }
         when (presence) {
             PeerPresence.ONLINE -> Box(Modifier.size(14.dp).clip(CircleShape).background(MeshGreen))
+            // v1.1.55 UNRESPONSIVE：广播可见但应用无响应——琥珀实心点（区别于 SEARCHING/RECONNECTING 的时钟图标）
+            PeerPresence.UNRESPONSIVE -> Box(Modifier.size(14.dp).clip(CircleShape).background(MeshAmber))
             PeerPresence.SEARCHING, PeerPresence.RECONNECTING -> Box(
                 Modifier.size(18.dp).clip(CircleShape).background(InkSoft),
                 contentAlignment = Alignment.Center,

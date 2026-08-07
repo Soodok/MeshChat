@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.54（versionCode 116，构建时间 2026-08-07）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.55（versionCode 117，构建时间 2026-08-07）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -287,8 +287,15 @@ app/src/main/java/com/meshchat/app/
   - **群成员数显示**：GroupInfo 加 `memberCount` + `_groupMembers` StateFlow + `groupMemberIds` 去重集合（广播域无成员表，仅统计本机在线期间发过消息的去重发言者，诚实近似）；groups 合成流改三源 combine（joinedGroups × groupNames × groupMembers）；GROUP 分支落库处统计；ChatsScreen 群行第二行"成员 N · 群ID"/"暂无发言 · 群ID"。
   - **Bug 修复（群成员计数首帧为 0）**：`groupMemberIds[body.groupId]?.add(srcId) == true` 首次 key 不存在返回 null 判 false → 首帧不计数 → 改 `computeIfAbsent` 先建集合再 add。
   - 测试 +1（group member count tracks distinct senders），**161/161 通过**。APK `MeshChat-v1.1.54-debug.apk`（20,974,675 B）/ `MeshChat-v1.1.54-release.apk`（2,949,266 B，R8+正式签名）。⚠️ 待真机验证：① 静默开关可找到、点击生效 ② 蓝牙搜索按钮点一下关（空态"搜索已停止"）、再点恢复 ③ 群里多人发言后群组列表显示"成员 N"。
+- **v1.1.55 无响应状态（UNRESPONSIVE，2026-08-07，用户实测"对方挂后台后：仍显示已连接/延迟/连接状态，但信号回退 dBm、调试中心对方 0 包、发消息无法送达"）**：
+  - **根因**：UI 的"在线/已连接"判定把「蓝牙栈可见（advertise 扫描帧）」当成「应用层活跃（协议帧）」。对方 App 后台冻结时蓝牙广播仍在（advertise 不受后台限制），本机持续收到扫描帧 → lastSeen 刷新 → 判 ONLINE；但对方应用层不处理任何帧 → 本机收不到协议帧 → 信号（receiveSuccessRate 只统计 handleFrame 协议帧）5s 无样本回退 dBm、调试中心 0 包、消息无回执卡 SENDING。
+  - **修复（用户选 B 方案：增加「广播可见·无响应」状态）**：`PeerPresence` 新增 **UNRESPONSIVE**（在线绿 / 无响应琥珀 / 寻找·重连黄 / 离线黑四态）；`PeerEntry` 区分三时间戳——`lastSeen`（任何帧=广播可见）`appSeenAt`（协议帧=应用层活跃，markSeen 刷新）`scanSeenAt`（扫描帧，peerJob 刷新）；heartbeatTick 判定：协议帧新鲜 → ONLINE；协议死但广播新鲜（scanAge<2s）→ **UNRESPONSIVE**；广播失联 <15s → RECONNECTING；≥15s → OFFLINE。
+  - **发送适配（用户追问"这状态下能否发消息，因为还连着"）**：**允许发**——GATT 在系统层还连着，帧可写进对方蓝牙栈，对方恢复后重发队列自动收敛（保持零容错不 FAILED）；但诚实标注：会话页 Header 显示"对方无响应 · 消息可能无法送达"（琥珀），不再假装正常。
+  - **UI 四态适配**：Mesh 页 PeerRow"广播可见 · 应用无响应"（琥珀）+ 拓扑图黄虚线（TopoKind.SEARCHING）+ 统计行"无响应 N"独立计数（不再混入"在线"）；会话页 Header"对方无响应 · 消息可能无法送达"；PresenceAvatar 琥珀实心点。
+  - 测试 +1（peer visible only via scan frames is UNRESPONSIVE not online——含扫描→UNRESPONSIVE→协议帧→ONLINE→协议停发+广播续→UNRESPONSIVE 全链路；注意测试时序：emitPeer 异步需 start()+sleep，appSeenAt 过期需真实 sleep 2.1s），**162/162 通过**。APK `MeshChat-v1.1.55-debug.apk`（20,974,675 B）/ `MeshChat-v1.1.55-release.apk`（2,949,266 B，R8+正式签名）。⚠️ 待真机验证：对方挂后台 → 本机 Mesh 页显示"广播可见 · 应用无响应"（琥珀）而非"已连接"；消息发送 Header 提示"可能无法送达"；对方回前台恢复后 → 回到"已连接/在线"。
 
 ### 已验证内容
+- **v1.1.55 无响应状态验证**：`testDebugUnitTest` **162/162 通过，0 失败**（+1：peer visible only via scan frames is UNRESPONSIVE not online——全链路含 ONLINE↔UNRESPONSIVE 双向转换；存量 66 个 MeshServiceTest 全回归：presence 三态转换/RECONNECTING 语义保留（无扫描帧时协议失联仍 RECONNECTING，不误判 UNRESPONSIVE））；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 117 / versionName 1.1.55）；APK `MeshChat-v1.1.55-debug.apk`（20,974,675 B）/ `MeshChat-v1.1.55-release.apk`（2,949,266 B，R8+正式签名）。⚠️ 待真机验证：① 对方挂后台 → 本机 Mesh 页该节点变"广播可见 · 应用无响应"（琥珀）而非"已连接"绿色 ② 会话页 Header"对方无响应 · 消息可能无法送达" ③ 消息仍可发（对方恢复后自动送达，不 FAILED）④ 对方回前台 → 恢复"已连接/在线" ⑤ 正常双方在线时（协议帧 1s 内）仍显示"已连接"不误报。
 - **v1.1.54 三问题修复验证**：`testDebugUnitTest` **161/161 通过，0 失败**（+1：group member count tracks distinct senders——两成员发言去重数=2，修复 computeIfAbsent 首帧不计数 bug）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 116 / versionName 1.1.54）；APK `MeshChat-v1.1.54-debug.apk`（20,974,675 B）/ `MeshChat-v1.1.54-release.apk`（2,949,266 B，R8+正式签名）。⚠️ 待真机验证：① 静默模式开关置顶可见、点击生效（开=只停广播，对端扫不到你但你一切照常）② 蓝牙搜索按钮 NORMAL 时点击即关闭（空态"搜索已停止 · 点击开启"）、再点恢复 ③ 群成员发言后群组列表"成员 N"递增且去重。
 - **v1.1.53 发现模式验证**：`testDebugUnitTest` **160/160 通过，0 失败**（重写 v1.1.52 心跳静默测试为模式语义：signaling 模式转发 / 三态转发+状态同步 / 全模式保活 PING；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 115 / versionName 1.1.53）；APK `MeshChat-v1.1.53-debug.apk`（20,974,675 B）/ `MeshChat-v1.1.53-release.apk`（2,949,266 B，R8+正式签名）。⚠️ 待真机验证：① 开静默 → 对端扫描不到你、但你扫描/连接/聊天正常 ② 已连接联系人保活在线（不再"看似断"）③ 关静默 → 恢复可被发现。
 - **v1.1.52 搜索开关整合验证**：`testDebugUnitTest` **160/160 通过，0 失败**（+1：suspendDiscovery 停心跳 PING/恢复立即补发；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 114 / versionName 1.1.52）；APK `MeshChat-v1.1.52-debug.apk`（20,958,291 B）/ `MeshChat-v1.1.52-release.apk`（2,949,266 B，R8+正式签名）。⚠️ 待真机验证：① 底部单一"蓝牙搜索"按钮（红键整合后无两键冲突）② 点停止 → 调试中心发包计数归零、Mesh 页空态文案"搜索已停止 · 点击下方按钮开启" ③ 恢复后立即补发心跳、节点重新出现 ④ 已建立会话在搜索关闭期间消息仍可达。⚠️ **注：v1.1.52 的心跳静默语义已被 v1.1.53 取代**（所有模式保活 PING）。
@@ -347,7 +354,7 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **⚠️ 推送阻塞（网络，本次 2026-08-07）**：v1.1.53 提交 `0f9ae73`/`179ffc6` 已本地提交未推送（2026-08-06 网络阻断），**本次 v1.1.54 待提交**。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功，积压 commit：`0f9ae73` + `179ffc6` + v1.1.54 新提交）。
+- **⚠️ 推送阻塞（网络，本次 2026-08-07）**：`github.com:443` 时断时续（fetch 成功过一次、pull/push 多次 Recv failure: Connection reset）。**已 rebase 就位**（远端用户 README 提交 `1ba7b90`/`aee4f19` 之上，本地 5 个提交：`54fc6ca` Wi-Fi Direct 规格 → `20c719d` Wi-Fi Direct 计划 → `314f8e9` v1.1.53 → `0ad8488` AI_CONTEXT → `e3fd87a` v1.1.54），**v1.1.55 待提交**。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功，无需再拉取）。
 - **⚠️ 推送阻塞（网络，本次 2026-08-06）**：`github.com:443` Connection reset / Could not connect，`git push` 连推 3 次失败（含 15s/30s 间隔重试）。**本地已提交未推送**：`0f9ae73`（v1.1.53 发现模式/静默模式）+ `179ffc6`（AI_CONTEXT 记录）。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功）。
 - **⚠️ 推送阻塞（网络，本次 2026-08-05）**：`github.com:443` connection reset/超时，`git push` 连推 4 次失败（含 HTTP/1.1 重试）。**本地已提交未推送**：`546880d`（v1.1.47 回退）+ `1c0a61c`（v1.1.48 三 bug 修复）+ AI_CONTEXT 更新。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功）。
 - **写失败问题已搁置（用户决定性判定：芯片硬限制）**：同版本 v1.1.40 仍周期性 write FAILED（CONNECTED+MTU 517+服务发现正常但 232B 心跳写失败）——v1.1.46 回退 + v1.1.47 重试兜底均已尝试，**用户判定"大概率就是芯片硬限制"**，不再投入。BLE 小帧周期性写拒绝接受为环境属性（上层心跳/消息重发兜底）。
@@ -381,15 +388,16 @@ app/src/main/java/com/meshchat/app/
   - 单测 +7（规格 12.1 全部覆盖），72/72 通过。范围外：文件/握手/群组多跳、3 跳+、加密、路由持久化。
 
 ### 下一步首要任务
-0. **推送积压**：重试 `git push origin main`（积压：`0f9ae73` v1.1.53 + `179ffc6` AI_CONTEXT + v1.1.54 新提交；2026-08-06/07 网络阻断多次，历史网络恢复后均成功）。
-1. **v1.1.54 三问题修复 + v1.1.53 发现模式真机验证（当前版本，优先）**：① 静默模式开关置顶可见、点击生效（开=只停广播，对端扫不到你但你一切照常）② 蓝牙搜索按钮 NORMAL 时点击即关闭（空态"搜索已停止 · 点击开启"）、再点恢复 ③ 群成员发言后群组列表"成员 N"递增且去重 ④ 开静默 → 对端扫描不到你、但你扫描/连接/聊天正常 ⑤ 已连接联系人保活在线 ⑥ 关静默 → 恢复可被发现；随后 v1.1.48 遗留真机复测（文件传输三修复）。
-2. **群组+多跳分批推进（2026-08-06）**：阶段 A（v1.1.50 群消息 MVP + v1.1.51 审查修复）已实施构建待真机验证；**阶段 B（多跳补墙）待实施**：INVITE/INVITE_ACK 中继（`handleEnvelope` INVITE/INVITE_ACK 分支首行 `dstId 校验` 改为与 TEXT 对称的纯中继，规格 §4.1 已就绪）。
-3. **调优（用户选定方向：收发延迟与响应）**：候选点① 心跳默认档加密 ② 送达确认收敛时序 ③ tick 200ms→100ms ④ 重发退避缩短——**改动前逐项与用户对齐，未确认不动**。
-4. **v1.1.0 真机验证——多跳中继三机验收**：按 `2026-08-03-meshchat-multihop-relay-design.md` §12.2 排布 A—B—C。
-5. **v1.0.13 蓝牙重搜验证**。
-6. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
-7. 三机全链路回归。
-8. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、**WiFi Direct 载体（复用 MeshTransport 抽象）**。
+0. **推送积压**：重试 `git push origin main`（已 rebase 就位无需拉取，积压：`54fc6ca`/`20c719d` Wi-Fi Direct 文档 + `314f8e9` v1.1.53 + `0ad8488` AI_CONTEXT + `e3fd87a` v1.1.54 + v1.1.55 新提交；2026-08-06/07 网络时断时续）。
+1. **v1.1.55 无响应状态真机验证（当前版本，优先）**：① 对方挂后台 → 本机 Mesh 页该节点"广播可见 · 应用无响应"（琥珀）而非"已连接" ② 会话页 Header"对方无响应 · 消息可能无法送达" ③ 消息仍可发、对方恢复后自动送达不 FAILED ④ 对方回前台恢复"已连接/在线" ⑤ 正常双方在线不误报。
+2. **v1.1.54 三问题 + v1.1.53 发现模式真机验证**：① 静默开关置顶可见、点击生效 ② 蓝牙搜索按钮 NORMAL 点击即关闭、再点恢复 ③ 群成员"成员 N" ④ 开静默对端扫不到你但你一切照常 ⑤ 已连接联系人保活在线。
+3. **群组+多跳分批推进（2026-08-06）**：阶段 A（v1.1.50 群消息 MVP + v1.1.51 审查修复）已实施构建待真机验证；**阶段 B（多跳补墙）待实施**：INVITE/INVITE_ACK 中继（`handleEnvelope` INVITE/INVITE_ACK 分支首行 `dstId 校验` 改为与 TEXT 对称的纯中继，规格 §4.1 已就绪）。
+4. **调优（用户选定方向：收发延迟与响应）**：候选点① 心跳默认档加密 ② 送达确认收敛时序 ③ tick 200ms→100ms ④ 重发退避缩短——**改动前逐项与用户对齐，未确认不动**。
+5. **v1.1.0 真机验证——多跳中继三机验收**：按 `2026-08-03-meshchat-multihop-relay-design.md` §12.2 排布 A—B—C。
+6. **v1.0.13 蓝牙重搜验证**。
+7. 备用源 `soodok.online/meshchat_bare.git` 同步（如需）。
+8. 三机全链路回归。
+9. 按规格开放问题推进：真实加密接入（Cipher 接口占位）、**WiFi Direct 载体（复用 MeshTransport 抽象）**。
 
 ### 本次涉及的关键文件
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）
@@ -457,3 +465,4 @@ app/src/main/java/com/meshchat/app/
 - **v1.1.52 搜索开关整合 + 心跳静默**：`ui/screens/MeshScreen.kt`（**红键从标题行移除，整合进底部"蓝牙搜索"按钮为一个控件：蓝牙图标+状态文案（搜索中"搜索中 · 点击重新发现"/已停止"搜索已停止 · 点击开启"）+录像键纯视觉指示；点击分流 搜索中→onStartDiscovery/已停止→onToggleDiscovery；空态文案更新；移除未用 Button/ButtonDefaults import**）、`mesh/service/MeshService.kt`（**sendPingIfDue 检查 discoveryEnabled——停止搜索后心跳 PING 静默，调试中心发包计数归零，恢复后立即补发**）、`MeshServiceTest.kt`（+1：suspendDiscovery 停心跳/恢复补发）；版本 `app/build.gradle.kts`（v1.1.52/114）
 - **v1.1.53 发现模式（静默模式）**：`mesh/transport/MeshTransport.kt`（**DiscoveryMode 枚举 NORMAL/CLOSED/SILENT + applyDiscoveryMode 接口**）、`mesh/transport/BleTransport.kt`（**applyDiscoveryMode 覆写：advertise/scan 拆分控制；start/stop 幂等防重标志 advertisingStarted/scanningStarted；refreshAdvertising 改走带标志 stop**）、`mesh/transport/InMemoryTransport.kt`（**lastDiscoveryMode 断言位**）、`mesh/service/MeshService.kt`（**discoveryMode StateFlow 取代 discoveryEnabled 布尔 + setDiscoveryMode 幂等（同步维护 discoveryEnabled=mode≠CLOSED 消除异步窗口）；sendPingIfDue 移除 discoveryEnabled 检查（所有模式保活 PING）；suspendDiscovery/resumeDiscovery/suspendSignaling 映射 CLOSED/NORMAL**）、`data/MeshRepository.kt`（discoveryMode/setDiscoveryMode 接口）、`ui/MeshChatViewModel.kt`（**discoveryMode/setDiscoveryMode/toggleSilentMode 取代 discoveryEnabled/toggleDiscovery**）、`ui/screens/MeshScreen.kt`（**底部"蓝牙搜索"按钮三态 + "静默模式"Switch 行 + 空态三态文案**）、`ui/screens/MeshChatHome.kt`/`ui/MeshChatApp.kt`（discoveryMode/onSetDiscoveryMode 接线）、`MeshChatApplication.kt`（**applyAutoDiscovery 改 setDiscoveryMode（关=CLOSED）**）、`MeshServiceTest.kt`（**重写 v1.1.52 心跳静默测试为模式语义 +3**）；版本 `app/build.gradle.kts`（v1.1.53/115）
 - **v1.1.54 三问题修复（本次 2026-08-07）**：`ui/screens/MeshScreen.kt`（**静默模式 Switch 移到 peers 列表后、蓝牙搜索按钮前置顶显眼；蓝牙搜索按钮改开/关切换 NORMAL→CLOSED（修复点击关不了），移除 onStartDiscovery 死参数**）、`ui/screens/ChatsScreen.kt`（**GroupRow 第二行改"成员 N · 群ID"/"暂无发言 · 群ID"**）、`mesh/service/MeshService.kt`（**GroupInfo.memberCount + _groupMembers StateFlow + groupMemberIds 去重集合 + groups 三源 combine + GROUP 分支成员统计 + computeIfAbsent 修复首帧不计数**）、`ui/MeshChatHome.kt`/`ui/MeshChatApp.kt`/`ui/MeshChatViewModel.kt`（移除 startDiscovery 死链）、`MeshServiceTest.kt`（**+1 group member count tracks distinct senders**）；版本 `app/build.gradle.kts`（v1.1.54/116）、`AI_CONTEXT.md`
+- **v1.1.55 无响应状态（本次 2026-08-07，用户实测"对方挂后台显示连上但送不到"）**：`mesh/transport/MeshTransport.kt`（**PeerPresence 枚举新增 UNRESPONSIVE——四态模型**）、`mesh/service/MeshService.kt`（**PeerEntry 三时间戳 lastSeen/appSeenAt/scanSeenAt——扫描帧只刷 lastSeen+scanSeenAt 不刷 appSeenAt，协议帧（markSeen）刷 appSeenAt；heartbeatTick 四态判定：协议死但广播新鲜 → UNRESPONSIVE**）、`ui/screens/MeshScreen.kt`（**PeerRow"广播可见 · 应用无响应"琥珀 + 拓扑图黄虚线 + 统计行"无响应 N"独立计数**）、`ui/screens/ConversationScreen.kt`（**Header"对方无响应 · 消息可能无法送达"**）、`ui/components/MeshComponents.kt`（**PresenceAvatar 琥珀实心点**）、`MeshServiceTest.kt`（**+1 UNRESPONSIVE 全链路测试：扫描→UNRESPONSIVE→协议帧→ONLINE→协议停+广播续→UNRESPONSIVE**）；版本 `app/build.gradle.kts`（v1.1.55/117）、`AI_CONTEXT.md`
