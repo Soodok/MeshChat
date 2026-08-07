@@ -1,12 +1,14 @@
 package com.meshchat.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -14,17 +16,25 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -55,10 +65,17 @@ fun SecurityCenterScreen(
     onRefreshLocalSecurity: () -> Unit,
     onDeleteLocalHistory: () -> Unit,
     onBack: () -> Unit,
+    /** v1.1.59 应用锁（安全中心密码设置入口）。 */
+    hasLockPassword: Boolean,
+    lockBiometricAvailable: Boolean,
+    onSetLockPassword: (String) -> Unit,
+    onChangeLockPassword: (old: String, new: String) -> Boolean,
+    onRemoveLockPassword: () -> Unit,
 ) {
     LaunchedEffect(Unit) { onRefreshLocalSecurity() }
     val summary = SecurityCenterPresenter.summary(localSnapshot?.assessment)
     val orderedStatuses = SecurityCapability.entries.mapNotNull { statuses[it] }
+    var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
 
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         SecurityCenterHeader(onBack)
@@ -95,6 +112,54 @@ fun SecurityCenterScreen(
                         modifier = Modifier.padding(top = 14.dp),
                     )
                 }
+                // v1.1.59 应用锁（密码设置入口）
+                Text("应用锁", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 28.dp, bottom = 10.dp))
+                Surface(color = InkRaised, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Lock, null, tint = Cyan, modifier = Modifier.size(20.dp))
+                            Text("应用锁", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 10.dp))
+                            Spacer(Modifier.weight(1f))
+                            Box(
+                                Modifier.size(8.dp).background(if (hasLockPassword) MeshGreen else TextSecondary, androidx.compose.foundation.shape.CircleShape),
+                            )
+                            Text(
+                                if (hasLockPassword) "已启用" else "未设置",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (hasLockPassword) MeshGreen else TextSecondary,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                        Text(
+                            if (hasLockPassword) {
+                                if (lockBiometricAvailable) "密码+指纹解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
+                                else "密码解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
+                            } else "设置密码后：每次进入应用需密码/指纹解锁，会话/群密钥以最高强度加密存储，锁定期间通知不显示内容。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        if (hasLockPassword) {
+                            Row(modifier = Modifier.padding(top = 14.dp)) {
+                                Button(
+                                    onClick = { lockDialog = LockDialog.CHANGE },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Ink),
+                                ) { Text("修改密码") }
+                                Spacer(Modifier.width(10.dp))
+                                OutlinedButton(
+                                    onClick = { lockDialog = LockDialog.REMOVE },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MeshAmber),
+                                ) { Text("移除密码") }
+                            }
+                        } else {
+                            Button(
+                                onClick = { lockDialog = LockDialog.SET },
+                                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Ink),
+                            ) { Text("设置密码") }
+                        }
+                    }
+                }
                 Text("本地检查记录", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 28.dp, bottom = 10.dp))
                 if (localSnapshot?.events.isNullOrEmpty()) {
                     Text("暂无可保存的本地风险记录。", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
@@ -116,6 +181,38 @@ fun SecurityCenterScreen(
                 )
             }
         }
+    }
+
+    when (lockDialog) {
+        LockDialog.SET -> LockPasswordDialog(
+            title = "设置应用锁密码",
+            confirmText = "设置",
+            onChangeLockPassword = null,
+            onSetLockPassword = onSetLockPassword,
+            onDismiss = { lockDialog = null },
+        )
+        LockDialog.CHANGE -> LockPasswordDialog(
+            title = "修改应用锁密码",
+            confirmText = "修改",
+            onChangeLockPassword = onChangeLockPassword,
+            onSetLockPassword = null,
+            onDismiss = { lockDialog = null },
+        )
+        LockDialog.REMOVE -> AlertDialog(
+            onDismissRequest = { lockDialog = null },
+            title = { Text("移除应用锁密码？") },
+            text = { Text("移除后不再要求解锁，已加密的会话/群密钥将回退为明文存储，且无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRemoveLockPassword()
+                    lockDialog = null
+                }) { Text("移除", color = MeshAmber) }
+            },
+            dismissButton = {
+                TextButton(onClick = { lockDialog = null }) { Text("取消") }
+            },
+        )
+        null -> Unit
     }
 }
 

@@ -51,7 +51,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.meshchat.app.security.local.AndroidLocalSecuritySignalCollector
-import com.meshchat.app.security.lock.BiometricUnlockRequest
 import com.meshchat.app.security.lock.LockoutState
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider
@@ -74,8 +73,7 @@ fun AppLockScreen(
     biometricAvailable: Boolean,
     lockout: LockoutState,
     onVerifyPassword: (String) -> Boolean,
-    onCreateBiometricUnlock: () -> BiometricUnlockRequest?,
-    onUnlockWithBiometric: (BiometricUnlockRequest) -> Boolean,
+    onFinishBiometricUnlock: () -> Boolean,
     onRemainingLockoutMs: () -> Long,
 ) {
     val context = LocalContext.current
@@ -83,7 +81,6 @@ fun AppLockScreen(
     var password by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var showBioError by remember { mutableStateOf(false) }
-    var lastBiometricRequest by remember { mutableStateOf<BiometricUnlockRequest?>(null) }
     var biometricPrompt by remember { mutableStateOf<BiometricPrompt?>(null) }
 
     // 锁定倒计时轮询（0.5s 刷新）
@@ -106,9 +103,8 @@ fun AppLockScreen(
             executor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    val req = lastBiometricRequest
-                    if (req != null) onUnlockWithBiometric(req)
-                    else showBioError = true
+                    // v1.1.59：认证成功后解密（keystore 已解锁生物密钥），兼容华为/部分 ROM 认证前 init 被拒
+                    if (!onFinishBiometricUnlock()) showBioError = true
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -123,13 +119,8 @@ fun AppLockScreen(
     }
 
     fun unlockWithFingerprint() {
-        val req = onCreateBiometricUnlock()
-        if (req == null) {
-            error = "生物识别暂不可用：请先解锁手机屏幕，或改用密码"
-            return
-        }
-        lastBiometricRequest = req
         showBioError = false
+        error = null
         val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             BiometricPrompt.PromptInfo.Builder()
                 .setTitle("指纹解锁 MeshChat")
@@ -143,7 +134,7 @@ fun AppLockScreen(
                 .setNegativeButtonText("取消")
                 .build()
         }
-        biometricPrompt?.authenticate(info, BiometricPrompt.CryptoObject(req.cipher))
+        biometricPrompt?.authenticate(info)
     }
 
     fun unlockWithPassword() {
@@ -260,6 +251,13 @@ fun AppLockScreen(
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
+            } else {
+                Text(
+                    "未检测到可用的指纹：设备未录入指纹或系统不支持，请用密码解锁（可在系统设置中录入指纹后重试）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                )
             }
             Spacer(Modifier.height(16.dp))
             HorizontalDivider(color = Divider)

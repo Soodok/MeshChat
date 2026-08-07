@@ -108,24 +108,23 @@ class AppLockManager(private val context: Context) {
         return true
     }
 
-    /** 创建指纹解锁请求：BiometricPrompt 用 CryptoObject(cipher) 认证，成功回调里 finish() 解出 DEK。 */
-    fun createBiometricUnlock(): BiometricUnlockRequest? {
-        val blob = prefs.getString(KEY_DEK_BY_BIO, null) ?: return null
-        return runCatching {
+    /**
+     * v1.1.59 指纹解锁（认证成功后解密）：BiometricPrompt 认证成功回调里调用。
+     * 认证成功 → keystore 解锁生物密钥 → init + doFinal 必然成功。
+     * 不依赖认证前 init（华为/部分 ROM 上 setUserAuthenticationRequired 密钥在认证前 init 会被拒 → 原方案"指纹不可用"）。
+     */
+    fun finishBiometricUnlockAfterAuth(): Boolean {
+        if (isLockedOut()) return false
+        val blob = prefs.getString(KEY_DEK_BY_BIO, null) ?: return false
+        val d = runCatching {
             val raw = Base64.getDecoder().decode(blob)
             val iv = raw.copyOfRange(0, LockCrypto.GCM_IV_BYTES)
             val ct = raw.copyOfRange(LockCrypto.GCM_IV_BYTES, raw.size)
             val key = biometricKey()
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
-            BiometricUnlockRequest(cipher, ct)
-        }.getOrNull()   // 设备锁屏/密钥失效 → null，UI 提示改用密码
-    }
-
-    /** BiometricPrompt 认证成功后调用：解出 DEK 并解锁。 */
-    fun unlockWithBiometric(request: BiometricUnlockRequest): Boolean {
-        if (isLockedOut()) return false
-        val d = request.finish() ?: return false
+            cipher.doFinal(ct)
+        }.getOrNull() ?: return false
         dek = d
         locked.value = false
         clearLockout()
@@ -238,15 +237,3 @@ data class LockoutState(
     val failCount: Int = 0,
     val lockoutUntilMs: Long = 0L,
 )
-
-/**
- * v1.1.58 指纹解锁请求：BiometricPrompt 用 CryptoObject(cipher) 认证（系统解锁生物密钥），
- * 认证成功回调里 [finish] 解出 DEK。cipher 构造时已 init（设备解锁态），认证后可直接 doFinal。
- */
-class BiometricUnlockRequest internal constructor(
-    val cipher: Cipher,
-    private val ciphertext: ByteArray,
-) {
-    /** 认证成功后调用：doFinal 解出 DEK；失败（认证未真正生效/篡改）返回 null。 */
-    fun finish(): ByteArray? = runCatching { cipher.doFinal(ciphertext) }.getOrNull()
-}

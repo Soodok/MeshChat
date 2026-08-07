@@ -261,6 +261,11 @@ fun MeshChatHome(
                 onRefreshLocalSecurity = onRefreshLocalSecurity,
                 onDeleteLocalHistory = onDeleteLocalSecurityHistory,
                 onBack = { profileDetail = null },
+                hasLockPassword = hasLockPassword,
+                lockBiometricAvailable = lockBiometricAvailable,
+                onSetLockPassword = onSetLockPassword,
+                onChangeLockPassword = onChangeLockPassword,
+                onRemoveLockPassword = onRemoveLockPassword,
             )
         }
         return

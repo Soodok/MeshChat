@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -135,8 +137,8 @@ fun IdentityKeyScreen(
     }
 }
 
-/** 应用锁密码对话框模式。 */
-private enum class LockDialog { SET, CHANGE, REMOVE }
+/** 应用锁密码对话框模式（v1.1.59 供通用设置与安全中心复用）。 */
+internal enum class LockDialog { SET, CHANGE, REMOVE }
 
 @Composable
 fun GeneralSettingsScreen(
@@ -159,7 +161,12 @@ fun GeneralSettingsScreen(
     var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
     var lockError by remember { mutableStateOf<String?>(null) }
 
-    Column(modifier = Modifier.fillMaxSize().background(Ink)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Ink)
+            .verticalScroll(rememberScrollState()),   // v1.1.59：内容超屏可滚动，修复被遮挡
+    ) {
         DetailHeader(title = "通用设置", icon = Icons.Outlined.Settings, onBack = onBack)
         Text("节点昵称", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
         OutlinedTextField(
@@ -330,9 +337,9 @@ private fun LockAutomationWarning() {
     }
 }
 
-/** 设置/修改密码对话框：SET 模式两个输入（新+确认）；CHANGE 模式三个（旧+新+确认）。 */
+/** 设置/修改密码对话框：SET 模式两个输入（新+确认）；CHANGE 模式三个（旧+新+确认）。v1.1.59 供通用设置与安全中心复用。 */
 @Composable
-private fun LockPasswordDialog(
+internal fun LockPasswordDialog(
     title: String,
     confirmText: String,
     onChangeLockPassword: ((old: String, new: String) -> Boolean)?,
