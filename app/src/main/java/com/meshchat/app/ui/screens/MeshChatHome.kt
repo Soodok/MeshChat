@@ -108,6 +108,12 @@ fun MeshChatHome(
     oscHistory: List<MeshChatViewModel.OscPoint>,
     debugLogLines: List<String>,
     onClearDebugLogs: () -> Unit,
+    /** v1.1.58 应用锁（设置页密码区）。 */
+    hasLockPassword: Boolean,
+    lockBiometricAvailable: Boolean,
+    onSetLockPassword: (String) -> Unit,
+    onChangeLockPassword: (old: String, new: String) -> Boolean,
+    onRemoveLockPassword: () -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -226,6 +232,11 @@ fun MeshChatHome(
                 onBackgroundEnabledChange = onBackgroundEnabledChange,
                 autoDiscovery = autoDiscovery,
                 onAutoDiscoveryChange = onAutoDiscoveryChange,
+                hasLockPassword = hasLockPassword,
+                lockBiometricAvailable = lockBiometricAvailable,
+                onSetLockPassword = onSetLockPassword,
+                onChangeLockPassword = onChangeLockPassword,
+                onRemoveLockPassword = onRemoveLockPassword,
                 onBack = { profileDetail = null },
             )
             "about" -> AboutScreen(onBack = { profileDetail = null })

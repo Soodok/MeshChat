@@ -41,7 +41,22 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         viewModel.recordSecurityCapabilityResult(SecurityCapability.NOTIFICATIONS, granted)
     }
+    // v1.1.58 应用锁：已设密码且回前台 → 锁定，解锁屏覆盖主 UI
+    val appLocked by viewModel.appLocked.collectAsStateWithLifecycle()
+    val lockout by viewModel.lockout.collectAsStateWithLifecycle()
+    val lockPasswordEnabled by viewModel.lockPasswordEnabled.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
+        if (appLocked) {
+            com.meshchat.app.ui.screens.AppLockScreen(
+                biometricAvailable = viewModel.lockBiometricAvailable(),
+                lockout = lockout,
+                onVerifyPassword = viewModel::verifyLockPassword,
+                onCreateBiometricUnlock = viewModel::createBiometricUnlock,
+                onUnlockWithBiometric = viewModel::unlockWithBiometric,
+                onRemainingLockoutMs = viewModel::remainingLockoutMs,
+            )
+            return@Surface
+        }
         MeshChatHome(
             messages = messages,
             conversations = conversations,
@@ -112,6 +127,11 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             oscHistory = oscHistory,
             debugLogLines = debugLogLines,
             onClearDebugLogs = viewModel::clearDebugLogs,
+            hasLockPassword = lockPasswordEnabled,
+            lockBiometricAvailable = viewModel.lockBiometricAvailable(),
+            onSetLockPassword = viewModel::setLockPassword,
+            onChangeLockPassword = viewModel::changeLockPassword,
+            onRemoveLockPassword = viewModel::removeLockPassword,
         )
     }
 }

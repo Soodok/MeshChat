@@ -107,17 +107,19 @@ class MeshChatApplication : Application() {
 
     /** 调试统计内核（真机调试中心数据源；内存态，重启清零）。 */
     val debugStats by lazy { com.meshchat.app.mesh.debug.DebugStats() }
+    /** v1.1.58 应用锁：密码/指纹解锁 + DEK 保护敏感密钥库。 */
+    val appLock by lazy { com.meshchat.app.security.lock.AppLockManager(this) }
 
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId, debugStats = debugStats) }
     val service by lazy {
-        val notifications = NotificationHelper(this)
+        val notifications = NotificationHelper(this) { appLock.locked.value }   // v1.1.58 锁定态通知隐藏内容
         val svc = MeshService(
             transport, store, identity, DedupCache(),
             fileSaver = AndroidFileSaver(this),
             tmpDir = { File(filesDir, "transfers") },
             sessionStore = SharedPrefsSessionStore(this),
             groupStore = SharedPrefsGroupStore(this),   // v1.1.50：群订阅/群名持久化
-            e2eeStore = AndroidE2eeKeyStore(this),      // v1.1.57：E2EE 密钥（AndroidKeyStore 私钥 + SharedPrefs 派生密钥）
+            e2eeStore = AndroidE2eeKeyStore(this) { appLock.dek() },   // v1.1.57 E2EE 密钥；v1.1.58 设密码后 DEK 加密存储
             onIncomingMessage = { fromId, fromName, text, convId ->
                 // v1.1.50：convId = 群会话键（group-<id>）或点对点 conv-<fromId>，通知点击直达对应会话
                 notifications.showMessage(fromName, text.take(80), convId)

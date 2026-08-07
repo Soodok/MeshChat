@@ -6,17 +6,19 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.meshchat.app.ui.MeshChatApp
 import com.meshchat.app.ui.theme.MeshChatTheme
 import com.meshchat.app.security.model.SecurityCapability
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     /** 按系统版本请求正确的 BLE 权限：API 31+ 用新蓝牙权限；API <=30 用位置权限（旧权限由 Manifest 声明即授予）。 */
     private val requiredPermissions: Array<String> = buildList {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -51,6 +53,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // v1.1.58 禁止截图/录屏（FLAG_SECURE 全窗口生效，含最近任务预览）
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         // 通知点击 → 打开对应会话（conversationRequest 由 ViewModel 订阅）
         val convId = intent.getStringExtra(com.meshchat.app.mesh.service.NotificationHelper.EXTRA_CONV_ID)
         if (convId != null) {
@@ -85,6 +89,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         (application as MeshChatApplication).startMesh()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // v1.1.58 应用锁：已设密码 → 每次进入前台锁定 UI（后台服务继续工作，数据密钥留在内存）
+        val app = application as MeshChatApplication
+        if (app.appLock.hasPassword) app.appLock.lock()
     }
 
     override fun onResume() {

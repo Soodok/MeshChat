@@ -44,9 +44,48 @@ class MeshChatViewModel(
     private val securityCapabilityManager: SecurityCapabilityManager,
     private val localSecurityCoordinator: LocalSecurityCoordinator,
     private val debugStats: com.meshchat.app.mesh.debug.DebugStats,
+    /** v1.1.58 应用锁：密码/指纹解锁 + DEK 保护敏感密钥库。 */
+    private val appLock: com.meshchat.app.security.lock.AppLockManager,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
+
+    // ---- v1.1.58 应用锁（解锁屏 UI / 设置页密码区数据源）----
+    /** 是否锁定（回前台自动锁，需密码/指纹解锁）。 */
+    val appLocked: StateFlow<Boolean> = appLock.locked
+
+    /** 连续失败锁定状态（5 次失败锁 30s；UI 显示倒计时）。 */
+    val lockout: StateFlow<com.meshchat.app.security.lock.LockoutState> = appLock.lockout
+
+    /** 是否已设密码（响应式，设置页"已启用/设置密码"切换）。 */
+    val lockPasswordEnabled: StateFlow<Boolean> = appLock.passwordEnabled
+
+    fun hasLockPassword(): Boolean = appLock.hasPassword
+
+    fun lockBiometricAvailable(): Boolean = appLock.biometricAvailable()
+
+    /** 设密码（<4 位抛 IllegalArgumentException，UI 自行校验）。 */
+    fun setLockPassword(password: String) = appLock.setPassword(password)
+
+    /** 改密码：旧密码错误返回 false（UI 提示）。 */
+    fun changeLockPassword(oldPassword: String, newPassword: String): Boolean =
+        appLock.changePassword(oldPassword, newPassword)
+
+    fun removeLockPassword() = appLock.removePassword()
+
+    /** 密码解锁：正确返回 true 并解锁；错误递增失败计数。 */
+    fun verifyLockPassword(password: String): Boolean = appLock.verifyPassword(password)
+
+    /** 创建指纹解锁请求（BiometricPrompt 认证用）；设备锁屏/生物密钥不可用返回 null。 */
+    fun createBiometricUnlock(): com.meshchat.app.security.lock.BiometricUnlockRequest? =
+        appLock.createBiometricUnlock()
+
+    /** BiometricPrompt 认证成功回调后调用。 */
+    fun unlockWithBiometric(request: com.meshchat.app.security.lock.BiometricUnlockRequest): Boolean =
+        appLock.unlockWithBiometric(request)
+
+    /** 剩余锁定毫秒数（>0 时禁用解锁并倒计时）。 */
+    fun remainingLockoutMs(): Long = appLock.remainingLockoutMs()
 
     /** v1.1.57 E2EE：发送被拒的一次性提示（UI collect 显示 Toast 后清空）。 */
     private val _sendRejected = MutableStateFlow<String?>(null)

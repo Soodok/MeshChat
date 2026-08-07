@@ -11,8 +11,14 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.meshchat.app.MainActivity
 
-/** 通知中心：渠道幂等创建；常驻通知 + 消息通知 + 文件完成通知。 */
-class NotificationHelper(private val context: Context) {
+/**
+ * 通知中心：渠道幂等创建；常驻通知 + 消息通知 + 文件完成通知。
+ * v1.1.58 应用锁：锁定态通知不显示发送者与内容（防锁屏/下拉栏泄露）。
+ */
+class NotificationHelper(
+    private val context: Context,
+    private val lockedProvider: () -> Boolean = { false },
+) {
     companion object {
         private const val SERVICE_CHANNEL = "meshchat_service"
         private const val MESSAGE_CHANNEL = "meshchat_messages"
@@ -53,10 +59,11 @@ class NotificationHelper(private val context: Context) {
         nm.notify(SERVICE_NOTIF_ID, persistent(peerCount))
     }
 
-    /** 新消息通知：标题=发送者昵称，内容=正文，点击进对应会话。 */
+    /** 新消息通知：标题=发送者昵称，内容=正文，点击进对应会话。v1.1.58 锁定态只显示"新消息"隐藏内容。 */
     fun showMessage(fromName: String, text: String, convId: String) {
         if (!canNotify()) return
         ensureChannels()
+        val locked = lockedProvider()
         val intent = Intent(context, MainActivity::class.java).putExtra(EXTRA_CONV_ID, convId)
         val pi = PendingIntent.getActivity(
             context, convId.hashCode(), intent,
@@ -66,24 +73,25 @@ class NotificationHelper(private val context: Context) {
             convId.hashCode(),
             Notification.Builder(context, MESSAGE_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(fromName)
-                .setContentText(text)
+                .setContentTitle(if (locked) "MeshChat 新消息" else fromName)
+                .setContentText(if (locked) "应用已锁定 · 解锁后查看" else text)
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .build(),
         )
     }
 
-    /** 文件接收完成通知。 */
+    /** 文件接收完成通知。v1.1.58 锁定态不显示文件名。 */
     fun showFileSaved(fileName: String) {
         if (!canNotify()) return
         ensureChannels()
+        val locked = lockedProvider()
         nm.notify(
             "file-$fileName".hashCode(),
             Notification.Builder(context, MESSAGE_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_menu_save)
-                .setContentTitle("文件已保存")
-                .setContentText(fileName)
+                .setContentTitle(if (locked) "MeshChat 新文件" else "文件已保存")
+                .setContentText(if (locked) "应用已锁定 · 解锁后查看" else fileName)
                 .setAutoCancel(true)
                 .build(),
         )

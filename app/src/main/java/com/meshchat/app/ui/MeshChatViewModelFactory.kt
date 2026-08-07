@@ -26,6 +26,7 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             securityCapabilityManager = app.securityCapabilityManager,
             localSecurityCoordinator = app.localSecurityCoordinator,
             debugStats = app.debugStats,
+            appLock = app.appLock,   // v1.1.58 应用锁
         ) as T
     }
 }
