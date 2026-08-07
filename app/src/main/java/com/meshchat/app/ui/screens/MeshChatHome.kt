@@ -86,7 +86,6 @@ fun MeshChatHome(
     onOpenConversation: (String?) -> Unit,
     onToggleConversationArchived: (String) -> Unit,
     onDeleteConversation: (String) -> Unit,
-    onStartDiscovery: () -> Unit,
     onSendInvite: (String) -> Unit,
     onAcceptInvite: (String) -> Unit,
     onRejectInvite: (String) -> Unit,
@@ -331,7 +330,6 @@ fun MeshChatHome(
                     peers = peers,
                     sessions = sessions,
                     pendingInvites = pendingInvites,
-                    onStartDiscovery = onStartDiscovery,
                     onPeerSelected = { peerId ->
                         // 未建立会话则先发邀请；无论状态都进入会话页（发起方即时反馈）
                         if (peerId !in sessions) onSendInvite(peerId)

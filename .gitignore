@@ -30,3 +30,9 @@ keystore.properties
 # 外部导入/备份产物（队友包、git bundle 等，不入库）
 *.zip
 *.bundle
+
+# IDE 工作区规则（不入库）
+.trae/
+
+# 用户导出的设备诊断日志（含设备数据，不入库）
+meshchat_debug_log*

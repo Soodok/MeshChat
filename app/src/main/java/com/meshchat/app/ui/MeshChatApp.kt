@@ -59,7 +59,6 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             onOpenConversation = viewModel::openConversation,
             onToggleConversationArchived = viewModel::toggleConversationArchived,
             onDeleteConversation = viewModel::deleteConversation,
-            onStartDiscovery = viewModel::startDiscovery,
             onSendInvite = viewModel::sendInvite,
             onAcceptInvite = viewModel::acceptInvite,
             onRejectInvite = viewModel::rejectInvite,

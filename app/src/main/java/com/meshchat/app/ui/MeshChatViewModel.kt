@@ -312,10 +312,6 @@ class MeshChatViewModel(
 
     val localShortId: String = repository.localShortId()
 
-    fun startDiscovery() {
-        viewModelScope.launch { repository.startDiscovery() }
-    }
-
     fun sendInvite(peerId: String) {
         viewModelScope.launch { repository.sendInvite(peerId) }
     }

@@ -205,7 +205,12 @@ private fun GroupRow(group: GroupInfo, onClick: () -> Unit) {
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(group.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(group.id, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text(
+                    // v1.1.54：成员数 = 本机见过的去重发言者（广播域无成员表，近似值）
+                    text = if (group.memberCount > 0) "成员 ${group.memberCount} · ${group.id}" else "暂无发言 · ${group.id}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
             }
             Text("群聊", style = MaterialTheme.typography.bodySmall, color = Cyan)
         }

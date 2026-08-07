@@ -1526,4 +1526,23 @@ class MeshServiceTest {
         assertTrue("群 ID 不得被当对端节点恢复", service.peers.value.none { it.shortId == "G1" })
         service.stop()
     }
+
+    @Test
+    fun `group member count tracks distinct senders`() {
+        // v1.1.54：群成员数 = 本机见过的去重发言者（广播域无成员表，近似统计）
+        val store = InMemoryMeshStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = store,
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.joinGroup("G1")
+        service.handleFrame(groupMsgFrame("e1", "A", "G1", "hi", "m1", "小明", ts = 1))
+        service.handleFrame(groupMsgFrame("e2", "B", "G1", "yo", "m2", "小刚", ts = 2))
+        // 同发送者再来一条：成员数不重复计数
+        service.handleFrame(groupMsgFrame("e3", "A", "G1", "again", "m3", "小明", ts = 3))
+        Thread.sleep(100)   // groups 合成流异步刷新
+        val group = service.groups.value.first { it.id == "G1" }
+        assertEquals("去重发言者数", 2, group.memberCount)
+        service.stop()
+    }
 }

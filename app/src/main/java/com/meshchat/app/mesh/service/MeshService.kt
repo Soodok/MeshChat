@@ -114,8 +114,8 @@ interface RfcommChannel {
     fun sendTo(peerId: String, frame: MeshFrame)
 }
 
-/** 群列表条目（v1.1.50）：id + 显示名（缺省"群-<id>"，随消息/创建帧学习群名后更新）。 */
-data class GroupInfo(val id: String, val name: String)
+/** 群列表条目（v1.1.50）：id + 显示名（缺省"群-<id>"，随消息/创建帧学习群名后更新）+ 本机见过的发言成员数（v1.1.54）。 */
+data class GroupInfo(val id: String, val name: String, val memberCount: Int = 0)
 
 class MeshService(
     private val transport: MeshTransport,
@@ -295,9 +295,16 @@ class MeshService(
     /** 群名：groupId -> name（随消息/创建帧学习，持久化）。用 StateFlow 承载——groups 合成流才能响应群名更新。 */
     private val _groupNames = MutableStateFlow<Map<String, String>>(emptyMap())
     private val groupNames: Map<String, String> get() = _groupNames.value
-    /** 群列表（合成流）：joinedGroups × groupNames。 */
-    val groups: StateFlow<List<GroupInfo>> = combine(_joinedGroups, _groupNames) { ids, names ->
-        ids.sorted().map { GroupInfo(it, names[it] ?: "群-$it") }
+    /**
+     * 群成员数（v1.1.54）：groupId -> 本机见过的去重发言者数（收到该群消息的 srcId 集合，内存态）。
+     * 广播域模型无成员表，此为近似统计——仅统计本机在线期间发过消息的成员。
+     */
+    private val _groupMembers = MutableStateFlow<Map<String, Int>>(emptyMap())
+    /** 群成员去重集合（v1.1.54）：groupId -> 已统计过的发送者短 ID（防重复计数）。 */
+    private val groupMemberIds = ConcurrentHashMap<String, MutableSet<String>>()
+    /** 群列表（合成流）：joinedGroups × groupNames × groupMembers。 */
+    val groups: StateFlow<List<GroupInfo>> = combine(_joinedGroups, _groupNames, _groupMembers) { ids, names, members ->
+        ids.sorted().map { GroupInfo(it, names[it] ?: "群-$it", members[it] ?: 0) }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /** 待确认群消息：逻辑 msgId -> 状态。重发用**新 envelope id**（同 id 被节点级去重挡住，仿真铁证无效）。 */
@@ -1425,6 +1432,11 @@ class MeshService(
                     if (!isGroupDup(envelope, body)) {   // 内容指纹去重：新 id 重发/环路重复不重复落库
                         learnGroupName(body.groupId, body.groupName)
                         markSeen(envelope.srcId, body.displayName)   // 昵称学习（同 TEXT，供气泡/通知显示）
+                        // v1.1.54：群成员统计（本机见过的去重发言者，内存态；近似成员数显示）
+                        // computeIfAbsent：首帧 key 不存在时先建集合，避免 ?.add 返回 null 导致首帧不计数
+                        _groupMembers.value = _groupMembers.value + (body.groupId to ((_groupMembers.value[body.groupId] ?: 0).let {
+                            if (groupMemberIds.computeIfAbsent(body.groupId) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }.add(envelope.srcId)) it + 1 else it
+                        }))
                         store.insertMessage(envelope.toStoredMessage())
                         maybeSendGroupReceipt(envelope, body)
                         // 群通知（与点对点一致；convId=group-<groupId> 点击直达群会话）

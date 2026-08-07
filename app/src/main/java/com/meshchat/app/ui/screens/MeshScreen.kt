@@ -79,7 +79,6 @@ fun MeshScreen(
     peers: List<MeshPeer>,
     sessions: Set<String>,
     pendingInvites: Set<String>,
-    onStartDiscovery: () -> Unit,
     onPeerSelected: (String) -> Unit,
     /** v1.1.53 发现模式（NORMAL 全开 / CLOSED 全停 / SILENT 静默只停广播）。 */
     discoveryMode: com.meshchat.app.mesh.transport.DiscoveryMode,
@@ -134,55 +133,7 @@ fun MeshScreen(
             }
         }
         item {
-            // v1.1.53 整合控件：蓝牙搜索按钮 + 静默模式开关。
-            // 按钮点击：搜索中 → 重新发现（重建 BLE）；已停止/静默 → 恢复搜索。
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 16.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Cyan
-                        else MeshRed.copy(alpha = 0.12f),
-                    )
-                    .clickable {
-                        when (discoveryMode) {
-                            com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> onStartDiscovery()
-                            com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED,
-                            com.meshchat.app.mesh.transport.DiscoveryMode.SILENT,
-                            -> onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
-                        }
-                    }
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-            ) {
-                Icon(
-                    if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) {
-                        Icons.AutoMirrored.Outlined.BluetoothSearching
-                    } else {
-                        Icons.Outlined.BluetoothDisabled
-                    },
-                    null,
-                    tint = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Color(0xFF081420) else MeshRed,
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = when (discoveryMode) {
-                        com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> "搜索中 · 点击重新发现"
-                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "搜索已停止 · 点击开启"
-                        com.meshchat.app.mesh.transport.DiscoveryMode.SILENT -> "静默模式 · 点击恢复搜索"
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                    color = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Color(0xFF081420) else MeshRed,
-                    modifier = Modifier.weight(1f),
-                )
-                // 录像键状态指示（纯视觉，点击由整行处理）：仅 NORMAL 显示"录制中"
-                DiscoveryToggleButton(enabled = discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
-            }
-        }
-        item {
-            // v1.1.53 静默模式开关：开启 = 只停广播（陌生人扫不到你），scan/连接/保活照常
+            // v1.1.54 静默模式开关（置顶显眼）：开启 = 只停广播（陌生人扫不到你），scan/连接/保活照常
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -206,6 +157,53 @@ fun MeshScreen(
                         )
                     },
                 )
+            }
+        }
+        item {
+            // v1.1.54 蓝牙搜索按钮：点击开/关搜索（NORMAL ↔ CLOSED）；静默时点击恢复搜索。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Cyan
+                        else MeshRed.copy(alpha = 0.12f),
+                    )
+                    .clickable {
+                        when (discoveryMode) {
+                            com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED)
+                            com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED,
+                            com.meshchat.app.mesh.transport.DiscoveryMode.SILENT,
+                            -> onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+                        }
+                    }
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+            ) {
+                Icon(
+                    if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) {
+                        Icons.AutoMirrored.Outlined.BluetoothSearching
+                    } else {
+                        Icons.Outlined.BluetoothDisabled
+                    },
+                    null,
+                    tint = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Color(0xFF081420) else MeshRed,
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = when (discoveryMode) {
+                        com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> "搜索中 · 点击关闭"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "搜索已停止 · 点击开启"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.SILENT -> "静默模式 · 点击恢复搜索"
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                    color = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Color(0xFF081420) else MeshRed,
+                    modifier = Modifier.weight(1f),
+                )
+                // 录像键状态指示（纯视觉，点击由整行处理）：仅 NORMAL 显示"录制中"
+                DiscoveryToggleButton(enabled = discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
             }
         }
         item { Spacer(Modifier.height(8.dp)) }
