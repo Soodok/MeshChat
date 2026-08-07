@@ -1284,8 +1284,17 @@ class MeshService(
         val now = System.currentTimeMillis()
         val signal = debugStats.receiveSuccessRate()  // 信号强度 = 全局接收成功率（用户指定算法）
         val result = LinkedHashMap<String, MeshPeerInfo>()
-        peerEntries.values.forEach { e -> result[e.info.shortId] = e.info.copy(signalRatio = signal) }
+        // v1.1.60：CLOSED（停止搜索）时只保留已会话节点——非会话历史节点（含 2 跳中继）不输出到 peers 流。
+        // 顶部"发现节点 N"与 Mesh 页据此不再把已离线/无扫描的历史节点算入（用户：关闭蓝牙搜索后没搜到就不该显示；
+        // 已会话联系人靠 GATT 保活心跳保持 ONLINE，照常显示）。恢复 NORMAL 后 peerEntries 全量恢复。
+        val searchStopped = discoveryMode.value == DiscoveryMode.CLOSED
+        peerEntries.values.forEach { e ->
+            val info = e.info.copy(signalRatio = signal)
+            if (searchStopped && info.shortId !in _sessions.value) return@forEach
+            result[info.shortId] = info
+        }
         routeEntries.forEach { (peerId, r) ->
+            if (searchStopped) return@forEach
             val direct = peerEntries[peerId]
             val directOnline = direct != null && now - direct.lastSeen <= lostHeartbeatMs
             if (!directOnline) {

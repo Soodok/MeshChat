@@ -585,6 +585,43 @@ class MeshServiceTest {
     }
 
     @Test
+    fun `CLOSED discovery mode hides non-session peers from peers flow`() {
+        // v1.1.60：关闭蓝牙搜索（CLOSED）后，非会话历史节点（含离线/无响应残留）不再输出到 peers 流——
+        // 顶部"发现节点 N"不再把"没搜索到"的历史节点算入（用户实测：无会话+无历史+关搜索仍显示 1）；
+        // 已会话联系人仍显示（GATT 保活心跳）。恢复 NORMAL 后全量恢复。
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.start()
+
+        // 曾扫描到对方（历史节点，未建立会话）
+        transport.emitPeer(MeshPeerInfo(shortId = "OTHER", deviceAddress = "AA:BB:CC", rssi = -50))
+        Thread.sleep(200) // foundPeers collector 异步写入 peerEntries
+        service.heartbeatTick(System.currentTimeMillis() + 100)
+        assertTrue("NORMAL 下历史节点可见", service.peers.value.any { it.shortId == "OTHER" })
+
+        // 关闭搜索 → 非会话节点从 peers 流消失（顶部"发现节点"应显示 0）
+        service.setDiscoveryMode(DiscoveryMode.CLOSED)
+        service.heartbeatTick(System.currentTimeMillis() + 100)
+        assertTrue("CLOSED 下非会话节点应隐藏", service.peers.value.none { it.shortId == "OTHER" })
+
+        // 已会话联系人仍显示
+        service.acceptInvite("FRIEND")
+        transport.emitPeer(MeshPeerInfo(shortId = "FRIEND", deviceAddress = "BB:CC:DD", rssi = -60))
+        Thread.sleep(200)
+        service.heartbeatTick(System.currentTimeMillis() + 100)
+        assertTrue("CLOSED 下已会话联系人仍可见", service.peers.value.any { it.shortId == "FRIEND" })
+
+        // 恢复搜索 → 历史节点重新可见
+        service.setDiscoveryMode(DiscoveryMode.NORMAL)
+        service.heartbeatTick(System.currentTimeMillis() + 100)
+        assertTrue("恢复 NORMAL 后历史节点重新可见", service.peers.value.any { it.shortId == "OTHER" })
+        service.stop()
+    }
+
+    @Test
     fun `presence transitions online then reconnecting then offline without removal`() {
         val transport = CountingTransport()
         val service = MeshService(
