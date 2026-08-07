@@ -514,7 +514,7 @@ class MeshServiceTest {
     }
 
     @Test
-    fun `heartbeat pings at most once per second`() {
+    fun `heartbeat pings at most every 500ms`() {
         val transport = CountingTransport()
         val service = MeshService(
             transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
@@ -523,11 +523,14 @@ class MeshServiceTest {
         service.sendPingIfDue(t0)                    // 首帧
         service.sendPingIfDue(t0 + 200)
         service.sendPingIfDue(t0 + 400)
+        assertEquals(1, dataKinds(transport.frames).count { it == "PING" })
+        service.sendPingIfDue(t0 + 500)              // 满 500ms → 第二帧（v1.1.56 默认心跳 500ms）
+        assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
         service.sendPingIfDue(t0 + 600)
         service.sendPingIfDue(t0 + 800)
-        assertEquals(1, dataKinds(transport.frames).count { it == "PING" })
-        service.sendPingIfDue(t0 + 1_000)            // 满 1s → 第二帧
         assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
+        service.sendPingIfDue(t0 + 1_000)            // 距上次 500ms → 第三帧
+        assertEquals(3, dataKinds(transport.frames).count { it == "PING" })
     }
 
     @Test

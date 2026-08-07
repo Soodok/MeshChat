@@ -62,8 +62,8 @@ import kotlinx.coroutines.launch
 private const val DEFAULT_TTL = 8
 private const val OUTBOX_TTL_MS = 60_000L
 private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
-private const val HEARTBEAT_INTERVAL_MS = 1_000L  // PING 广播周期：1s 校准一次
-private const val LOST_HEARTBEAT_MS = 2_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（容忍 1 帧丢失，更灵敏）
+private const val HEARTBEAT_INTERVAL_MS = 500L   // PING 广播周期：500ms 校准一次（v1.1.56：用户实测 GATT 响应 3-4 次/s，1s 周期低估通道能力，双倍提频）
+private const val LOST_HEARTBEAT_MS = 2_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（固定 2s 不随心跳联动——用户决策；500ms 心跳下容忍 4 帧丢失）
 private const val OFFLINE_THRESHOLD_MS = 15_000L  // 无心跳超过该时长 → 离线（保留显示置黑，更快反映失联）
 private const val SEARCHING_TIMEOUT_MS = 6_000L   // 持久化恢复后 6 秒仍未找到 → 自动失联（避免无限寻找）
 private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送达回执的等待时间，超时重发（更快确认）
