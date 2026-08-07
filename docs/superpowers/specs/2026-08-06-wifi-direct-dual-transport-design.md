@@ -2,7 +2,7 @@
 
 - 日期：2026-08-06
 - 状态：**待审查**（brainstorming 定稿后进入 writing-plans）
-- 目标版本：M1+M2 = v1.1.51；M3 = v1.1.52；M4 = v1.1.53（里程碑拆分，见 §8）
+- 目标版本：P1+P2（传输层）= v1.1.51；P3（双通道+文件+UI）= v1.1.52（用户定稿三计划，见 §8）
 - 依赖：v1.1.50 群消息 MVP（156 测试全绿）；v1.1.0 多跳中继；BLE 全链路（真机验证）
 - 前置参考：RFCOMM 载体 v0.13.x 已停用代码（RfcommFraming 可复用）、RfcommChannel 契约（MeshService.kt）、MeshTransport 抽象
 
@@ -233,22 +233,26 @@ fun forceConnect()    // 紧急重连：BLE 断开时立即尝试（绕过退避
 - 星域 = 自动形成的单一 group；多 group 并存时（物理分散），跨域消息靠各自 GO 的 BLE 泛洪互联（现有 mesh 语义）。
 - Wi-Fi Direct 组内成员数受 GO 能力限制（典型 ≤10 台），超过自动溢出到 BLE 泛洪（无感知降级）。
 
-## 8. 分批实施顺序（里程碑）
+## 8. 分批实施顺序（用户定稿三计划，对应原 M1-M4）
 
 ```
-M1（v1.1.51）WifiDirectTransport 基座
-   权限（Manifest+MainActivity 扩展）→ WifiDirectTransport（发现/连接/星域/UDP 广播+TCP/分帧/重建）
-   → 装配（Application 新增 wfd 单例，**暂不替换 transport 注入**——BLE 单通道照常）→ 单测（分帧/状态机/成员表）
-   → 两机真机验证"增强开启→自动建连→组内互达"
-M2（v1.1.51 续）CompositeTransport 双通道
-   CompositeTransport 路由表 → MeshService 心跳去重一行 + DedupCache 容量 512→1024
-   → 装配替换 transport 注入（此点起 Composite 生效，MeshService 仍零改动）→ 单测（路由/去重/currentMtu）
-   → 真机验证（消息双写零重复落库、关蓝牙走 P2P 保持）
-M3（v1.1.52）文件 P2P 优先
-   File3.MAX_CHUNK_BYTES + encodeChunk 放宽 → FileTransferManager 窗口/块参数化 → composite 文件路由
-   → 单测（大块往返/回归）→ 真机 100MB 互传验收
-M4（v1.1.53）UI/状态 + 三机验证
-   设置开关（默认关）+ 通道状态显示 + DebugStats provider → 三机群消息双域验证 → 全量回归
+计划一（P1）Wi-Fi Direct 一对一连接打通
+   = 原 M1 双人子集：权限（Manifest+MainActivity 扩展）→ WifiDirectTransport 核心
+     （discoverPeers + DnsSd 短 ID 识别 + connect/GO negotiation 双人 + TCP 通道 + RfcommFraming 分帧）
+   → 装配（Application 新增 wfd 单例，暂不替换 transport 注入——BLE 单通道照常）
+   → 单测（分帧/状态机/成员表）→ 两机真机验证"增强开启→自动建连→组内互达"
+
+计划二（P2）多人 Wi-Fi Direct 星域连接
+   = 原 M1 多人扩展：多成员星域（REGISTER 身份↔IP 映射表 + 组内 UDP 广播 + 成员管理/超时清理
+     + GO negotiation 自动选主 + group 断开指数退避重建）
+   → 单测（多成员状态/注册帧/广播收敛）→ 三机真机验证"多成员星域→组内互达"
+
+计划三（P3）彻底完成
+   = 原 M2+M3+M4：CompositeTransport 双通道（消息/回执/心跳双写 + PING/PONG 去重 + DedupCache 512→1024
+     + currentMtu 放大 + 故障切换 BLE 断→强制 Wi-Fi Direct）→ 文件 P2P 优先
+     （File3.MAX_CHUNK_BYTES + encodeChunk 放宽 + FileTransferManager 窗口/块参数化 + composite 文件路由）
+     → UI/状态（设置开关默认关 + 通道状态显示 + DebugStats provider）
+   → 单测（路由/去重/大块往返）→ 真机验证（消息双写零重复落库、关蓝牙走 P2P 保持、100MB 互传）
 ```
 
 ## 9. 涉及文件
