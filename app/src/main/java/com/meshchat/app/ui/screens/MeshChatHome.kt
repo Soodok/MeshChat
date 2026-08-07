@@ -80,6 +80,9 @@ fun MeshChatHome(
     /** v1.1.49：打开应用时自动搜索设置。 */
     autoDiscovery: Boolean,
     onAutoDiscoveryChange: (Boolean) -> Unit,
+    /** Beta v1.1.51：Wi-Fi Direct 增强设置。 */
+    wifiDirectEnabled: Boolean,
+    onWifiDirectEnabledChange: (Boolean) -> Unit,
     /** v1.1.53 发现模式（NORMAL/CLOSED/SILENT）+ 下发。 */
     discoveryMode: com.meshchat.app.mesh.transport.DiscoveryMode,
     onSetDiscoveryMode: (com.meshchat.app.mesh.transport.DiscoveryMode) -> Unit,
@@ -245,6 +248,8 @@ fun MeshChatHome(
                 onSetLockPassword = onSetLockPassword,
                 onChangeLockPassword = onChangeLockPassword,
                 onRemoveLockPassword = onRemoveLockPassword,
+                wifiDirectEnabled = wifiDirectEnabled,
+                onWifiDirectEnabledChange = onWifiDirectEnabledChange,
                 onBack = { profileDetail = null },
             )
             "about" -> AboutScreen(onBack = { profileDetail = null })

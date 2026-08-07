@@ -39,6 +39,8 @@ class MeshChatViewModel(
     private val setBackgroundEnabled: (Boolean) -> Unit,
     private val autoDiscoveryProvider: () -> Boolean,
     private val setAutoDiscovery: (Boolean) -> Unit,
+    private val wifiDirectEnabledProvider: () -> Boolean,
+    private val setWifiDirectEnabled: (Boolean) -> Unit,
     private val conversationPreferences: ConversationPreferences,
     private val conversationRequest: kotlinx.coroutines.flow.StateFlow<String?>,
     private val securityCapabilityManager: SecurityCapabilityManager,
@@ -200,6 +202,11 @@ class MeshChatViewModel(
     val autoDiscovery: Boolean get() = autoDiscoveryProvider()
 
     fun updateAutoDiscovery(value: Boolean) = setAutoDiscovery(value)
+
+    /** Wi-Fi Direct 增强（Beta v1.1.51，默认关）：开启后自动与邻近设备建连形成星域（消息双通道/文件高速）。 */
+    val wifiDirectEnabled: Boolean get() = wifiDirectEnabledProvider()
+
+    fun updateWifiDirectEnabled(value: Boolean) = setWifiDirectEnabled(value)
 
     /**
      * v1.1.53 发现模式（取代 v1.1.49 布尔开关）：

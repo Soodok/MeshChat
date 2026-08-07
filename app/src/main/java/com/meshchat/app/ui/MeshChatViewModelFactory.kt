@@ -21,6 +21,8 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             setBackgroundEnabled = { app.backgroundEnabled = it },
             autoDiscoveryProvider = { app.autoDiscovery },
             setAutoDiscovery = { app.autoDiscovery = it },
+            wifiDirectEnabledProvider = { app.wifiDirectEnabled },
+            setWifiDirectEnabled = { app.wifiDirectEnabled = it },
             conversationPreferences = ConversationPreferences(app),
             conversationRequest = app.conversationRequest,
             securityCapabilityManager = app.securityCapabilityManager,

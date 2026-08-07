@@ -26,6 +26,7 @@ import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
 import com.meshchat.app.mesh.transfer.AndroidFileSaver
 import com.meshchat.app.mesh.transport.BleTransport
+import com.meshchat.app.mesh.wifidirect.WifiDirectTransport
 import com.meshchat.app.security.capability.AndroidSecurityCapabilityStateReader
 import com.meshchat.app.security.capability.SecurityCapabilityManager
 import com.meshchat.app.security.capability.SharedPreferencesCapabilityPromptStore
@@ -133,6 +134,21 @@ class MeshChatApplication : Application() {
         set(value) {
             getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
                 .edit().putString("channel_name", value?.trim()?.takeIf { it.isNotEmpty() }).apply()
+        }
+
+    /** Wi-Fi Direct 增强层（Beta v1.1.51，独立目录 mesh/wifidirect）：可选，默认关闭；开启后自动与可达设备建连形成星域。 */
+    val wfd by lazy {
+        WifiDirectTransport(this, shortId = identity.shortId, displayName = identity.displayName)
+    }
+
+    /** Wi-Fi Direct 增强开关（设置页可改，默认关——省电；用户主动开启增强通讯能力）。 */
+    var wifiDirectEnabled: Boolean
+        get() = getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+            .getBoolean("wifi_direct_enabled", false)
+        set(value) {
+            getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+                .edit().putBoolean("wifi_direct_enabled", value).apply()
+            if (value) wfd.enable() else wfd.disable()
         }
 
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId, debugStats = debugStats) }

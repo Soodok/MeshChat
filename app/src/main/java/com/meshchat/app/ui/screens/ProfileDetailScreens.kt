@@ -156,6 +156,9 @@ fun GeneralSettingsScreen(
     onSetLockPassword: (String) -> Unit,
     onChangeLockPassword: (old: String, new: String) -> Boolean,
     onRemoveLockPassword: () -> Unit,
+    /** Beta v1.1.51：Wi-Fi Direct 增强（默认关——省电，主动开启增强通讯能力）。 */
+    wifiDirectEnabled: Boolean,
+    onWifiDirectEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
     var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
@@ -270,6 +273,19 @@ fun GeneralSettingsScreen(
             }
         }
         LockAutomationWarning()
+
+        // ---- Beta v1.1.51：Wi-Fi Direct 增强（实验性，默认关）----
+        SettingsSwitchRow(
+            title = "Wi-Fi Direct 增强",
+            checked = wifiDirectEnabled,
+            onCheckedChange = onWifiDirectEnabledChange,
+        )
+        Text(
+            "实验性：开启后自动与邻近设备建立 Wi-Fi Direct 星域——消息双通道送达、文件高速传输；关闭省电（默认关）。",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
     }
 
     when (lockDialog) {
