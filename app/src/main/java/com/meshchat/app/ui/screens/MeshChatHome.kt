@@ -291,7 +291,9 @@ fun MeshChatHome(
                         Modifier.size(10.dp).background(MeshGreen, androidx.compose.foundation.shape.CircleShape),
                     )
                     Text(
-                        text = "发现节点 ${peers.size}",
+                        // v1.1.61：统一口径 = Mesh 页"附近节点"（presence!=OFFLINE && lastSeenAt>0）——
+                        // OFFLINE 历史残留（对方离场/关蓝牙 15s+）不再计入"发现节点"；CLOSED 由服务层过滤非会话
+                        text = "发现节点 ${peers.count { it.presence != com.meshchat.app.mesh.transport.PeerPresence.OFFLINE && it.lastSeenAt > 0L }}",
                         color = MeshGreen,
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(start = 9.dp),
