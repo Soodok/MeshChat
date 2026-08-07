@@ -158,13 +158,22 @@ class MeshChatViewModel(
 
     fun updateAutoDiscovery(value: Boolean) = setAutoDiscovery(value)
 
-    /** 发现开关（v1.1.49）：当前是否在广播+扫描（Mesh 页录像键式开关状态）。 */
-    val discoveryEnabled: StateFlow<Boolean> = repository.discoveryEnabled
+    /**
+     * v1.1.53 发现模式（取代 v1.1.49 布尔开关）：
+     * NORMAL 全开 / CLOSED 全停（autoDiscovery=关 启动态）/ SILENT 静默（只停广播，scan/连接/保活照常）。
+     */
+    val discoveryMode: StateFlow<com.meshchat.app.mesh.transport.DiscoveryMode> = repository.discoveryMode
 
-    /** 切换搜索开关：开→暂停广播+扫描（保留已建立连接收发），关→恢复。 */
-    fun toggleDiscovery() {
-        if (repository.discoveryEnabled.value) repository.suspendDiscovery()
-        else repository.resumeDiscovery()
+    /** v1.1.53 下发发现模式。 */
+    fun setDiscoveryMode(mode: com.meshchat.app.mesh.transport.DiscoveryMode) = repository.setDiscoveryMode(mode)
+
+    /** 切换静默模式：NORMAL ↔ SILENT（静默 = 陌生人扫不到你，其余功能照常）。 */
+    fun toggleSilentMode() {
+        if (repository.discoveryMode.value == com.meshchat.app.mesh.transport.DiscoveryMode.SILENT) {
+            repository.setDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+        } else {
+            repository.setDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.SILENT)
+        }
     }
 
     init {

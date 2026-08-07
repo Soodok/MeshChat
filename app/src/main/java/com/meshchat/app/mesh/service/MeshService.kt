@@ -34,6 +34,7 @@ import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transfer.FileTransferManager
 import com.meshchat.app.mesh.transfer.TransferStatus
 import com.meshchat.app.mesh.transport.MeshPeerInfo
+import com.meshchat.app.mesh.transport.DiscoveryMode
 import com.meshchat.app.mesh.transport.MeshTransport
 import com.meshchat.app.mesh.transport.PeerPresence
 import java.io.File
@@ -934,13 +935,10 @@ class MeshService(
      * 与 200ms tick 解耦，支持 50ms 级高频调试档——BLE 广播受系统约 100ms 最小间隔限制，
      * 高频档在已建立 GATT 连接通道（写/notify）上真实生效。
      *
-     * v1.1.52（用户反馈）：搜索已停止（discoveryEnabled=false）时跳过 PING 广播——
-     * 关闭搜索 = 停广播 + 停扫描 + 停心跳发包（调试中心发送计数归零，语义一致）；
-     * 不更新 lastPingAt，恢复搜索后立即补发。已建立 GATT 连接的消息收发不受影响
-     * （TEXT/RECEIPT 走写通道仍达），仅周期性的对外广播停止。
+     * v1.1.53：**所有发现模式都发 PING**——broadcast 只走 GATT 写/notify（与 advertise 无关），
+     * 静默/关闭扫描模式下保活已建立连接正是用户要的（"继续连接联系人，关系人经保活感知在线"）。
      */
     internal fun sendPingIfDue(now: Long = System.currentTimeMillis()) {
-        if (!_discoveryEnabled.value) return   // v1.1.52：搜索停止 → 心跳静默
         if (now - lastPingAt >= heartbeatIntervalMs) {
             lastPingAt = now
             sendPing()
@@ -960,27 +958,37 @@ class MeshService(
     }
 
     /** 暂停发现层（广播+扫描；已建立 GATT 连接收发不受影响）。 */
-    fun suspendSignaling() = suspendDiscovery()
+    fun suspendSignaling() = setDiscoveryMode(DiscoveryMode.CLOSED)
 
     /** 恢复发现层。 */
-    fun resumeSignaling() = resumeDiscovery()
+    fun resumeSignaling() = setDiscoveryMode(DiscoveryMode.NORMAL)
 
+    // ===== v1.1.53 发现模式（取代 v1.1.49 discoveryEnabled 布尔；用户最终设计）=====
     /**
-     * 发现开关（v1.1.49）：暂停/恢复广播+扫描（已建立 GATT 连接与收发不受影响）。
-     * Mesh 页"搜索开关"与"打开应用时自动搜索"设置共用；状态以 StateFlow 供 UI 显示。
+     * 发现模式状态：NORMAL 全开 / CLOSED 全停（autoDiscovery=关 启动态，保留连接与保活）/
+     * SILENT 静默模式（**只停广播**——陌生人扫不到，scan/自动连接/已建立连接与保活全部照常）。
+     * 状态流供 UI 渲染；模式经 transport.applyDiscoveryMode 生效。
      */
+    private val _discoveryMode = MutableStateFlow(DiscoveryMode.NORMAL)
+    val discoveryMode: StateFlow<DiscoveryMode> = _discoveryMode.asStateFlow()
+
+    /** 下发发现模式（幂等：同模式重复调用不重复下发）。 */
+    fun setDiscoveryMode(mode: DiscoveryMode) {
+        if (_discoveryMode.value == mode) return
+        _discoveryMode.value = mode
+        _discoveryEnabled.value = mode != DiscoveryMode.CLOSED
+        transport.applyDiscoveryMode(mode)
+    }
+
+    /** v1.1.49 兼容：发现层是否活动（SILENT 保留 scan/连接，仅广播不可见，故也算活动）。同步维护无异步窗口。 */
     private val _discoveryEnabled = MutableStateFlow(true)
     val discoveryEnabled: StateFlow<Boolean> = _discoveryEnabled.asStateFlow()
 
-    fun suspendDiscovery() {
-        transport.suspendDiscovery()
-        _discoveryEnabled.value = false
-    }
+    /** v1.1.49 兼容：暂停广播+扫描（= 关闭扫描模式）。 */
+    fun suspendDiscovery() = setDiscoveryMode(DiscoveryMode.CLOSED)
 
-    fun resumeDiscovery() {
-        transport.resumeDiscovery()
-        _discoveryEnabled.value = true
-    }
+    /** v1.1.49 兼容：恢复广播+扫描（= 正常模式）。 */
+    fun resumeDiscovery() = setDiscoveryMode(DiscoveryMode.NORMAL)
 
     /** 广播发射功率(dBm)：仅接受 Android 四档（1/-7/-15/-21），非法忽略；重启广播生效。 */
     fun setTxPower(power: Int) {

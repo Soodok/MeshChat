@@ -153,10 +153,12 @@ class MeshChatApplication : Application() {
         applyAutoDiscovery()
     }
 
-    /** 按"打开应用时自动搜索"设置同步发现层状态（关闭时暂停广播+扫描）。 */
+    /** 按"打开应用时自动搜索"设置同步发现层：关闭 = 启动进入 CLOSED（广播+扫描全停，保留连接与保活）；开启 = NORMAL。 */
     private fun applyAutoDiscovery() {
-        if (!autoDiscovery && service.discoveryEnabled.value) service.suspendDiscovery()
-        else if (autoDiscovery && !service.discoveryEnabled.value) service.resumeDiscovery()
+        service.setDiscoveryMode(
+            if (autoDiscovery) com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL
+            else com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED,
+        )
     }
 
     override fun onCreate() {

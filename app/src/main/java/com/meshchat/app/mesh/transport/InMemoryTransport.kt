@@ -40,12 +40,20 @@ class InMemoryTransport : MeshTransport {
     @Volatile
     var lastTxPowerLevel = 1
 
+    /** 最近一次下发的发现模式（applyDiscoveryMode 测试断言用；默认 NORMAL）。 */
+    @Volatile
+    var lastDiscoveryMode = DiscoveryMode.NORMAL
+
     override fun suspendDiscovery() {
         discoverySuspended = true
     }
 
     override fun resumeDiscovery() {
         discoverySuspended = false
+    }
+
+    override fun applyDiscoveryMode(mode: DiscoveryMode) {
+        lastDiscoveryMode = mode
     }
 
     override fun setTxPowerLevel(power: Int) {

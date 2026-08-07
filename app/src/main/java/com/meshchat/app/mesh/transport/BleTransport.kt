@@ -51,6 +51,12 @@ class BleTransport(
     @Volatile
     private var txPowerDbm: Int = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
 
+    /** 广播/扫描启停标志（v1.1.53 发现模式防重）：start/stop 幂等，避免重复 startScan/startAdvertising 抛异常。 */
+    @Volatile
+    private var advertisingStarted = false
+    @Volatile
+    private var scanningStarted = false
+
     /**
      * 当前协商的 GATT MTU（v1.1.36）：onMtuChanged 成功时更新，默认 23。
      * 文件传输引擎按 currentMtu() 动态算块大小；写帧前检查 payload ≤ mtu-3，不足排队等 MTU（防 MTU 未协商完成即写大帧失败）。
@@ -85,7 +91,7 @@ class BleTransport(
     override fun refreshAdvertising() {
         val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
         mainHandler.post {
-            runCatching { advertiser.stopAdvertising(advertiseCallback) }
+            stopAdvertising()   // v1.1.53：走带标志的 stop（否则 startAdvertising 的防重会拦截重启）
             mainHandler.postDelayed({ startAdvertising() }, 100L)
         }
     }
@@ -190,8 +196,8 @@ class BleTransport(
         gattClients.clear()
         connectAttempts.clear()
         pendingFrames.clear()
-        bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
-        bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        stopAdvertising()
+        stopScan()
     }
 
     override fun broadcast(frame: MeshFrame) {
@@ -245,8 +251,8 @@ class BleTransport(
     /** 调试控制：暂停发现层——只停广播+扫描，保留 GATT server/clients 与已建立连接收发。 */
     override fun suspendDiscovery() {
         Log.d(TAG, "suspendDiscovery: stop advertising + scanning")
-        runCatching { bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback) }
-        runCatching { bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+        stopAdvertising()
+        stopScan()
     }
 
     /** 调试控制：恢复发现层——重新广播+扫描（与 start() 幂等互不干扰）。 */
@@ -254,6 +260,31 @@ class BleTransport(
         Log.d(TAG, "resumeDiscovery: restart advertising + scanning")
         runCatching { startAdvertising() }
         runCatching { startScanning() }
+    }
+
+    /**
+     * 下发发现模式（v1.1.53，用户最终设计）：
+     * - NORMAL：广播+扫描全开（幂等防重）。
+     * - CLOSED：广播+扫描全停（内部态，供"打开应用时自动搜索=关"启动使用；保留连接与保活）。
+     * - SILENT（静默模式）：**只停广播**——陌生人扫不到本机；scan/自动连接/已建立连接与保活全部照常
+     *   （可连接陌生人建关系、可继续连接联系人，仅广播域不可见）。
+     */
+    override fun applyDiscoveryMode(mode: DiscoveryMode) {
+        Log.d(TAG, "applyDiscoveryMode: $mode")
+        when (mode) {
+            DiscoveryMode.NORMAL -> {
+                runCatching { startAdvertising() }
+                runCatching { startScanning() }
+            }
+            DiscoveryMode.CLOSED -> {
+                stopAdvertising()
+                stopScan()
+            }
+            DiscoveryMode.SILENT -> {
+                stopAdvertising()
+                runCatching { startScanning() }
+            }
+        }
     }
 
     private fun registerServer() {
@@ -293,6 +324,8 @@ class BleTransport(
     }
 
     private fun startAdvertising() {
+        if (advertisingStarted) return   // v1.1.53 幂等防重：重复 startAdvertising 会抛异常
+        advertisingStarted = true
         val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
@@ -320,12 +353,28 @@ class BleTransport(
     }
 
     private fun startScanning() {
+        if (scanningStarted) return   // v1.1.53 幂等防重：重复 startScan 会抛异常
+        scanningStarted = true
         debugStats.recordScanStarted()
         val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
         scanner.startScan(null, settings, scanCallback)
+    }
+
+    /** 停广播（幂等）。 */
+    private fun stopAdvertising() {
+        if (!advertisingStarted) return
+        advertisingStarted = false
+        runCatching { bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback) }
+    }
+
+    /** 停扫描（幂等）。 */
+    private fun stopScan() {
+        if (!scanningStarted) return
+        scanningStarted = false
+        runCatching { bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback) }
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {}

@@ -15,6 +15,7 @@ import com.meshchat.app.mesh.storage.InMemoryMeshStore
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.StoredMessage
 import com.meshchat.app.mesh.transfer.FileSaver
+import com.meshchat.app.mesh.transport.DiscoveryMode
 import com.meshchat.app.mesh.transport.InMemoryTransport
 import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.MeshTransport
@@ -1052,15 +1053,15 @@ class MeshServiceTest {
         )
         service.start()
 
-        service.suspendSignaling()
-        assertTrue(transport.discoverySuspended)
+        service.suspendSignaling()   // v1.1.53：暂停发现 = 关闭扫描模式
+        assertEquals(DiscoveryMode.CLOSED, transport.lastDiscoveryMode)
         service.resumeSignaling()
-        assertTrue(!transport.discoverySuspended)
+        assertEquals(DiscoveryMode.NORMAL, transport.lastDiscoveryMode)
     }
 
     @Test
-    fun `discovery toggle updates state flow and forwards to transport`() = runTest {
-        // v1.1.49：Mesh 页搜索开关——suspend/resumeDiscovery 更新 discoveryEnabled 状态（UI 读它渲染录像键）
+    fun `discovery modes forward to transport and update state`() = runTest {
+        // v1.1.53：发现模式三态（取代 v1.1.49 布尔开关）——NORMAL 全开 / CLOSED 全停 / SILENT 只停广播
         val identity = LocalIdentity(shortId = "ME")
         val transport = InMemoryTransport()
         val service = MeshService(
@@ -1068,18 +1069,23 @@ class MeshServiceTest {
         )
         service.start()
 
-        assertTrue("默认搜索开启", service.discoveryEnabled.value)
-        service.suspendDiscovery()
-        assertTrue("暂停后 transport 同步暂停", transport.discoverySuspended)
-        assertTrue("暂停后状态流为 false", !service.discoveryEnabled.value)
-        service.resumeDiscovery()
-        assertTrue("恢复后 transport 同步恢复", !transport.discoverySuspended)
-        assertTrue("恢复后状态流为 true", service.discoveryEnabled.value)
+        assertTrue("默认 NORMAL", service.discoveryMode.value == DiscoveryMode.NORMAL)
+        assertTrue("默认发现层活动", service.discoveryEnabled.value)
+        service.setDiscoveryMode(DiscoveryMode.CLOSED)
+        assertEquals("CLOSED 转发 transport", DiscoveryMode.CLOSED, transport.lastDiscoveryMode)
+        assertTrue("CLOSED 后 discoveryEnabled=false", !service.discoveryEnabled.value)
+        service.setDiscoveryMode(DiscoveryMode.SILENT)
+        assertEquals("SILENT 转发 transport", DiscoveryMode.SILENT, transport.lastDiscoveryMode)
+        assertTrue("SILENT 保留 scan/连接，也算活动", service.discoveryEnabled.value)
+        service.setDiscoveryMode(DiscoveryMode.NORMAL)
+        assertEquals("NORMAL 转发 transport", DiscoveryMode.NORMAL, transport.lastDiscoveryMode)
+        assertTrue("恢复 NORMAL 后 discoveryEnabled=true", service.discoveryEnabled.value)
     }
 
     @Test
-    fun `suspendDiscovery stops heartbeat pings until resumed`() {
-        // v1.1.52（用户反馈"停止搜索还在发包"）：搜索停止 → 心跳 PING 静默（调试中心发包计数归零），恢复后立即补发
+    fun `heartbeat pings continue in all discovery modes`() {
+        // v1.1.53（用户最终设计）：所有模式都发 PING——broadcast 只走 GATT 写/notify（与 advertise 无关），
+        // 静默/关闭扫描下保活已建立连接正是"继续连接联系人、关系人经保活感知在线"所需
         val identity = LocalIdentity(shortId = "ME")
         val transport = CountingTransport()
         val service = MeshService(
@@ -1091,18 +1097,14 @@ class MeshServiceTest {
             it.type == FrameType.DATA && MeshJson.decodeEnvelope(it.payloadText).kind == "PING"
         } }
 
-        service.sendPingIfDue(t0)          // 搜索中：发 PING
-        assertEquals("搜索中应发心跳", 1, pingCount())
-
-        service.suspendDiscovery()
-        service.sendPingIfDue(t0 + 1_000)  // 已停止：心跳静默
+        service.sendPingIfDue(t0)                       // NORMAL：发 PING
+        assertEquals("NORMAL 应发心跳", 1, pingCount())
+        service.setDiscoveryMode(DiscoveryMode.CLOSED)  // 全停（autoDiscovery=关）但保活
+        service.sendPingIfDue(t0 + 1_000)
+        assertEquals("CLOSED 保留连接保活", 2, pingCount())
+        service.setDiscoveryMode(DiscoveryMode.SILENT)  // 静默只停广播，保活照常
         service.sendPingIfDue(t0 + 2_000)
-        service.sendPingIfDue(t0 + 3_000)
-        assertEquals("搜索停止后不再发包", 1, pingCount())
-
-        service.resumeDiscovery()
-        service.sendPingIfDue(t0 + 4_000)  // 恢复后立即补发（lastPingAt 未推进）
-        assertEquals("恢复后立即补发心跳", 2, pingCount())
+        assertEquals("SILENT 保留连接保活", 3, pingCount())
         service.stop()
     }
 

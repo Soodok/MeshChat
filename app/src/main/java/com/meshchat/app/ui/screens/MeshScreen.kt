@@ -81,16 +81,16 @@ fun MeshScreen(
     pendingInvites: Set<String>,
     onStartDiscovery: () -> Unit,
     onPeerSelected: (String) -> Unit,
-    /** v1.1.49：发现开关（是否在广播+扫描）。 */
-    discoveryEnabled: Boolean,
-    onToggleDiscovery: () -> Unit,
+    /** v1.1.53 发现模式（NORMAL 全开 / CLOSED 全停 / SILENT 静默只停广播）。 */
+    discoveryMode: com.meshchat.app.mesh.transport.DiscoveryMode,
+    onSetDiscoveryMode: (com.meshchat.app.mesh.transport.DiscoveryMode) -> Unit,
 ) {
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peers = peers, sessions = sessions) }
         item {
-            // v1.1.52：搜索开关红键已整合进底部"蓝牙搜索"按钮（消除两键冲突），标题行不再独立放开关
+            // v1.1.53：搜索开关已整合进底部"蓝牙搜索"按钮，标题行不再独立放开关
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
@@ -101,9 +101,13 @@ fun MeshScreen(
         if (nearbyPeers.isEmpty()) {
             item {
                 Text(
-                    text = if (discoveryEnabled) "正在扫描邻近节点…" else "搜索已停止 · 点击下方按钮开启",
+                    text = when (discoveryMode) {
+                        com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> "正在扫描邻近节点…"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "搜索已停止 · 点击下方按钮开启"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.SILENT -> "静默模式 · 陌生人不可见，可发现他人"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (discoveryEnabled) TextSecondary else MeshAmber,
+                    color = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) TextSecondary else MeshAmber,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
                 )
             }
@@ -130,35 +134,81 @@ fun MeshScreen(
             }
         }
         item {
-            // v1.1.52 整合控件：搜索开关 + 重新发现合并为一个按钮（消除"红键 + 重新发现"两键冲突）。
-            // 搜索中 → 点击强制重新发现（重建 BLE）；已停止 → 点击开启搜索（恢复广播+扫描）。
+            // v1.1.53 整合控件：蓝牙搜索按钮 + 静默模式开关。
+            // 按钮点击：搜索中 → 重新发现（重建 BLE）；已停止/静默 → 恢复搜索。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 20.dp)
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(if (discoveryEnabled) Cyan else MeshRed.copy(alpha = 0.12f))
-                    .clickable { if (discoveryEnabled) onStartDiscovery() else onToggleDiscovery() }
+                    .background(
+                        if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Cyan
+                        else MeshRed.copy(alpha = 0.12f),
+                    )
+                    .clickable {
+                        when (discoveryMode) {
+                            com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> onStartDiscovery()
+                            com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED,
+                            com.meshchat.app.mesh.transport.DiscoveryMode.SILENT,
+                            -> onSetDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+                        }
+                    }
                     .padding(horizontal = 20.dp, vertical = 16.dp),
             ) {
                 Icon(
-                    if (discoveryEnabled) Icons.AutoMirrored.Outlined.BluetoothSearching else Icons.Outlined.BluetoothDisabled,
+                    if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) {
+                        Icons.AutoMirrored.Outlined.BluetoothSearching
+                    } else {
+                        Icons.Outlined.BluetoothDisabled
+                    },
                     null,
-                    tint = if (discoveryEnabled) Color(0xFF081420) else MeshRed,
+                    tint = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Color(0xFF081420) else MeshRed,
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    text = if (discoveryEnabled) "搜索中 · 点击重新发现" else "搜索已停止 · 点击开启",
+                    text = when (discoveryMode) {
+                        com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> "搜索中 · 点击重新发现"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "搜索已停止 · 点击开启"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.SILENT -> "静默模式 · 点击恢复搜索"
+                    },
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
-                    color = if (discoveryEnabled) Color(0xFF081420) else MeshRed,
+                    color = if (discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL) Color(0xFF081420) else MeshRed,
                     modifier = Modifier.weight(1f),
                 )
-                // 录像键状态指示（纯视觉，点击由整行处理）
-                DiscoveryToggleButton(enabled = discoveryEnabled)
+                // 录像键状态指示（纯视觉，点击由整行处理）：仅 NORMAL 显示"录制中"
+                DiscoveryToggleButton(enabled = discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
             }
         }
+        item {
+            // v1.1.53 静默模式开关：开启 = 只停广播（陌生人扫不到你），scan/连接/保活照常
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 4.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("静默模式", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "不被陌生人发现 · 仍可连接联系人与新设备",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = discoveryMode == com.meshchat.app.mesh.transport.DiscoveryMode.SILENT,
+                    onCheckedChange = { on ->
+                        onSetDiscoveryMode(
+                            if (on) com.meshchat.app.mesh.transport.DiscoveryMode.SILENT
+                            else com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL,
+                        )
+                    },
+                )
+            }
+        }
+        item { Spacer(Modifier.height(8.dp)) }
     }
 }
 

@@ -34,6 +34,9 @@ interface MeshRepository {
     val discoveryEnabled: kotlinx.coroutines.flow.StateFlow<Boolean>
     fun suspendDiscovery()
     fun resumeDiscovery()
+    /** v1.1.53 发现模式：NORMAL 全开 / CLOSED 全停 / SILENT 静默（只停广播，scan/连接/保活照常）。 */
+    val discoveryMode: kotlinx.coroutines.flow.StateFlow<com.meshchat.app.mesh.transport.DiscoveryMode>
+    fun setDiscoveryMode(mode: com.meshchat.app.mesh.transport.DiscoveryMode)
     /** v1.1.50 群消息：已订阅群列表 / 创建群（返回群 ID）/ 加入群（输入群 ID 本地订阅）/ 发送群消息。 */
     fun observeGroups(): Flow<List<com.meshchat.app.mesh.service.GroupInfo>>
     fun createGroup(groupName: String): String
@@ -92,6 +95,10 @@ class MeshRepositoryImpl(
     override fun suspendDiscovery() = service.suspendDiscovery()
 
     override fun resumeDiscovery() = service.resumeDiscovery()
+
+    override val discoveryMode: kotlinx.coroutines.flow.StateFlow<com.meshchat.app.mesh.transport.DiscoveryMode> = service.discoveryMode
+
+    override fun setDiscoveryMode(mode: com.meshchat.app.mesh.transport.DiscoveryMode) = service.setDiscoveryMode(mode)
 
     override fun observeMessages(convId: String): Flow<List<ChatMessage>> =
         store.observeMessages(convId).map { list -> list.map { it.toUiModel() } }

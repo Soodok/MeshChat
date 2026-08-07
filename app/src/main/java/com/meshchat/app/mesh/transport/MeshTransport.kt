@@ -6,6 +6,15 @@ import kotlinx.coroutines.flow.SharedFlow
 /** 节点在线状态（三色模型：在线绿 / 寻找中·重连中黄 / 离线黑）。 */
 enum class PeerPresence { ONLINE, SEARCHING, RECONNECTING, OFFLINE }
 
+/**
+ * 发现模式（v1.1.53，用户最终设计）：
+ * - NORMAL：广播+扫描全开——可被发现、可发现别人、自动连接。
+ * - CLOSED：停广播+停扫描（内部态，供"打开应用时自动搜索=关"启动使用；保留已建立连接与保活）。
+ * - SILENT（静默模式）：**只停广播（陌生人扫不到你）**——scan/自动连接/已建立连接与保活全部照常：
+ *   可以连接陌生人并建立关系、可以继续连接联系人（关系人经 GATT 保活感知你在线），仅广播域不可见。
+ */
+enum class DiscoveryMode { NORMAL, CLOSED, SILENT }
+
 /** 传输层发现的邻近节点信息。 */
 data class MeshPeerInfo(
     val shortId: String,
@@ -59,6 +68,12 @@ interface MeshTransport {
 
     /** 恢复发现层（广播+扫描）；默认无操作，BleTransport 覆写。 */
     fun resumeDiscovery() = Unit
+
+    /**
+     * 下发发现模式（v1.1.53）：单独开关广播（可被发现）/扫描（发现他人）+ 断开全部连接。
+     * 默认空实现（内存/测试替身），BleTransport 覆写。
+     */
+    fun applyDiscoveryMode(mode: DiscoveryMode) = Unit
 
     /**
      * 当前协商的 GATT MTU 字节数（BleTransport 覆写，onMtuChanged 更新）；-1 = 未知/非 BLE 载体。
