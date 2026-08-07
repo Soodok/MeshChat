@@ -360,6 +360,7 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
+- **⚠️ 推送阻塞（网络，本次 2026-08-07 下午）**：`git push` 被 `Recv failure: Connection reset` 阻断（389c3be v1.1.56 已本地提交）。**下次会话首先重试 `git push origin main`**（上午 `aee4f19..74c03c8` 推送成功后网络又断，历史多次网络恢复后均成功）。
 - **推送阻塞（网络）已解除（2026-08-07）**：`aee4f19..a909292` 已推送 origin/main——Wi-Fi Direct 规格/计划（`54fc6ca`/`20c719d`）+ v1.1.53（`314f8e9`）+ AI_CONTEXT（`0ad8488`）+ v1.1.54（`e3fd87a`）+ v1.1.55（`a909292`）全部同步，本地与远程一致，工作区干净。此后不再有积压。
 - **⚠️ 推送阻塞（网络，本次 2026-08-06）**：`github.com:443` Connection reset / Could not connect，`git push` 连推 3 次失败（含 15s/30s 间隔重试）。**本地已提交未推送**：`0f9ae73`（v1.1.53 发现模式/静默模式）+ `179ffc6`（AI_CONTEXT 记录）。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功）。
 - **⚠️ 推送阻塞（网络，本次 2026-08-05）**：`github.com:443` connection reset/超时，`git push` 连推 4 次失败（含 HTTP/1.1 重试）。**本地已提交未推送**：`546880d`（v1.1.47 回退）+ `1c0a61c`（v1.1.48 三 bug 修复）+ AI_CONTEXT 更新。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功）。
