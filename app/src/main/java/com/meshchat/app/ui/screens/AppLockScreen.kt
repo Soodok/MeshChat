@@ -101,11 +101,15 @@ fun AppLockScreen(
         object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
                 // 认证成功 → keystore 已解锁生物密钥 → 解密 DEK（认证后解密，兼容认证前 init 被拒的 ROM）
-                if (!onFinishBiometricUnlock()) showBioError = true
+                if (!onFinishBiometricUnlock()) {
+                    showBioError = true
+                    com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证成功但 DEK 解密失败")
+                }
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                showBioError = true
+                com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证错误 code=$errorCode $errString")
+                error = "指纹认证被中断（$errString），请重试或使用密码"
             }
 
             override fun onAuthenticationFailed() {
@@ -166,7 +170,8 @@ fun AppLockScreen(
                 )
             }.onFailure { t ->
                 android.util.Log.e(TAG, "system biometric authenticate failed", t)
-                error = "指纹认证启动失败，请用密码解锁"
+                com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "系统指纹认证启动失败（${t.message ?: t.javaClass.simpleName}）")
+                error = "指纹认证启动失败（${t.message ?: t.javaClass.simpleName}），请用密码解锁"
             }
         } else {
             // API 26-29 兜底
@@ -177,7 +182,8 @@ fun AppLockScreen(
                 .build()
             runCatching { androidxPrompt?.authenticate(info) }.onFailure { t ->
                 android.util.Log.e(TAG, "androidx biometric authenticate failed", t)
-                error = "指纹认证启动失败，请用密码解锁"
+                com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "androidx 指纹认证启动失败（${t.message ?: t.javaClass.simpleName}）")
+                error = "指纹认证启动失败（${t.message ?: t.javaClass.simpleName}），请用密码解锁"
             }
         }
     }

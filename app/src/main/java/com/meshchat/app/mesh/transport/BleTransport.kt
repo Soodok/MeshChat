@@ -83,16 +83,24 @@ class BleTransport(
     /** 送达确认键提供器（MeshService 注入：本机已收到消息的压缩键，最新优先，最多 6 个）。 */
     private var ackProvider: () -> List<ByteArray> = { emptyList() }
 
+    /** v1.1.63 当前发现模式（refreshAdvertising 据此决定是否重启广播——SILENT/CLOSED 保持停广播）。 */
+    @Volatile private var currentDiscoveryMode = DiscoveryMode.NORMAL
+
     override fun setAckProvider(provider: () -> List<ByteArray>) {
         ackProvider = provider
     }
 
-    /** 收到新消息后刷新广播：确认键变化，让对端尽快从扫描读到（广播更新有频率限制，短延迟后重启）。 */
+    /** 收到新消息后刷新广播：确认键变化，让对端尽快从扫描读到（广播更新有频率限制，短延迟后重启）。
+     *  v1.1.63 防静默失效：SILENT（静默）/CLOSED（停止搜索）下**不重启广播**——否则收到消息刷新确认键时
+     *  会把广播重新打开，对端又能扫到本机（用户实测"开启静默模式仍被搜索到"）。确认键通道在
+     *  SILENT/CLOSED 下依赖 GATT（RECEIPT/PONG），广播确认本就不可用。 */
     override fun refreshAdvertising() {
         val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
         mainHandler.post {
-            stopAdvertising()   // v1.1.53：走带标志的 stop（否则 startAdvertising 的防重会拦截重启）
-            mainHandler.postDelayed({ startAdvertising() }, 100L)
+            stopAdvertising()
+            if (currentDiscoveryMode == DiscoveryMode.NORMAL) {
+                mainHandler.postDelayed({ startAdvertising() }, 100L)
+            }
         }
     }
 
@@ -271,6 +279,7 @@ class BleTransport(
      */
     override fun applyDiscoveryMode(mode: DiscoveryMode) {
         Log.d(TAG, "applyDiscoveryMode: $mode")
+        currentDiscoveryMode = mode
         when (mode) {
             DiscoveryMode.NORMAL -> {
                 runCatching { startAdvertising() }

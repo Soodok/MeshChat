@@ -318,8 +318,19 @@ class MeshService(
     private val groupMemberIds = ConcurrentHashMap<String, MutableSet<String>>()
 
     // ===== v1.1.57 端到端加密（E2EE）=====
-    /** 本机 ECDH P-256 密钥对（AndroidKeyStore 私钥不可导出；测试内存实现）。 */
-    private val localKeyPair: java.security.KeyPair by lazy { e2eeStore.localKeyPair() }
+    /**
+     * 本机 ECDH P-256 密钥对（AndroidKeyStore 私钥不可导出；测试内存实现）。
+     * v1.1.63 防崩：AndroidKeyStore 生成失败（华为等 ROM 对 EC + PURPOSE_AGREE 支持不完整 → KeyGenParameterSpec
+     * 或 generateKeyPair 抛异常，用户实测"点击发起连接崩溃"）→ 降级内存密钥对（MeshCrypto.generateKeyPair），
+     * 握手仍可用（重启后密钥变化需重新握手）；异常写诊断日志（调试中心可导出定位）。
+     */
+    private val localKeyPair: java.security.KeyPair by lazy {
+        runCatching { e2eeStore.localKeyPair() }.getOrElse { t ->
+            Log.w(TAG, "AndroidKeyStore key pair failed, fallback to in-memory key", t)
+            DebugLogBuffer.log("E2EE", "AndroidKeyStore 密钥生成失败，降级内存密钥（${t.message ?: t.javaClass.simpleName}）")
+            MeshCrypto.generateKeyPair()
+        }
+    }
     /** 本机公钥 SPKI Base64（握手交换）。 */
     private val localPubKeyB64: String by lazy { MeshCrypto.publicKeyB64(localKeyPair) }
     /** 对端会话密钥缓存（peerId → 32B）；启动时从 e2eeStore 惰性加载。 */

@@ -112,6 +112,8 @@ class AppLockManager(private val context: Context) {
      * v1.1.59 指纹解锁（认证成功后解密）：BiometricPrompt 认证成功回调里调用。
      * 认证成功 → keystore 解锁生物密钥 → init + doFinal 必然成功。
      * 不依赖认证前 init（华为/部分 ROM 上 setUserAuthenticationRequired 密钥在认证前 init 会被拒 → 原方案"指纹不可用"）。
+     * v1.1.63 自修复：blob 解密失败（新录指纹致旧生物密钥失效/旧 blob 不匹配）时，
+     * 若内存已有 DEK（本会话曾密码解锁，DEK 锁定后保留）→ 用当前生物密钥重建指纹副本并解锁。
      */
     fun finishBiometricUnlockAfterAuth(): Boolean {
         if (isLockedOut()) return false
@@ -124,11 +126,23 @@ class AppLockManager(private val context: Context) {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
             cipher.doFinal(ct)
-        }.getOrNull() ?: return false
-        dek = d
-        locked.value = false
-        clearLockout()
-        return true
+        }.getOrNull()
+        if (d != null) {
+            dek = d
+            locked.value = false
+            clearLockout()
+            return true
+        }
+        // 指纹副本失效（新录指纹/旧 blob）：用内存 DEK 重建指纹副本自修复（无内存 DEK 则提示用密码解锁一次）
+        val currentDek = dek ?: return false
+        return runCatching {
+            val newBlob = encryptWithBiometricKey(currentDek)
+            prefs.edit().putString(KEY_DEK_BY_BIO, newBlob).apply()
+            dek = currentDek
+            locked.value = false
+            clearLockout()
+            true
+        }.getOrDefault(false)
     }
 
     /** 移除密码（恢复无锁）：清空锁数据与 DEK（已加密的密钥库条目随之不可解——明文回退）。 */
