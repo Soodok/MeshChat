@@ -25,6 +25,10 @@ class MainActivity : FragmentActivity() {
             add(Manifest.permission.BLUETOOTH_SCAN)
             add(Manifest.permission.BLUETOOTH_CONNECT)
             add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)   // v1.1.51 Beta：Wi-Fi Direct 增强
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+                add(Manifest.permission.ACCESS_FINE_LOCATION)  // API 31-32 Wi-Fi Direct discoverPeers 仍需位置
+            }
         } else {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {

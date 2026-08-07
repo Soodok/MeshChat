@@ -9,12 +9,20 @@
     <!-- Android 11 及以下（API <=30）必需：普通权限，声明即授予；12+ 不再使用 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <!-- API <=30 BLE 扫描必需的位置权限（API 31+ 由 BLUETOOTH_SCAN(neverForLocation) 覆盖） -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
     <!-- API 26-28 写公共 Downloads 需要（API 29+ 走 MediaStore 免权限） -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- ===== v1.1.51 Beta：Wi-Fi Direct 增强权限 ===== -->
+    <!-- API 33+：NEARBY_WIFI_DEVICES 近似权限（替代位置权限），neverForLocation 表明不用于定位 -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <!-- API <=32 位置权限：API <=30 BLE 扫描必需；API 31-32 Wi-Fi Direct discoverPeers 也必需（33+ 由 NEARBY_WIFI_DEVICES 覆盖） -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <!-- Wi-Fi Direct 数据通道走标准 TCP/UDP Socket，必须 INTERNET -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- Android 13+：仅在用户从界面主动启用消息提醒时请求，启动时不弹窗。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 前台服务必需（Android 9+ targetSdk>=28 startForegroundService 校验；缺失启动即 SecurityException 崩溃） -->
