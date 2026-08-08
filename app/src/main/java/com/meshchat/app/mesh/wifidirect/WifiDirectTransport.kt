@@ -32,7 +32,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -69,8 +72,12 @@ class WifiDirectTransport(
     private val _foundPeers = MutableSharedFlow<MeshPeerInfo>(extraBufferCapacity = 64)
     val foundPeers: SharedFlow<MeshPeerInfo> = _foundPeers
 
-    @Volatile var state: State = State.DISABLED
-        private set
+    /** 状态机（StateFlow 镜像：Mesh 页据此显示 Wi-Fi Direct 连接状态/WIFI 信号栏）。线程安全。 */
+    private val _state = MutableStateFlow(State.DISABLED)
+    var state: State
+        get() = _state.value
+        private set(value) { _state.value = value }
+    val stateFlow: StateFlow<State> = _state.asStateFlow()
 
     /** 服务发现填充：shortId ↔ P2P 设备。 */
     private val knownDevices = ConcurrentHashMap<String, WifiP2pDevice>()

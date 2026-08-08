@@ -81,6 +81,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             onAutoDiscoveryChange = viewModel::updateAutoDiscovery,
             wifiDirectEnabled = viewModel.wifiDirectEnabled,
             onWifiDirectEnabledChange = viewModel::updateWifiDirectEnabled,
+            wifiDirectActive = viewModel.wifiDirectActive.collectAsStateWithLifecycle().value,
             discoveryMode = viewModel.discoveryMode.collectAsStateWithLifecycle().value,
             onSetDiscoveryMode = viewModel::setDiscoveryMode,
             onOpenConversation = viewModel::openConversation,

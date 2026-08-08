@@ -35,6 +35,7 @@ import androidx.compose.material.icons.outlined.BluetoothDisabled
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -103,6 +104,8 @@ fun MeshScreen(
     /** v1.1.66 当前频道名（null = 公共频道）与切换回调：私人频道仅同频道成员可发现/连接。 */
     channelName: String?,
     onSetChannel: (String?) -> Unit,
+    /** Wi-Fi Direct 星域是否已连接（有连接显示 WIFI 信号栏）。 */
+    wifiDirectActive: Boolean,
 ) {
     // v1.1.57：蓝牙未开启时拒绝开启搜索并弹系统授权窗申请打开（ACTION_REQUEST_ENABLE）
     val context = LocalContext.current
@@ -125,6 +128,30 @@ fun MeshScreen(
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peers = peers, sessions = sessions) }
+        // Wi-Fi Direct 星域已连接：显示 WIFI 信号栏（有连接才显示，未连接不占空间）
+        if (wifiDirectActive) {
+            item {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.Wifi, null,
+                        tint = MeshGreen, modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Wi-Fi Direct 星域已连接",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MeshGreen,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    SignalBars(3)
+                }
+            }
+        }
         item {
             // v1.1.66 频道选择器：单频道制——私人频道仅同频道成员可发现/连接（防公共搜索）
             Row(
