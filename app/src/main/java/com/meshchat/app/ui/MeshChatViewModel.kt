@@ -48,6 +48,8 @@ class MeshChatViewModel(
     private val appLock: com.meshchat.app.security.lock.AppLockManager,
     /** v1.1.64 静默偏好持久化（Application 纯写 SharedPrefs，不触发服务调用）。 */
     private val setSilentMode: (Boolean) -> Unit,
+    /** v1.1.66 频道名持久化（Application.channelName setter 注入）。 */
+    private val persistChannelName: (String?) -> Unit,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
@@ -228,6 +230,15 @@ class MeshChatViewModel(
     fun blockPeer(peerId: String) = repository.blockPeer(peerId)
 
     fun unblockPeer(peerId: String) = repository.unblockPeer(peerId)
+
+    // ---- v1.1.66 频道系统（单频道制：公共 / 私人）----
+    val channelName: StateFlow<String?> = repository.channelName
+
+    /** 切换频道：持久化 + 下发服务层（换指纹广播/清表/重新发现）。null = 公共频道。 */
+    fun setChannel(name: String?) {
+        persistChannelName(name)
+        repository.setChannel(name)
+    }
 
     init {
         securityCapabilityManager.refresh()
@@ -423,8 +434,15 @@ class MeshChatViewModel(
                 repository.sendGroupMessage(target, text.trim())
             } else {
                 // v1.1.57 E2EE 强制加密：无会话密钥（对方旧版本/未协商）→ 拒绝发送并提示
+                // v1.1.66 区分拒绝原因：无会话密钥 vs 对方不在当前频道（私人频道隔离）
                 val sent = repository.sendText("conv-$target", text.trim())
-                if (!sent) _sendRejected.value = "对方未启用加密，无法发送消息"
+                if (!sent) {
+                    _sendRejected.value = if (repository.isPeerInCurrentChannel(target)) {
+                        "对方未启用加密，无法发送消息"
+                    } else {
+                        "对方不在当前频道，无法发送"
+                    }
+                }
             }
         }
     }

@@ -28,6 +28,7 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             debugStats = app.debugStats,
             appLock = app.appLock,   // v1.1.58 应用锁
             setSilentMode = { app.silentMode = it },   // v1.1.64 静默偏好持久化
+            persistChannelName = { app.channelName = it },   // v1.1.66 频道名持久化
         ) as T
     }
 }

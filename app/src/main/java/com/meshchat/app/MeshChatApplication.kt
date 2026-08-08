@@ -123,6 +123,18 @@ class MeshChatApplication : Application() {
                 .edit().putBoolean("silent_mode", value).apply()
         }
 
+    /**
+     * v1.1.66 当前频道名偏好（null = 公共频道）：重启恢复频道隔离。
+     * 纯偏好读写，不直接动服务；生效由 applyChannel 在启动/蓝牙重建时下发。
+     */
+    var channelName: String?
+        get() = getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+            .getString("channel_name", null)
+        set(value) {
+            getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+                .edit().putString("channel_name", value?.trim()?.takeIf { it.isNotEmpty() }).apply()
+        }
+
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId, debugStats = debugStats) }
     val service by lazy {
         val notifications = NotificationHelper(this) { appLock.locked.value }   // v1.1.58 锁定态通知隐藏内容
@@ -169,6 +181,8 @@ class MeshChatApplication : Application() {
         }
         // v1.1.49：打开应用时自动搜索关闭 → 启动后不自动广播+扫描（服务/心跳/已建立连接照常）
         applyAutoDiscovery()
+        // v1.1.66：启动恢复频道（公共/私人，与发现模式正交）
+        applyChannel()
     }
 
     /**
@@ -186,6 +200,11 @@ class MeshChatApplication : Application() {
         service.setDiscoveryMode(mode)
     }
 
+    /** v1.1.66 启动恢复频道：读偏好 → service.setChannel（幂等，与发现模式正交）。 */
+    private fun applyChannel() {
+        service.setChannel(channelName)
+    }
+
     override fun onCreate() {
         super.onCreate()
         registerBluetoothStateReceiver()
@@ -194,6 +213,8 @@ class MeshChatApplication : Application() {
         // 前台服务由 MainActivity onCreate/onResume 的 startMesh() 补上（App 已在前台，无启动限制）。
         runCatching { service.start() }
         applyAutoDiscovery()
+        // v1.1.66：进程启动即恢复频道（重启后保持频道隔离）
+        applyChannel()
     }
 
     /**
@@ -217,6 +238,8 @@ class MeshChatApplication : Application() {
                         runCatching { service.restartDiscovery() }
                         // v1.1.49：自动搜索关闭时，重建链路后仍保持"不广播+不扫描"（GATT/心跳照常）
                         applyAutoDiscovery()
+                        // v1.1.66：蓝牙重建后恢复频道（广播指纹重新生效）
+                        applyChannel()
                     }, 500L)
                 }
             }

@@ -34,6 +34,12 @@ interface MeshRepository {
     /** v1.1.65 主动拉黑（Mesh 页未连接节点也可拉黑）。 */
     fun blockPeer(peerId: String)
     fun unblockPeer(peerId: String)
+    /** v1.1.66 当前频道名（null = 公共频道）。 */
+    val channelName: kotlinx.coroutines.flow.StateFlow<String?>
+    /** v1.1.66 切换频道（null = 公共频道；非空 = 私人频道，仅同频道可发现/连接）。 */
+    fun setChannel(name: String?)
+    /** v1.1.66 对端是否在当前频道（发送被拒原因区分）。 */
+    fun isPeerInCurrentChannel(peerId: String): Boolean
     fun startDiscovery()
     fun localShortId(): String
     /** 发现开关（v1.1.49）：当前是否在广播+扫描。 */
@@ -149,6 +155,12 @@ class MeshRepositoryImpl(
     override fun blockPeer(peerId: String) = service.blockPeer(peerId)
 
     override fun unblockPeer(peerId: String) = service.unblockPeer(peerId)
+
+    override val channelName: kotlinx.coroutines.flow.StateFlow<String?> = service.channelName
+
+    override fun setChannel(name: String?) = service.setChannel(name)
+
+    override fun isPeerInCurrentChannel(peerId: String): Boolean = service.isPeerInCurrentChannel(peerId)
 
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
         // 信号格数由协议层速率比决定（≥60% 满格 / ≥25% 两格 / ≥5% 一格）；样本不足回退 RSSI 格数
