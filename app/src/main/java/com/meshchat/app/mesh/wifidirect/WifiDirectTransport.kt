@@ -209,7 +209,7 @@ class WifiDirectTransport(
             if (state == State.DISCOVERING) {
                 manager?.discoverPeers(channel, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() = Unit
-                    override fun onFailure(reason: Int) { Log.d(TAG, "discover fail $reason") }
+                    override fun onFailure(reason: Int) { wwlog("discover fail reason=$reason") }
                 })
                 // 对每个已知设备尝试连接（已建 TCP 跳过；多设备并发 connect 由系统 GO negotiation 合并成一个 group）
                 knownDevices.forEach { (id, dev) ->
