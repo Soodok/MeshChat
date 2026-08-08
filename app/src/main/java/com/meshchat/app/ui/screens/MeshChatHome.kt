@@ -119,6 +119,9 @@ fun MeshChatHome(
     onUnblockPeer: (String) -> Unit,
     /** v1.1.65 主动拉黑（Mesh 页未连接节点也可拉黑）。 */
     onBlockPeer: (String) -> Unit,
+    /** v1.1.66 当前频道名与切换回调（公共/私人频道）。 */
+    channelName: String?,
+    onSetChannel: (String?) -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -363,6 +366,8 @@ fun MeshChatHome(
                     blockedPeers = blockedPeers,
                     onUnblockPeer = onUnblockPeer,
                     onBlockPeer = onBlockPeer,
+                    channelName = channelName,
+                    onSetChannel = onSetChannel,
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),

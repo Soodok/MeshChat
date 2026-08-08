@@ -32,12 +32,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.BluetoothSearching
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.BluetoothDisabled
+import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,6 +100,9 @@ fun MeshScreen(
     onUnblockPeer: (String) -> Unit,
     /** v1.1.65 主动拉黑：未连接/未对话节点也可在 Mesh 页拉黑（不依赖连接状态）。 */
     onBlockPeer: (String) -> Unit,
+    /** v1.1.66 当前频道名（null = 公共频道）与切换回调：私人频道仅同频道成员可发现/连接。 */
+    channelName: String?,
+    onSetChannel: (String?) -> Unit,
 ) {
     // v1.1.57：蓝牙未开启时拒绝开启搜索并弹系统授权窗申请打开（ACTION_REQUEST_ENABLE）
     val context = LocalContext.current
@@ -112,10 +118,39 @@ fun MeshScreen(
     var unblockTarget by remember { mutableStateOf<String?>(null) }
     // v1.1.65 主动拉黑确认目标（未连接节点也可拉黑）
     var blockTarget by remember { mutableStateOf<String?>(null) }
+    // v1.1.66 频道选择对话框状态
+    var showChannelDialog by remember { mutableStateOf(false) }
+    var channelInput by remember { mutableStateOf("") }
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
         item { MeshTopology(peers = peers, sessions = sessions) }
+        item {
+            // v1.1.66 频道选择器：单频道制——私人频道仅同频道成员可发现/连接（防公共搜索）
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 8.dp)
+                    .clickable { showChannelDialog = true },
+            ) {
+                Icon(
+                    Icons.Outlined.Campaign, null,
+                    tint = if (channelName.isNullOrBlank()) TextSecondary else Cyan,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("频道", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (channelName.isNullOrBlank()) "公共频道 · 全部节点可见"
+                        else "私人频道 · $channelName",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (channelName.isNullOrBlank()) TextSecondary else Cyan,
+                    )
+                }
+            }
+        }
         item {
             // v1.1.53：搜索开关已整合进底部"蓝牙搜索"按钮，标题行不再独立放开关
             Row(
@@ -289,6 +324,48 @@ fun MeshScreen(
             },
             dismissButton = {
                 androidx.compose.material3.TextButton(onClick = { blockTarget = null }) { Text("取消") }
+            },
+        )
+    }
+    // v1.1.66 频道选择对话框：公共频道 / 自定义私人频道名（仅同频道成员可发现/连接）
+    if (showChannelDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showChannelDialog = false },
+            title = { Text("选择频道") },
+            text = {
+                Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { channelInput = "" },
+                    ) {
+                        RadioButton(selected = channelName.isNullOrBlank(), onClick = null)
+                        Text("公共频道 · 全部节点可见")
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = channelInput,
+                        onValueChange = { channelInput = it },
+                        label = { Text("私人频道名") },
+                        placeholder = { Text("仅同频道成员可发现/连接") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    val name = channelInput.trim()
+                    onSetChannel(name.ifEmpty { null })
+                    android.widget.Toast.makeText(
+                        context,
+                        if (name.isEmpty()) "已切换至公共频道" else "已切换至频道 $name",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                    showChannelDialog = false
+                }) { Text("切换") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showChannelDialog = false }) { Text("取消") }
             },
         )
     }
