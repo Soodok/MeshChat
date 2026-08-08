@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.68（versionCode 130，构建时间 2026-08-08）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.69（versionCode 131，构建时间 2026-08-08）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -41,6 +41,7 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **v1.1.69 Wi-Fi Direct 实验性选项并入 main（2026-08-08）**：用户决策「Wi-Fi Direct 作为实验性选项并入主分支」。从 beta/wifi-direct-2（基于 v1.1.56 的独立开发线）cherry-pick 5 个 P1 提交到 main（v1.1.68 基线），3 处冲突（build.gradle 版本/GeneralSettingsScreen 参数与应用锁区块——E2EE 线 023fd2f 也改了装配文件）全部解决；**新功能集中 `mesh/wifidirect/` 独立目录**（Framing/MemberTable/WifiDirectTransport + 3 测试），主线仅最小必要修改（权限/MainActivity/装配/设置开关）。P1 = 一对一 Wi-Fi Direct 连接打通：DnsSd 短 ID 无连接识别 → connect/GO negotiation → TCP 双向 REGISTER 身份映射（RfcommFraming 分帧）；设置页「Wi-Fi Direct 增强」开关默认关（实验性，说明文案标注）。**与 E2EE（v1.1.57）共存**：传输层透传 MeshFrame 字节，加密在信封层，零冲突。全量单测通过；APK `MeshChat-v1.1.69-debug.apk`。⚠️ 分支注意：beta/wifi-direct 与 beta/wifi-direct-2 为旧独立开发线（未删除），main 已含全部 P1 内容；真机验证后进入 P2（多人星域）。
 - 后端框架 11 个任务全部实现并提交：构建环境、帧协议、消息信封、去重表、转发决策、身份层、Room 存储、传输抽象、MeshService 编排、Repository 前端接入、BLE 传输。
 - 真机联调修复：Manifest 补 `BLUETOOTH_ADVERTISE`（BLE 广播必需）；`BleTransport.start()` 三段 runCatching 降级防崩；「开始附近发现」按钮已绑定 `MeshService.start()`。
 - BLE 发现链路修复（v0.2.0）：广播数据由 Service UUID 改为 **Service Data 携带本机短 ID**，扫描按 Service Data 识别节点（原按设备名前缀过滤，广播却不带名 → 永远发现不了）；`MeshService` 聚合 `foundPeers` 至 `peers` StateFlow，`MeshRepository.observePeers()` 已接真实数据；按钮点击后有「正在扫描邻近节点…/重新发现」反馈，发现节点实时显示。
@@ -485,6 +486,7 @@ app/src/main/java/com/meshchat/app/
   - 单测 +7（规格 12.1 全部覆盖），72/72 通过。范围外：文件/握手/群组多跳、3 跳+、加密、路由持久化。
 
 ### 下一步首要任务
+0. **Wi-Fi Direct P2（多人星域连接，当前功能主线）**：在 main（v1.1.69）继续规格 §8 计划二——WifiDirectTransport 补 REGISTER UDP 组内广播 + 成员表接入（任务 7）、多成员自动组网 + 断开指数退避重建（任务 8）、三机验证（任务 9）。P1 真机验证（两机开 Wi-Fi Direct 增强开关 → logcat `MeshWfd` 应出现 `peer discovered` 双向 + `connection change formed` + `tcp peer identified` 双向）先行。
 0. **v1.1.66 频道系统真机验证（当前版本，优先，双机同频道名）**：① 双机 A/B 都在公共频道 → 互见互连（回归现状）② A 输频道名"mesh-team"进入私人频道 → B 公共频道看不到 A、A 看不到公共频道节点（隔离生效）③ B 也输"mesh-team" → A/B 互见互连、消息收发正常（E2EE 照常）④ 一方切到其他频道名 → 对方节点消失、旧会话发送被拒 Toast"对方不在当前频道"、切回恢复 ⑤ 杀进程重进 → 频道保持（持久化）⑥ 蓝牙重开 → 频道恢复 ⑦ 老版本设备在公共频道可见（兼容）⑧ 嗅探侧（另一台装 Wireshark/nRF Connect 类工具）确认广播 Service Data 无明文频道名（只有 6B 指纹）。
 1. **v1.1.65 未连接节点主动拉黑真机验证（v1.1.66 顺带）**：① 未连接陌生人节点右侧出现拉黑图标（Block 按钮）→ 点击确认 → 该节点变红"已拉黑 · 点击解除" ② 拉黑后对方即使在场/连接也无法重新连接或发消息（不依赖对方是否在线）③ 点击已拉黑节点 → 解除 → 恢复正常连接 ④ 删除对话的拉黑路径不受影响（Mesh 页该节点同样显示"已拉黑"）。
 1. **v1.1.64 静默持久化 + 拉黑真机验证（v1.1.66 顺带）**：① 开静默 → 杀进程重进/蓝牙重开 → 对端仍扫不到本机（静默已持久化）② 删除对话 → 对端 INVITE 不再弹窗、发 TEXT 不落库不通知；Mesh 页该节点显示"已拉黑" ③ 点击已拉黑节点 → 确认解除 → 恢复连接 ④ 顺手回归 v1.1.63（点节点发起连接不崩溃）。
