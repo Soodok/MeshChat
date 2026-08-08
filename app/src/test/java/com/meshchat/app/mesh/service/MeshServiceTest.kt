@@ -1848,4 +1848,60 @@ class MeshServiceTest {
         assertTrue("跨频道消息不落库", store.observeMessages("conv-CROSS").first().isEmpty())
         service.stop()
     }
+
+    // ===== v1.1.67 隔离彻底化（断连 + 过滤）=====
+
+    @Test
+    fun `blockPeer disconnects peer and pushes blocked filter to transport`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        transport.emitPeer(MeshPeerInfo(shortId = "B", deviceAddress = "AA:BB:CC", rssi = -50))
+        awaitPeerDiscovered(service, "B")
+        service.blockPeer("B")
+        assertEquals("拉黑即断开已建立连接", "B", transport.lastDisconnectedPeer)
+        assertEquals("拉黑集合下发给传输层", setOf("B"), transport.lastBlockedPeers)
+        service.stop()
+    }
+
+    @Test
+    fun `unblockPeer removes peer from blocked filter`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        service.blockPeer("B")
+        service.unblockPeer("B")
+        assertEquals("解除拉黑同步过滤集合", emptySet<String>(), transport.lastBlockedPeers)
+        service.stop()
+    }
+
+    @Test
+    fun `setChannel disconnects all old connections`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        service.setChannel("mesh-team")
+        assertEquals("换频道断开全部旧连接", 1, transport.disconnectAllCount)
+        service.stop()
+    }
+
+    @Test
+    fun `setDiscoveryMode CLOSED disconnects all and NORMAL does not`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        service.setDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED)
+        assertEquals("关闭搜索断开全部连接", 1, transport.disconnectAllCount)
+        service.setDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+        assertEquals("恢复搜索不额外断连", 1, transport.disconnectAllCount)
+        service.stop()
+    }
 }

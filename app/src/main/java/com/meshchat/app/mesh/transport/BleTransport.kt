@@ -91,12 +91,45 @@ class BleTransport(
     /** v1.1.66 本机频道指纹（0 = 公共频道）；广播携带与扫描过滤依据。 */
     @Volatile private var channelFingerprint: Long = 0L
 
+    /** v1.1.67 拉黑集合：发现层过滤（不 emit 不自动连）+ server 侧拒绝重连（blocked 节点连入立即断开）。 */
+    @Volatile private var blockedPeers: Set<String> = emptySet()
+
     override fun setAckProvider(provider: () -> List<ByteArray>) {
         ackProvider = provider
     }
 
     override fun setChannel(fingerprint: Long) {
         channelFingerprint = fingerprint
+    }
+
+    override fun setBlockedPeers(blocked: Set<String>) {
+        blockedPeers = blocked
+    }
+
+    /** v1.1.67 断开与指定节点的全部 GATT 连接（拉黑/删对话）：对方立即收不到本机心跳，失联→离线。 */
+    override fun disconnectPeer(peerId: String) {
+        val address = peerIds.entries.firstOrNull { it.value == peerId }?.key ?: return
+        disconnectAddress(address)
+    }
+
+    /** v1.1.67 断开全部 GATT 连接（换频道/关闭搜索）：旧连接上的心跳外发立即停止。 */
+    override fun disconnectAll() {
+        gattClients.keys.toList().forEach { disconnectAddress(it) }
+        serverDevices.keys.toList().forEach { disconnectAddress(it) }
+    }
+
+    /** 断开指定地址的 central + server 侧连接，并记冷却阻止扫描立即重连。 */
+    private fun disconnectAddress(address: String) {
+        gattClients.remove(address)?.let { g ->
+            runCatching { g.disconnect() }   // 触发 DISCONNECTED 回调清理（幂等）
+            runCatching { g.close() }
+        }
+        pendingFrames.remove(address)
+        serverDevices.remove(address)?.let { d ->
+            runCatching { gattServer?.cancelConnection(d) }
+        }
+        subscribedDevices.remove(address)
+        connectAttempts[address] = System.currentTimeMillis()   // 冷却：防扫描自动重连
     }
 
     /** 收到新消息后刷新广播：确认键变化，让对端尽快从扫描读到（广播更新有频率限制，短延迟后重启）。
@@ -129,6 +162,14 @@ class BleTransport(
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             Log.d(TAG, "server conn[${device.address}] newState=$newState status=$status")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                // v1.1.67 拉黑即断连后，对方 central 仍会扫描到本机广播自动重连——server 侧检测到
+                // 已拉黑节点连入立即断开（拉黑后对方"连不上"的最终防线）
+                val knownPeer = peerIds[device.address]
+                if (knownPeer != null && knownPeer in blockedPeers) {
+                    Log.d(TAG, "reject connection from blocked peer $knownPeer")
+                    runCatching { gattServer?.cancelConnection(device) }
+                    return
+                }
                 debugStats.recordGattConnectSuccess()
                 serverDevices[device.address] = device
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -426,6 +467,8 @@ class BleTransport(
             val shortId = record.serviceData[ParcelUuid(serviceUuid)]
                 ?.toString(Charsets.UTF_8)
                 ?.takeIf { it.isNotBlank() } ?: return
+            // v1.1.67 拉黑过滤：已拉黑节点即使广播也不可见、不自动连接（本机 Mesh 页不再显示，也不连它）
+            if (shortId in blockedPeers) return
             // v1.1.66 频道过滤：扫描到的节点指纹必须匹配本机当前频道，否则不可见、不自动连接（跨频道节点在传输层即隔离）
             val peerChannelFp = bytesToFingerprint(record.serviceData[ParcelUuid(CHANNEL_UUID)])
             if (peerChannelFp != channelFingerprint) return
@@ -456,6 +499,8 @@ class BleTransport(
 
     private fun connectTo(device: BluetoothDevice) {
         debugStats.recordGattConnectAttempt()
+        // v1.1.67 防御：已拉黑节点不建立 central 连接（onScanResult 已过滤，此处兜底防竞态）
+        if (peerIds[device.address] in blockedPeers) return
         if (gattClients.containsKey(device.address)) return
         val now = System.currentTimeMillis()
         val lastTry = connectAttempts[device.address]

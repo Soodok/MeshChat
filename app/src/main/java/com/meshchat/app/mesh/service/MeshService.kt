@@ -332,7 +332,7 @@ class MeshService(
     private val _blockedPeers = MutableStateFlow(blockedStore.load())
     val blockedPeers: StateFlow<Set<String>> = _blockedPeers.asStateFlow()
 
-    /** 拉黑：拒绝该节点的连接与消息（删除对话时调用）。 */
+    /** 拉黑：拒绝该节点的连接与消息（删除对话时调用）。v1.1.67 拉黑即断开已建立连接，对方立即失联→离线。 */
     fun blockPeer(peerId: String) {
         _sessions.update { it - peerId }
         sessionStore.save(_sessions.value)
@@ -342,13 +342,17 @@ class MeshService(
         _blockedPeers.update { it + peerId }
         blockedStore.save(_blockedPeers.value)
         removePeer(peerId)
+        // v1.1.67 隔离彻底化：断开已建立的 GATT 连接（对方收不到本机心跳）+ 发现层过滤 + server 拒绝重连
+        transport.disconnectPeer(peerId)
+        transport.setBlockedPeers(_blockedPeers.value)
         Log.i(TAG, "blocked peer $peerId")
     }
 
-    /** 解除拉黑：恢复可连接/收发。 */
+    /** 解除拉黑：恢复可连接/收发。v1.1.67 同步解除发现层过滤。 */
     fun unblockPeer(peerId: String) {
         _blockedPeers.update { it - peerId }
         blockedStore.save(_blockedPeers.value)
+        transport.setBlockedPeers(_blockedPeers.value)   // v1.1.67 解除过滤，重新可发现/可连接
         Log.i(TAG, "unblocked peer $peerId")
     }
 
@@ -363,6 +367,8 @@ class MeshService(
         _channelName.value = trimmed
         channelFingerprint = fp
         transport.setChannel(fp)
+        // v1.1.67 换频道断开所有旧连接：旧频道/公共频道节点不再收到本机心跳（隔离彻底化）
+        transport.disconnectAll()
         transport.refreshAdvertising()   // v1.1.63 模式守卫：仅 NORMAL 重启广播；CLOSED/SILENT 广播本就停，扫描过滤读 volatile 即时生效
         peerEntries.clear()
         routeEntries.clear()             // 2 跳中继路由同样按频道隔离，旧频道路由失效
@@ -1211,6 +1217,9 @@ class MeshService(
         _discoveryMode.value = mode
         _discoveryEnabled.value = mode != DiscoveryMode.CLOSED
         transport.applyDiscoveryMode(mode)
+        // v1.1.67 关闭搜索 = 彻底断开全部连接（用户决策：反转 v1.1.53"CLOSED 保留连接与保活"）——
+        // 对方立即收不到本机心跳，失联→离线，无法继续连接/看见本机在线；恢复搜索后重新扫描自动重连
+        if (mode == DiscoveryMode.CLOSED) transport.disconnectAll()
     }
 
     /** v1.1.49 兼容：发现层是否活动（SILENT 保留 scan/连接，仅广播不可见，故也算活动）。同步维护无异步窗口。 */

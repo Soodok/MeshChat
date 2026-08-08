@@ -48,6 +48,18 @@ class InMemoryTransport : MeshTransport {
     @Volatile
     var lastChannelFingerprint = 0L
 
+    /** v1.1.67 最近一次断开的节点（disconnectPeer 测试断言用）。 */
+    @Volatile
+    var lastDisconnectedPeer: String? = null
+
+    /** v1.1.67 断连全部计数（disconnectAll 测试断言用）。 */
+    @Volatile
+    var disconnectAllCount = 0
+
+    /** v1.1.67 最近一次下发的拉黑集合（setBlockedPeers 测试断言用）。 */
+    @Volatile
+    var lastBlockedPeers: Set<String>? = null
+
     override fun suspendDiscovery() {
         discoverySuspended = true
     }
@@ -66,5 +78,17 @@ class InMemoryTransport : MeshTransport {
 
     override fun setChannel(fingerprint: Long) {
         lastChannelFingerprint = fingerprint
+    }
+
+    override fun disconnectPeer(peerId: String) {
+        lastDisconnectedPeer = peerId
+    }
+
+    override fun disconnectAll() {
+        disconnectAllCount++
+    }
+
+    override fun setBlockedPeers(blocked: Set<String>) {
+        lastBlockedPeers = blocked
     }
 }

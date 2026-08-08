@@ -102,4 +102,19 @@ interface MeshTransport {
      * InMemoryTransport 覆写记录断言位供测试。
      */
     fun setChannel(fingerprint: Long) {}
+
+    /**
+     * v1.1.67 断开与指定节点的全部 GATT 连接（拉黑/删对话时调用）：对方立即收不到本机心跳，失联→离线。
+     * 默认空实现，BleTransport 覆写（central 断开 + server cancelConnection + 冷却防重连）。
+     */
+    fun disconnectPeer(peerId: String) {}
+
+    /** v1.1.67 断开全部 GATT 连接（换频道/关闭搜索时调用）：旧连接上的心跳外发立即停止。默认空实现。 */
+    fun disconnectAll() {}
+
+    /**
+     * v1.1.67 下发拉黑集合：发现层过滤（不 emit 不自动连）+ server 侧拒绝重连（blocked 节点连入立即断开）。
+     * 默认空实现，BleTransport 覆写。
+     */
+    fun setBlockedPeers(blocked: Set<String>) {}
 }
