@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MeshChat 图标背景：深碳黑（Midnight Circuit 视觉基准主色） -->
+    <color name="ic_launcher_background">#FF050708</color>
+</resources>
