@@ -54,12 +54,17 @@ class MeshChatViewModel(
     private val persistChannelName: (String?) -> Unit,
     /** Wi-Fi Direct 增强层状态流（Mesh 页 WIFI 状态栏数据源）。 */
     private val wifiDirectStateInput: kotlinx.coroutines.flow.StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State>,
+    /** Wi-Fi Direct 不可用原因（Mesh 页精确提示：Wi-Fi 未开/权限缺失/设备不支持）。 */
+    private val wifiDirectUnavailableInput: kotlinx.coroutines.flow.StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.UnavailableReason>,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
 
     /** Wi-Fi Direct 完整状态（DISABLED/DISCOVERING/CONNECTING/GROUPED/RECONNECTING）：Mesh 页据此显示三态 WIFI 状态栏。 */
     val wifiDirectState: StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State> = wifiDirectStateInput
+
+    /** Wi-Fi Direct 不可用原因（DISABLED + 开关开启时 Mesh 页精确提示）。 */
+    val wifiDirectUnavailable: StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.UnavailableReason> = wifiDirectUnavailableInput
 
     /** Wi-Fi Direct 星域是否已连接（GROUPED）：快捷判定。 */
     val wifiDirectActive: StateFlow<Boolean> = wifiDirectStateInput

@@ -109,6 +109,8 @@ fun MeshScreen(
     wifiDirectEnabled: Boolean,
     /** Wi-Fi Direct 星域状态（Mesh 页三态 WIFI 状态栏：搜索/已连接/重连，关闭不显示）。 */
     wifiDirectState: com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State,
+    /** Wi-Fi Direct 不可用原因（开关开 + DISABLED 时精确提示具体操作）。 */
+    wifiDirectUnavailable: com.meshchat.app.mesh.wifidirect.WifiDirectTransport.UnavailableReason,
 ) {
     // v1.1.57：蓝牙未开启时拒绝开启搜索并弹系统授权窗申请打开（ACTION_REQUEST_ENABLE）
     val context = LocalContext.current
@@ -134,15 +136,25 @@ fun MeshScreen(
         // Wi-Fi Direct 状态栏（关闭不显示；开启且不可用=灰提示；搜索黄/已连接绿+信号栏/重连琥珀）
         if (wifiDirectEnabled) when (wifiDirectState) {
             com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State.DISABLED -> {
+                // 按不可用原因精确提示：Wi-Fi 未开 / 权限缺失 / 设备不支持
+                val (hintIcon, hintText) = when (wifiDirectUnavailable) {
+                    com.meshchat.app.mesh.wifidirect.WifiDirectTransport.UnavailableReason.WIFI_OFF ->
+                        Icons.Outlined.WifiOff to "Wi-Fi Direct 需要 Wi-Fi · 请开启 Wi-Fi 后重新打开开关"
+                    com.meshchat.app.mesh.wifidirect.WifiDirectTransport.UnavailableReason.PERMISSION_MISSING ->
+                        Icons.Outlined.WifiOff to "缺少「邻近设备」权限 · 请在系统设置中允许后重试"
+                    com.meshchat.app.mesh.wifidirect.WifiDirectTransport.UnavailableReason.NOT_SUPPORTED ->
+                        Icons.Outlined.WifiOff to "此设备不支持 Wi-Fi Direct（仅 BLE 模式运行）"
+                    else -> Icons.Outlined.WifiOff to "Wi-Fi Direct 不可用 · 请检查 Wi-Fi 与权限"
+                }
                 item {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp),
                     ) {
-                        Icon(Icons.Outlined.WifiOff, null, tint = TextSecondary, modifier = Modifier.size(16.dp))
+                        Icon(hintIcon, null, tint = TextSecondary, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "Wi-Fi Direct 不可用 · 请开启 Wi-Fi 并允许「邻近设备」权限",
+                            hintText,
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                         )

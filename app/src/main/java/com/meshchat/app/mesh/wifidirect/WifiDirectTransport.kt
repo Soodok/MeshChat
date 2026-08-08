@@ -1,9 +1,12 @@
 package com.meshchat.app.mesh.wifidirect
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
@@ -61,6 +64,9 @@ class WifiDirectTransport(
 
     enum class State { DISABLED, DISCOVERING, CONNECTING, GROUPED, RECONNECTING }
 
+    /** 增强层不可用原因（Mesh 页精确提示：区分 Wi-Fi 未开 / 权限缺失 / 设备不支持）。 */
+    enum class UnavailableReason { NONE, WIFI_OFF, PERMISSION_MISSING, NOT_SUPPORTED }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val manager: WifiP2pManager? =
         runCatching { context.getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager }.getOrNull()
@@ -78,6 +84,10 @@ class WifiDirectTransport(
         get() = _state.value
         private set(value) { _state.value = value }
     val stateFlow: StateFlow<State> = _state.asStateFlow()
+
+    /** 不可用原因（State 为 DISABLED 且增强开关开启时，Mesh 页据此精确提示）。 */
+    private val _unavailableReason = MutableStateFlow(UnavailableReason.NONE)
+    val unavailableReason: StateFlow<UnavailableReason> = _unavailableReason.asStateFlow()
 
     /** 服务发现填充：shortId ↔ P2P 设备。 */
     private val knownDevices = ConcurrentHashMap<String, WifiP2pDevice>()
@@ -124,7 +134,14 @@ class WifiDirectTransport(
     // ---------- 生命周期 ----------
 
     fun enable() {
-        if (manager == null || channel == null) { wwlog("p2p unavailable, wfd disabled"); return }
+        // 精确诊断不可用原因：Wi-Fi 未开 / 权限缺失 / P2P 服务不可用（Mesh 页据此提示用户具体操作）
+        val reason = diagnoseUnavailable()
+        _unavailableReason.value = reason
+        if (reason != UnavailableReason.NONE) {
+            state = State.DISABLED
+            wwlog("wfd unavailable reason=$reason (wifi=${wifiEnabled()} manager=${manager != null} channel=${channel != null})")
+            return
+        }
         if (state != State.DISABLED) return
         state = State.DISCOVERING
         registerReceiver()
@@ -133,6 +150,28 @@ class WifiDirectTransport(
         scope.launch { discoveryLoop() }
         wlog("enabled shortId=$shortId")
     }
+
+    /** 诊断增强层不可用原因（每次 enable 时评估；区分 Wi-Fi 开关/权限/P2P 支持）。 */
+    private fun diagnoseUnavailable(): UnavailableReason {
+        if (!wifiEnabled()) return UnavailableReason.WIFI_OFF
+        // API 33+ 需 NEARBY_WIFI_DEVICES；API 31-32 需位置权限；更老版本无需运行时权限
+        val needed = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> Manifest.permission.NEARBY_WIFI_DEVICES
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> Manifest.permission.ACCESS_FINE_LOCATION
+            else -> null
+        }
+        if (needed != null &&
+            ContextCompat.checkSelfPermission(context, needed) != PackageManager.PERMISSION_GRANTED
+        ) return UnavailableReason.PERMISSION_MISSING
+        if (manager == null || channel == null) return UnavailableReason.NOT_SUPPORTED
+        return UnavailableReason.NONE
+    }
+
+    /** Wi-Fi 是否开启（Wi-Fi Direct 依赖 Wi-Fi 射频；蓝牙开 ≠ Wi-Fi 开）。 */
+    private fun wifiEnabled(): Boolean = runCatching {
+        val wm = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        wm.isWifiEnabled
+    }.getOrDefault(false)
 
     fun disable() {
         state = State.DISABLED

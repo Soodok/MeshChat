@@ -32,6 +32,7 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             setSilentMode = { app.silentMode = it },   // v1.1.64 静默偏好持久化
             persistChannelName = { app.channelName = it },   // v1.1.66 频道名持久化
             wifiDirectStateInput = app.wfd.stateFlow,   // Wi-Fi Direct 星域状态（Mesh 页状态栏）
+            wifiDirectUnavailableInput = app.wfd.unavailableReason,   // Wi-Fi Direct 不可用原因
         ) as T
     }
 }
