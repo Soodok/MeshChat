@@ -52,14 +52,17 @@ class MeshChatViewModel(
     private val setSilentMode: (Boolean) -> Unit,
     /** v1.1.66 频道名持久化（Application.channelName setter 注入）。 */
     private val persistChannelName: (String?) -> Unit,
-    /** Wi-Fi Direct 增强层状态流（Mesh 页 WIFI 信号栏状态源）。 */
-    private val wifiDirectState: kotlinx.coroutines.flow.StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State>,
+    /** Wi-Fi Direct 增强层状态流（Mesh 页 WIFI 状态栏数据源）。 */
+    private val wifiDirectStateInput: kotlinx.coroutines.flow.StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State>,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
 
-    /** Wi-Fi Direct 星域是否已连接（GROUPED）：Mesh 页据此显示 WIFI 信号栏。 */
-    val wifiDirectActive: StateFlow<Boolean> = wifiDirectState
+    /** Wi-Fi Direct 完整状态（DISABLED/DISCOVERING/CONNECTING/GROUPED/RECONNECTING）：Mesh 页据此显示三态 WIFI 状态栏。 */
+    val wifiDirectState: StateFlow<com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State> = wifiDirectStateInput
+
+    /** Wi-Fi Direct 星域是否已连接（GROUPED）：快捷判定。 */
+    val wifiDirectActive: StateFlow<Boolean> = wifiDirectStateInput
         .map { it == com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State.GROUPED }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 

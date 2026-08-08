@@ -83,8 +83,8 @@ fun MeshChatHome(
     /** Beta v1.1.51：Wi-Fi Direct 增强设置。 */
     wifiDirectEnabled: Boolean,
     onWifiDirectEnabledChange: (Boolean) -> Unit,
-    /** Wi-Fi Direct 星域是否已连接（Mesh 页 WIFI 信号栏）。 */
-    wifiDirectActive: Boolean,
+    /** Wi-Fi Direct 星域状态（Mesh 页三态 WIFI 状态栏）。 */
+    wifiDirectState: com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State,
     /** v1.1.53 发现模式（NORMAL/CLOSED/SILENT）+ 下发。 */
     discoveryMode: com.meshchat.app.mesh.transport.DiscoveryMode,
     onSetDiscoveryMode: (com.meshchat.app.mesh.transport.DiscoveryMode) -> Unit,
@@ -375,7 +375,8 @@ fun MeshChatHome(
                     onBlockPeer = onBlockPeer,
                     channelName = channelName,
                     onSetChannel = onSetChannel,
-                    wifiDirectActive = wifiDirectActive,
+                    wifiDirectEnabled = wifiDirectEnabled,
+                    wifiDirectState = wifiDirectState,
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),
