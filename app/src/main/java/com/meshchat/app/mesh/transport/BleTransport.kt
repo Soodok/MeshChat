@@ -78,6 +78,8 @@ class BleTransport(
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
         /** 扫描响应携带的送达确认键 Service Data UUID：对端扫描即读到，无需 GATT 连接。 */
         val ACK_UUID: UUID = UUID.fromString("0000A5E3-0000-1000-8000-00805F9B34FB")
+        /** v1.1.66 频道指纹 Service Data UUID：广播携带 6 字节频道指纹（公共频道不携带），扫描方按指纹过滤。 */
+        val CHANNEL_UUID: UUID = UUID.fromString("0000A5E4-0000-1000-8000-00805F9B34FB")
     }
 
     /** 送达确认键提供器（MeshService 注入：本机已收到消息的压缩键，最新优先，最多 6 个）。 */
@@ -86,8 +88,15 @@ class BleTransport(
     /** v1.1.63 当前发现模式（refreshAdvertising 据此决定是否重启广播——SILENT/CLOSED 保持停广播）。 */
     @Volatile private var currentDiscoveryMode = DiscoveryMode.NORMAL
 
+    /** v1.1.66 本机频道指纹（0 = 公共频道）；广播携带与扫描过滤依据。 */
+    @Volatile private var channelFingerprint: Long = 0L
+
     override fun setAckProvider(provider: () -> List<ByteArray>) {
         ackProvider = provider
+    }
+
+    override fun setChannel(fingerprint: Long) {
+        channelFingerprint = fingerprint
     }
 
     /** 收到新消息后刷新广播：确认键变化，让对端尽快从扫描读到（广播更新有频率限制，短延迟后重启）。
@@ -347,6 +356,12 @@ class BleTransport(
             .setIncludeTxPowerLevel(true)
             .addServiceUuid(ParcelUuid(serviceUuid))
             .addServiceData(ParcelUuid(serviceUuid), advertiseShortId.toByteArray())
+            .apply {
+                // v1.1.66 私人频道广播携带频道指纹（独立 Service Data；公共频道不携带，主 Service Data 短 ID 不变 → 老版本解析不受影响）
+                if (channelFingerprint != 0L) {
+                    addServiceData(ParcelUuid(CHANNEL_UUID), fingerprintToBytes(channelFingerprint))
+                }
+            }
             .build()
         // 扫描响应携带送达确认键（独立 Service Data，与短 ID 广播互不干扰、老版本兼容）：
         // 对端无需任何 GATT 连接，扫描本机广播即可读到"已收到哪些消息"并确认送达（硬实时第三通道）
@@ -386,6 +401,21 @@ class BleTransport(
         runCatching { bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback) }
     }
 
+    /** v1.1.66 6 字节大端编码（与 ChannelFingerprint.of 截断序一致）。 */
+    private fun fingerprintToBytes(fp: Long): ByteArray {
+        val b = ByteArray(6)
+        for (i in 0 until 6) b[i] = ((fp shr (40 - i * 8)) and 0xFF).toByte()
+        return b
+    }
+
+    /** v1.1.66 解析 6 字节指纹 → Long；缺失/长度不足 → 0（公共频道/老版本设备）。 */
+    private fun bytesToFingerprint(b: ByteArray?): Long {
+        if (b == null || b.size < 6) return 0L
+        var v = 0L
+        for (i in 0 until 6) v = (v shl 8) or (b[i].toLong() and 0xFF)
+        return v
+    }
+
     private val advertiseCallback = object : AdvertiseCallback() {}
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -396,6 +426,9 @@ class BleTransport(
             val shortId = record.serviceData[ParcelUuid(serviceUuid)]
                 ?.toString(Charsets.UTF_8)
                 ?.takeIf { it.isNotBlank() } ?: return
+            // v1.1.66 频道过滤：扫描到的节点指纹必须匹配本机当前频道，否则不可见、不自动连接（跨频道节点在传输层即隔离）
+            val peerChannelFp = bytesToFingerprint(record.serviceData[ParcelUuid(CHANNEL_UUID)])
+            if (peerChannelFp != channelFingerprint) return
             // 解析扫描响应携带的送达确认键（4B/个）：对端已收到的消息，本机据此确认送达
             val ackData = record.serviceData[ParcelUuid(ACK_UUID)]
             val ackKeys: List<ByteArray> = if (ackData != null && ackData.isNotEmpty()) {
@@ -414,6 +447,7 @@ class BleTransport(
                     ackKeys = ackKeys,
                     // 广播包带 TX power 字段时有效（本工程互发必带）；老版本/未知 = Int.MIN_VALUE
                     txPower = record.txPowerLevel,
+                    channelFingerprint = peerChannelFp,   // v1.1.66 频道指纹（0 = 公共/老版本）
                 ),
             )
             connectTo(device)
