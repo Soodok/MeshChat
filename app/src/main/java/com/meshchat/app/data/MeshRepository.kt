@@ -31,6 +31,8 @@ interface MeshRepository {
     fun deleteConversation(peerId: String)
     /** v1.1.64 拉黑：拒绝该节点的连接与消息（删除对话时自动拉黑）。 */
     val blockedPeers: kotlinx.coroutines.flow.StateFlow<Set<String>>
+    /** v1.1.65 主动拉黑（Mesh 页未连接节点也可拉黑）。 */
+    fun blockPeer(peerId: String)
     fun unblockPeer(peerId: String)
     fun startDiscovery()
     fun localShortId(): String
@@ -143,6 +145,8 @@ class MeshRepositoryImpl(
     }
 
     override val blockedPeers: kotlinx.coroutines.flow.StateFlow<Set<String>> = service.blockedPeers
+
+    override fun blockPeer(peerId: String) = service.blockPeer(peerId)
 
     override fun unblockPeer(peerId: String) = service.unblockPeer(peerId)
 

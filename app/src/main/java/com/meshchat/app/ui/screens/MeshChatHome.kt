@@ -117,6 +117,8 @@ fun MeshChatHome(
     /** v1.1.64 拉黑（删除对话 = 拒绝连接与消息；Mesh 页可解除）。 */
     blockedPeers: Set<String>,
     onUnblockPeer: (String) -> Unit,
+    /** v1.1.65 主动拉黑（Mesh 页未连接节点也可拉黑）。 */
+    onBlockPeer: (String) -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -360,6 +362,7 @@ fun MeshChatHome(
                     onSetDiscoveryMode = onSetDiscoveryMode,
                     blockedPeers = blockedPeers,
                     onUnblockPeer = onUnblockPeer,
+                    onBlockPeer = onBlockPeer,
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),

@@ -30,11 +30,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.BluetoothSearching
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.BluetoothDisabled
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -93,6 +95,8 @@ fun MeshScreen(
     /** v1.1.64 拉黑：删除对话 = 拒绝连接与消息；Mesh 页已拉黑节点点击可解除。 */
     blockedPeers: Set<String>,
     onUnblockPeer: (String) -> Unit,
+    /** v1.1.65 主动拉黑：未连接/未对话节点也可在 Mesh 页拉黑（不依赖连接状态）。 */
+    onBlockPeer: (String) -> Unit,
 ) {
     // v1.1.57：蓝牙未开启时拒绝开启搜索并弹系统授权窗申请打开（ACTION_REQUEST_ENABLE）
     val context = LocalContext.current
@@ -106,6 +110,8 @@ fun MeshScreen(
     }
     // v1.1.64 解除拉黑确认目标
     var unblockTarget by remember { mutableStateOf<String?>(null) }
+    // v1.1.65 主动拉黑确认目标（未连接节点也可拉黑）
+    var blockTarget by remember { mutableStateOf<String?>(null) }
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
@@ -144,6 +150,7 @@ fun MeshScreen(
                     // v1.1.64：已拉黑节点点击 = 解除拉黑确认；否则正常连接流程
                     if (blocked) unblockTarget = peer.shortId else onPeerSelected(peer.shortId)
                 },
+                onBlock = { blockTarget = peer.shortId },   // v1.1.65 主动拉黑
             )
         }
         if (historyPeers.isNotEmpty()) {
@@ -157,6 +164,7 @@ fun MeshScreen(
                     pending = false,
                     blocked = peer.shortId in blockedPeers,
                     onClick = { onPeerSelected(peer.shortId) },
+                    onBlock = { blockTarget = peer.shortId },   // v1.1.65 主动拉黑
                 )
             }
         }
@@ -264,6 +272,23 @@ fun MeshScreen(
             },
             dismissButton = {
                 androidx.compose.material3.TextButton(onClick = { unblockTarget = null }) { Text("取消") }
+            },
+        )
+    }
+    // v1.1.65 主动拉黑确认框：未连接节点也可拉黑，无需对方在场/连接
+    blockTarget?.let { target ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { blockTarget = null },
+            title = { Text("拉黑 ${target}？") },
+            text = { Text("拉黑后对方无法向您发起连接、发送消息或邀请。即使对方当前不在线，拉黑也立即生效并持久保存。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    onBlockPeer(target)
+                    blockTarget = null
+                }) { Text("拉黑", color = MeshRed) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { blockTarget = null }) { Text("取消") }
             },
         )
     }
@@ -484,7 +509,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
 }
 
 @Composable
-private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocked: Boolean, onClick: () -> Unit) {
+private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocked: Boolean, onClick: () -> Unit, onBlock: () -> Unit) {
     // 100ms 刷新"信号时间"：帧到达 → lastSeenAt 更新 → 数字归零跳动（<1s 毫秒显示）；帧停止 → 数字持续增大 → 直观感知断连
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(100); now = System.currentTimeMillis() } }
@@ -563,6 +588,12 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocke
                 style = MaterialTheme.typography.bodySmall,
                 color = statusColor,
             )
+            if (!blocked) {
+                // v1.1.65：未拉黑节点提供主动拉黑入口（未连接陌生人也可拉黑，拉黑后对方无法连接/发消息）
+                IconButton(onClick = onBlock, modifier = Modifier.size(26.dp)) {
+                    Icon(Icons.Outlined.Block, "拉黑", tint = TextSecondary, modifier = Modifier.size(15.dp))
+                }
+            }
         }
     }
     HorizontalDivider(color = MeshDivider, modifier = Modifier.padding(start = 80.dp))

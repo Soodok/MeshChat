@@ -135,6 +135,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             onRemoveLockPassword = viewModel::removeLockPassword,
             blockedPeers = blockedPeers,
             onUnblockPeer = viewModel::unblockPeer,
+            onBlockPeer = viewModel::blockPeer,
         )
     }
 }

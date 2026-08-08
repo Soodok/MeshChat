@@ -222,8 +222,10 @@ class MeshChatViewModel(
         }
     }
 
-    // ---- v1.1.64 拉黑（删除对话 = 拒绝连接与消息）----
+    // ---- v1.1.64 拉黑（删除对话 = 拒绝连接与消息；v1.1.65 Mesh 页未连接节点也可主动拉黑）----
     val blockedPeers: StateFlow<Set<String>> = repository.blockedPeers
+
+    fun blockPeer(peerId: String) = repository.blockPeer(peerId)
 
     fun unblockPeer(peerId: String) = repository.unblockPeer(peerId)
 
