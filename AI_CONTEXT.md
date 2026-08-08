@@ -440,7 +440,7 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
-- **⚠️ 推送阻塞（网络，2026-08-08）**：v1.1.67 图标提交 **`f3364bb`**（10 文件：adaptive xml + 5 密度 legacy + foreground + colors + 删旧 nodpi）已 commit 本地，**`git push origin main` 连续 3 次失败**（`Connection timed out` / `Failed to connect github.com:443`）——本地安全，网络恢复后重推即可。
+- **推送阻塞已解除（2026-08-08）**：`f3364bb`（v1.1.67 图标）+ `42c90ab`（AI_CONTEXT 关键文件条目补完）已推送 origin/main（`c2a24f6..42c90ab`），本地与远程一致，工作区干净。此后不再有积压。
 - **推送阻塞已解除（2026-08-08）**：`0ffef18..90d25a9` 已推送 origin/main——v1.1.65（`57c9b85`/`e8d41f0`）+ v1.1.66 全部（规格 `0f7033b`、计划 `16da77e`、实现 6 提交、交付 `90d25a9`）全部同步，本地与远程一致。此后不再有积压。
 - **推送阻塞已解除（2026-08-07 晚）**：`74c03c8..9ce4ee0` 已推送 origin/main——v1.1.56（`389c3be`）+ AI_CONTEXT（`0b6f336`）+ v1.1.57（`7e55eb4`）+ AI_CONTEXT（`0aa3243`）+ v1.1.58（`4800798`）+ v1.1.59（`9ce4ee0`）全部同步，本地与远程一致，工作区干净。此后不再有积压。
 - **⚠️ 分支注意（本次教训）**：IDE 工作区可能被其他 agent 切到 `beta/wifi-direct` / `beta/wifi-direct-2`（Wi-Fi Direct 实现分支，另一条开发线）。**git commit 前必须确认当前分支是 main**（`git branch --show-current`）。本次 v1.1.57 提交 023fd2f 曾误落 beta/wifi-direct-2，已 `git checkout main` + `git cherry-pick 023fd2f` 产生 7e55eb4 纠正。beta/wifi-direct-2 上也有 v1.1.57/119 版本（51ac1bb P1 装配）——**两个分支版本号撞车（都 119/1.1.57），内容不同（主线=E2EE+蓝牙检查；beta=Wi-Fi Direct P1）**，后续合并需处理。
