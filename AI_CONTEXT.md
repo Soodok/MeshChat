@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.72（versionCode 134，构建时间 2026-08-08）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.73（versionCode 135，构建时间 2026-08-08）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -41,6 +41,8 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **v1.1.73 应用锁恢复（2026-08-08，用户实测"设完密码后重新打开应用直接进入主界面"）**：**根因**——v1.1.58 的 `MainActivity.onStart()` 应用锁逻辑（已设密码 → `appLock.lock()`）被 **Wi-Fi Direct 线重写 MainActivity 时丢失**（git 核对：4800798 有 onStart，155c438/b66c187 覆盖后消失），全项目无任何 `appLock.lock()` 调用 → `locked` 恒 false → AppLockScreen 永不显示。**修复**：`MainActivity` 恢复 `onStart()`（hasPassword → lock），锁定 UI 逻辑（MeshChatApp `if (appLocked) AppLockScreen`）本身完好无需改。**E2EE 降级说明（非 bug）**：用户同时反馈"蓝牙连接端对端加密失败，自动切换内存密钥"——这是 v1.1.63 已知降级路径（华为等 ROM 对 AndroidKeyStore EC+PURPOSE_AGREE 支持不完整 → `localKeyPair` lazy 降级内存密钥），**加密仍生效**（内存密钥同样 ECDH+AES-GCM），仅影响重启后需重新握手；AndroidKeyStore EC 密钥协商在华为 ROM 上无解（keystore 不暴露私钥，无法绕过 AGREE），保持现状兜底。
+  - **测试**：全量 204/204 通过（MainActivity 为 UI 层，无 JVM 测试；编译确认）。APK `MeshChat-v1.1.73-debug.apk`（20,809,819 B）/ `MeshChat-v1.1.73-release.apk`（1,942,001 B，R8+正式签名）。⚠️ 待真机验证：设密码 → 杀进程重进/退后台再进 → 出现 AppLockScreen；密码/指纹解锁正常。
 - **v1.1.72 并行开发线合并（2026-08-08，用户决策"和 WIFI 线合并，升级 1.1.72"）**：本会话的**隔离彻底化修复**（a4593a3，原计划 v1.1.67）与 Wi-Fi Direct 线（已提交至 v1.1.70/132 e2e3577）合并为 **v1.1.72/versionCode 134**。两条线的历史提交均在 main 上：隔离修复（`65935c7`/`645a060`/`71d55a0`/`a678f2c`/`1b0a238`/`93f538f` v1.1.66 频道系统 + `a4593a3` v1.1.67 隔离彻底化）+ Wi-Fi Direct 线（`155c438`~`e2e3577` v1.1.68~70）。**隔离修复内容（用户报告的最大 bug：已连接后删对话/关蓝牙/拉黑/换频道，对方仍能一直连接并看见本机在线）**：
   - **根因**：隔离操作只挡应用层消息（handleEnvelope 拦截），**已建立的 GATT 连接从未断开**；心跳 PING 经 `transport.broadcast` 写给所有已连接客户端 → 对方经旧连接持续收到本机心跳 → 永远显示在线、永远"连着"。
   - **修复（三层）**：① **MeshTransport 新增 `disconnectPeer`/`disconnectAll`/`setBlockedPeers`**；② **BleTransport**：`disconnectAddress`（central gatt.disconnect+close + server cancelConnection + 冷却防重连）、发现层拉黑过滤（blocked 节点不 emit 不自动连）、GattServer 拒绝 blocked 节点重连（onConnectionStateChange 检测即 cancelConnection）；③ **MeshService**：`blockPeer` 断连该节点 + 下发 blocked 过滤、`unblockPeer` 解除过滤、`setChannel` 断开全部旧连接、`setDiscoveryMode(CLOSED)` 断开全部连接（**反转 v1.1.53"CLOSED 保留连接与保活"——用户决策：关搜索 = 彻底断开，恢复搜索后重新扫描自动重连**）。
@@ -382,6 +384,7 @@ app/src/main/java/com/meshchat/app/
   - **验证**：包围盒 203×174（47%）居中（cx=-1,cy=0）；边缘像素 RGB≈4,7,7 黑边确认；图形中心透明（网状结构留白符合设计）；`testDebugUnitTest` **188/188 通过**；`assembleDebug` + `assembleRelease` BUILD SUCCESSFUL（versionCode 130 / versionName 1.1.68）；APK `MeshChat-v1.1.68-debug.apk`（20,776,939 B）/ `MeshChat-v1.1.68-release.apk`（**2,275,308 B**，R8+正式签名）。⚠️ 待真机确认：图标整体变小 + 黑边观感（不满意可调 targetW 系数 0.46 / strokeR 2px，脚本逻辑见 commit）。
 
 ### 已验证内容
+- **v1.1.73 应用锁恢复验证**：`testDebugUnitTest` **204/204 通过，0 失败**（MainActivity 恢复 onStart 锁定，UI 层改动无新增测试；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 135 / versionName 1.1.73）；APK `MeshChat-v1.1.73-debug.apk`（20,809,819 B）/ `MeshChat-v1.1.73-release.apk`（1,942,001 B，R8+正式签名）。⚠️ 待真机验证：① 设密码 → 杀进程重进 → 出现 AppLockScreen（不再直进主界面）② 退后台再进 → 锁定 ③ 密码/指纹解锁正常 ④ E2EE 降级日志仅为说明性（加密仍生效）。
 - **v1.1.68 图标缩小 + 黑边验证**：`testDebugUnitTest` **188/188 通过，0 失败**（纯资源改动，存量全回归）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 130 / versionName 1.1.68）；前景包围盒 203×174（47%）居中、边缘像素 RGB≈4,7,7 黑边确认、图形中心透明；APK debug 20,776,939 B / release 2,275,308 B（R8+正式签名）。⚠️ 待真机安装确认缩小+黑边观感（不满意可调 targetW 0.46 / strokeR 2px 重新生成）。
 - **v1.1.67 新图标验证**：`testDebugUnitTest` **188/188 通过，0 失败**（纯资源改动，存量全回归）；`assembleDebug` + `assembleRelease` BUILD SUCCESSFUL（versionCode 129 / versionName 1.1.67）；APK debug 20,847,907 B / release 2,347,224 B（R8+签名）。⚠️ 已被 v1.1.68 取代（图形缩小+黑边）。
 - **v1.1.66 频道系统验证**：`testDebugUnitTest` **188/188 通过，0 失败**（+3 ChannelFingerprintTest：确定性/区分度/6 字节截断；+4 MeshServiceTest 频道：setChannel 状态+清表+传输层指纹、sendText 同频道过/跨频道拒/未发现拒、公共频道未发现放行（存量 outbox 语义回归）、handleEnvelope 跨频道 drop；存量 181 项全回归；编译诊断干净）；`assembleDebug` + `assembleRelease` **BUILD SUCCESSFUL**（versionCode 128 / versionName 1.1.66）；APK `MeshChat-v1.1.66-debug.apk`（22,206,099 B）/ `MeshChat-v1.1.66-release.apk`（3,589,480 B，R8+正式签名）。⚠️ 待真机验证（见下一步首要任务）。
@@ -493,8 +496,10 @@ app/src/main/java/com/meshchat/app/
   - 单测 +7（规格 12.1 全部覆盖），72/72 通过。范围外：文件/握手/群组多跳、3 跳+、加密、路由持久化。
 
 ### 下一步首要任务
-0. **Wi-Fi Direct P2（多人星域连接，当前功能主线）**：在 main（v1.1.69）继续规格 §8 计划二——WifiDirectTransport 补 REGISTER UDP 组内广播 + 成员表接入（任务 7）、多成员自动组网 + 断开指数退避重建（任务 8）、三机验证（任务 9）。P1 真机验证（两机开 Wi-Fi Direct 增强开关 → logcat `MeshWfd` 应出现 `peer discovered` 双向 + `connection change formed` + `tcp peer identified` 双向）先行。
-0. **v1.1.66 频道系统真机验证（当前版本，优先，双机同频道名）**：① 双机 A/B 都在公共频道 → 互见互连（回归现状）② A 输频道名"mesh-team"进入私人频道 → B 公共频道看不到 A、A 看不到公共频道节点（隔离生效）③ B 也输"mesh-team" → A/B 互见互连、消息收发正常（E2EE 照常）④ 一方切到其他频道名 → 对方节点消失、旧会话发送被拒 Toast"对方不在当前频道"、切回恢复 ⑤ 杀进程重进 → 频道保持（持久化）⑥ 蓝牙重开 → 频道恢复 ⑦ 老版本设备在公共频道可见（兼容）⑧ 嗅探侧（另一台装 Wireshark/nRF Connect 类工具）确认广播 Service Data 无明文频道名（只有 6B 指纹）。
+0. **v1.1.73 应用锁恢复真机验证（当前版本，优先）**：① 设密码 → 杀进程重进 → 出现 AppLockScreen（不再直进主界面）② 退后台再进 → 锁定 ③ 密码/指纹解锁正常 ④ 设密码后重启会话密钥仍可解密（DEK 加密存储）⑤ E2EE 降级日志确认仅为说明性（华为 ROM keystore 限制，加密仍生效）。
+1. **v1.1.72 隔离彻底化真机验证（v1.1.73 顺带）**：① 连接后拉黑 → 对方 2s 内失联、无法重连（重连被 server 拒绝）② 换频道 → 旧频道对方消失、断开 ③ 关搜索（CLOSED）→ 对方全部断开离线，恢复搜索自动重连 ④ 解除拉黑 → 重新可发现/可连接。
+2. **v1.1.66 频道系统真机验证（v1.1.73 顺带）**：双机同频道名互见互连、公共频道机看不到私人频道节点、切频道隔离生效、重启频道保持、老版本公共频道兼容。
+3. **Wi-Fi Direct P2（多人星域连接，功能主线）**：在 main（v1.1.69）继续规格 §8 计划二——WifiDirectTransport 补 REGISTER UDP 组内广播 + 成员表接入（任务 7）、多成员自动组网 + 断开指数退避重建（任务 8）、三机验证（任务 9）。P1 真机验证（两机开 Wi-Fi Direct 增强开关 → logcat `MeshWfd` 应出现 `peer discovered` 双向 + `connection change formed` + `tcp peer identified` 双向）先行。
 1. **v1.1.65 未连接节点主动拉黑真机验证（v1.1.66 顺带）**：① 未连接陌生人节点右侧出现拉黑图标（Block 按钮）→ 点击确认 → 该节点变红"已拉黑 · 点击解除" ② 拉黑后对方即使在场/连接也无法重新连接或发消息（不依赖对方是否在线）③ 点击已拉黑节点 → 解除 → 恢复正常连接 ④ 删除对话的拉黑路径不受影响（Mesh 页该节点同样显示"已拉黑"）。
 1. **v1.1.64 静默持久化 + 拉黑真机验证（v1.1.66 顺带）**：① 开静默 → 杀进程重进/蓝牙重开 → 对端仍扫不到本机（静默已持久化）② 删除对话 → 对端 INVITE 不再弹窗、发 TEXT 不落库不通知；Mesh 页该节点显示"已拉黑" ③ 点击已拉黑节点 → 确认解除 → 恢复连接 ④ 顺手回归 v1.1.63（点节点发起连接不崩溃）。
 1. **v1.1.63 指纹真机验证（需日志）**：锁定屏点指纹 → 若仍失败，导出诊断日志（调试中心→诊断日志→导出 Download）发回，看 `AppLock` 标签的具体错误码（v1.1.63 已把认证错误/启动失败写进诊断日志）。
@@ -513,6 +518,7 @@ app/src/main/java/com/meshchat/app/
 7. 按规格开放问题推进：**E2EE 增强**（公钥指纹比对 UI、群密钥轮换、群密钥经点对点加密分发——规格 §9 局限）、**WiFi Direct 载体（复用 MeshTransport 抽象）**。
 
 ### 本次涉及的关键文件
+- **v1.1.73 应用锁恢复**：`app/src/main/java/com/meshchat/app/MainActivity.kt`（**恢复 onStart 锁定——被 Wi-Fi 线 155c438 重写丢失**）、`app/build.gradle.kts`（v1.1.73/135）、`AI_CONTEXT.md`
 - 后端：`app/src/main/java/com/meshchat/app/mesh/**`（protocol/routing/identity/storage/transport/service）
 - v0.14.0 新增：`mesh/service/MeshChatService.kt`、`mesh/service/NotificationHelper.kt`、`mesh/service/SessionStore.kt`；改动：`mesh/service/MeshService.kt`（心跳/sessionStore/回调）、`protocol/MeshEnvelope.kt`（PresenceBody）、`storage/*`（upsertPeer）、`MeshChatApplication.kt`（昵称/后台开关/前台服务启动）、`MainActivity.kt`（通知权限/点击直达）、`AndroidManifest.xml`、UI 8 文件（昵称显示/设置页/会话标题/通知点击）
 - RFCOMM（v0.13.x 保留未启用）：`mesh/transport/RfcommFraming.kt`、`RfcommTransport.kt`、`mesh/service/MeshService.kt`（含 RfcommChannel 接口）、`mesh/transfer/FileTransferManager.kt`（sendFrame 注入，默认 broadcast 兜底）

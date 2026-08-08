@@ -67,6 +67,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // v1.1.58 应用锁（v1.1.73 恢复——被 Wi-Fi Direct 线重写 MainActivity 时丢失）：
+        // 已设密码 → 每次进入前台锁定 UI（后台服务继续工作，数据密钥留在内存）
+        val app = application as MeshChatApplication
+        if (app.appLock.hasPassword) app.appLock.lock()
+    }
+
     private fun ensureBluetoothAndStart() {
         val manager = getSystemService(BluetoothManager::class.java)
         val adapter = manager.adapter
