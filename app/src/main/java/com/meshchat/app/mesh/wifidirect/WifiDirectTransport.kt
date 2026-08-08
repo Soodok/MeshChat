@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.meshchat.app.mesh.debug.DebugLogBuffer
 import com.meshchat.app.mesh.protocol.FrameType
 import com.meshchat.app.mesh.protocol.MeshFrame
 import com.meshchat.app.mesh.transport.MeshPeerInfo
@@ -99,17 +100,31 @@ class WifiDirectTransport(
         }
     }
 
+    // ---------- 日志（logcat + 调试中心诊断日志双写：真机免 adb 查看连接链路）----------
+
+    /** 信息级：写入 logcat + 调试中心诊断日志。 */
+    private fun wlog(msg: String) {
+        Log.i(TAG, msg)
+        DebugLogBuffer.log(TAG, msg)
+    }
+
+    /** 警告级：写入 logcat + 调试中心诊断日志。 */
+    private fun wwlog(msg: String) {
+        Log.w(TAG, msg)
+        DebugLogBuffer.log(TAG, msg)
+    }
+
     // ---------- 生命周期 ----------
 
     fun enable() {
-        if (manager == null || channel == null) { Log.w(TAG, "p2p unavailable"); return }
+        if (manager == null || channel == null) { wwlog("p2p unavailable, wfd disabled"); return }
         if (state != State.DISABLED) return
         state = State.DISCOVERING
         registerReceiver()
         registerServiceInfo()
         startTcpServer()
         scope.launch { discoveryLoop() }
-        Log.i(TAG, "enabled shortId=$shortId")
+        wlog("enabled shortId=$shortId")
     }
 
     fun disable() {
@@ -125,7 +140,7 @@ class WifiDirectTransport(
         runCatching { serverSocket?.close() }
         serverSocket = null
         groupOwnerAddress = null
-        Log.i(TAG, "disabled")
+        wlog("disabled")
     }
 
     fun isGrouped(): Boolean = state == State.GROUPED
@@ -141,7 +156,7 @@ class WifiDirectTransport(
         try {
             synchronized(pair.second) { RfcommFraming.writeFrame(pair.first.getOutputStream(), frame) }
         } catch (e: Exception) {
-            Log.w(TAG, "tcp write failed $peerId: $e")
+            wwlog("tcp write failed $peerId: $e")
             sockets.remove(peerId)
             runCatching { pair.first.close() }
         }
@@ -183,7 +198,7 @@ class WifiDirectTransport(
                     MeshPeerInfo(shortId = id, deviceAddress = srcDevice.deviceAddress, rssi = 0,
                         displayName = txt["name"] ?: "", presence = PeerPresence.ONLINE),
                 )
-                Log.i(TAG, "peer discovered id=$id addr=${srcDevice.deviceAddress}")
+                wlog("peer discovered id=$id addr=${srcDevice.deviceAddress}")
             },
         )
         manager?.addServiceRequest(channel, req, null)
@@ -213,9 +228,9 @@ class WifiDirectTransport(
             groupOwnerIntent = 8   // 适中倾向；P2 多成员自动选主可调
         }
         manager?.connect(channel, config, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() { Log.d(TAG, "connect initiated $peerId") }
+            override fun onSuccess() { wlog("connect initiated $peerId") }
             override fun onFailure(reason: Int) {
-                Log.w(TAG, "connect fail $peerId reason=$reason")
+                wwlog("connect fail $peerId reason=$reason")
                 state = State.DISCOVERING   // 回退：下一轮重试
             }
         })
@@ -224,14 +239,14 @@ class WifiDirectTransport(
     private fun handleConnectionChange(info: WifiP2pInfo?) {
         val formed = info?.groupFormed == true
         val ownerAddr = info?.groupOwnerAddress?.hostAddress
-        Log.i(TAG, "connection change formed=$formed go=${info?.isGroupOwner} owner=$ownerAddr")
+        wlog("connection change formed=$formed go=${info?.isGroupOwner} owner=$ownerAddr")
         if (formed) {
             state = State.GROUPED
             groupOwnerAddress = ownerAddr
             isGroupOwner = info?.isGroupOwner == true
             if (isGroupOwner) {
                 // GO：等待 client TCP 连入（startTcpServer accept 循环已就绪，身份由 REGISTER 识别）
-                Log.i(TAG, "became GO, waiting for client tcp")
+                wlog("became GO, waiting for client tcp")
             } else {
                 // Client：主动连接 GO 的 TCP 并宣告身份
                 scope.launch { connectTcpTo(ownerAddr) }
@@ -246,7 +261,7 @@ class WifiDirectTransport(
     private fun startTcpServer() {
         scope.launch {
             val server = runCatching { ServerSocket(TCP_PORT) }.getOrNull()
-                ?: run { Log.w(TAG, "tcp listen failed"); return@launch }
+                ?: run { wwlog("tcp listen failed"); return@launch }
             serverSocket = server
             while (scope.isActive && state != State.DISABLED) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
@@ -262,7 +277,7 @@ class WifiDirectTransport(
             val s = Socket()
             s.connect(InetSocketAddress(InetAddress.getByName(host), TCP_PORT), TCP_CONNECT_TIMEOUT_MS)
             s
-        }.getOrNull() ?: run { Log.w(TAG, "tcp connect fail $host"); return }
+        }.getOrNull() ?: run { wwlog("tcp connect fail $host"); return }
         // Client 连入后立即向 GO 宣告身份（REGISTER 包装为 HELLO 帧）
         val hello = MeshFrame(
             FrameType.HELLO,
@@ -296,7 +311,7 @@ class WifiDirectTransport(
                             MeshPeerInfo(shortId = reg.shortId, deviceAddress = reg.ip, rssi = 0,
                                 displayName = reg.name, presence = PeerPresence.ONLINE),
                         )
-                        Log.i(TAG, "tcp peer identified: ${reg.shortId} ip=${reg.ip}")
+                        wlog("tcp peer identified: ${reg.shortId} ip=${reg.ip}")
                         sendTo(reg.shortId, MeshFrame(
                             FrameType.HELLO,
                             WifiDirectFraming.encodeRegister(
@@ -314,7 +329,7 @@ class WifiDirectTransport(
         runCatching { socket.close() }
         tcpByIp.remove(remoteKey)
         sockets.entries.removeIf { it.value.first == socket }
-        Log.d(TAG, "socket closed remote=$remoteKey")
+        wlog("socket closed remote=$remoteKey")
     }
 
     private fun requestPeers() {
