@@ -40,6 +40,8 @@ data class MeshPeerInfo(
     val txPower: Int = Int.MIN_VALUE,
     /** 链路信号强度(0-1) = 从对端收到 PONG 的速率 ÷ 本机 PING 发送速率（v1.1.17，协议层双向质量，替代 RSSI）；-1 = 样本不足。 */
     val signalRatio: Double = -1.0,
+    /** 对端所属频道指纹（v1.1.66）；0 = 公共频道/未知/老版本设备。发现层已按本机频道过滤，同频道节点才可见。 */
+    val channelFingerprint: Long = 0,
 )
 
 interface MeshTransport {
@@ -94,4 +96,10 @@ interface MeshTransport {
      * 默认 true（内存/测试替身假定始终连接）。
      */
     fun isConnectedTo(peerId: String): Boolean = true
+
+    /**
+     * v1.1.66 设置本机频道指纹（0 = 公共频道）：BleTransport 覆写更新广播携带的指纹并重启广播生效；
+     * InMemoryTransport 覆写记录断言位供测试。
+     */
+    fun setChannel(fingerprint: Long) {}
 }

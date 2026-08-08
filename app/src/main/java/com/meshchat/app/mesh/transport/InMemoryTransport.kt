@@ -44,6 +44,10 @@ class InMemoryTransport : MeshTransport {
     @Volatile
     var lastDiscoveryMode = DiscoveryMode.NORMAL
 
+    /** v1.1.66 最近一次下发的频道指纹（setChannel 测试断言用；默认 0 = 公共频道）。 */
+    @Volatile
+    var lastChannelFingerprint = 0L
+
     override fun suspendDiscovery() {
         discoverySuspended = true
     }
@@ -58,5 +62,9 @@ class InMemoryTransport : MeshTransport {
 
     override fun setTxPowerLevel(power: Int) {
         lastTxPowerLevel = power
+    }
+
+    override fun setChannel(fingerprint: Long) {
+        lastChannelFingerprint = fingerprint
     }
 }
