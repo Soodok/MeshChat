@@ -425,6 +425,7 @@ app/src/main/java/com/meshchat/app/
 - **v0.11.0 双人真机聊天正常**（用户确认）：消息方向修复后 A↔B 可正常收发，对端消息显示在左侧、本机消息在右侧，不再是"自己跟自己对话"。
 
 ### 当前阻塞
+- **⚠️ 推送阻塞（网络，本次 2026-08-08）**：`github.com:443` Connection timed out / Could not connect，`git push origin main` 连推 2 次失败（300s 超时 + 21s 拒绝）。**本地已提交未推送**：`57c9b85`（v1.1.65 未连接节点主动拉黑 + AI_CONTEXT）。下次会话首先重试 `git push origin main`（历史多次网络恢复后成功）。
 - **推送阻塞已解除（2026-08-07 晚）**：`74c03c8..9ce4ee0` 已推送 origin/main——v1.1.56（`389c3be`）+ AI_CONTEXT（`0b6f336`）+ v1.1.57（`7e55eb4`）+ AI_CONTEXT（`0aa3243`）+ v1.1.58（`4800798`）+ v1.1.59（`9ce4ee0`）全部同步，本地与远程一致，工作区干净。此后不再有积压。
 - **⚠️ 分支注意（本次教训）**：IDE 工作区可能被其他 agent 切到 `beta/wifi-direct` / `beta/wifi-direct-2`（Wi-Fi Direct 实现分支，另一条开发线）。**git commit 前必须确认当前分支是 main**（`git branch --show-current`）。本次 v1.1.57 提交 023fd2f 曾误落 beta/wifi-direct-2，已 `git checkout main` + `git cherry-pick 023fd2f` 产生 7e55eb4 纠正。beta/wifi-direct-2 上也有 v1.1.57/119 版本（51ac1bb P1 装配）——**两个分支版本号撞车（都 119/1.1.57），内容不同（主线=E2EE+蓝牙检查；beta=Wi-Fi Direct P1）**，后续合并需处理。
 - **推送阻塞（网络）已解除（2026-08-07）**：`aee4f19..a909292` 已推送 origin/main——Wi-Fi Direct 规格/计划（`54fc6ca`/`20c719d`）+ v1.1.53（`314f8e9`）+ AI_CONTEXT（`0ad8488`）+ v1.1.54（`e3fd87a`）+ v1.1.55（`a909292`）全部同步，本地与远程一致，工作区干净。此后不再有积压。
