@@ -12,7 +12,7 @@
     <!-- API 26-28 写公共 Downloads 需要（API 29+ 走 MediaStore 免权限） -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
-    <!-- ===== v1.1.51 Beta：Wi-Fi Direct 增强权限 ===== -->
+    <!-- ===== Wi-Fi Direct 增强（实验性）必需权限：缺失则 WifiP2pManager 调用抛 SecurityException 崩溃 ===== -->
     <!-- API 33+：NEARBY_WIFI_DEVICES 近似权限（替代位置权限），neverForLocation 表明不用于定位 -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />

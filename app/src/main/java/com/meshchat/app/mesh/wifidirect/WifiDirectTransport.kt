@@ -62,7 +62,7 @@ class WifiDirectTransport(
     private val manager: WifiP2pManager? =
         runCatching { context.getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager }.getOrNull()
     private val channel: WifiP2pManager.Channel? =
-        manager?.initialize(context, Looper.getMainLooper(), null)
+        runCatching { manager?.initialize(context, Looper.getMainLooper(), null) }.getOrNull()
 
     private val _incoming = MutableSharedFlow<MeshFrame>(extraBufferCapacity = 64)
     val incoming: SharedFlow<MeshFrame> = _incoming
@@ -179,29 +179,31 @@ class WifiDirectTransport(
         runCatching { ContextCompat.registerReceiver(context, p2pReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED) }
     }
 
-    /** 注册 DnsSd 服务（对端无连接发现本机短 ID）+ 监听对端服务并解析 TXT。 */
+    /** 注册 DnsSd 服务（对端无连接发现本机短 ID）+ 监听对端服务并解析 TXT。整体异常隔离——实验性功能任何权限/栈异常降级静默，绝不崩溃。 */
     private fun registerServiceInfo() {
-        val txt = mapOf("shortid" to shortId, "name" to displayName)
-        val info = WifiP2pDnsSdServiceInfo.newInstance("MeshChat", SERVICE_TYPE, txt)
-        manager?.addLocalService(channel, info, null)
-        val req = WifiP2pDnsSdServiceRequest.newInstance()
-        manager?.setDnsSdResponseListeners(
-            channel,
-            { instanceName, regType, srcDevice ->
-                Log.d(TAG, "service resolved $instanceName $regType")
-            },
-            { fullName, txtRecord, srcDevice ->
-                val txt = txtRecord?.mapKeys { it.key.toString() }
-                val id = txt?.get("shortid") ?: return@setDnsSdResponseListeners
-                knownDevices[id] = srcDevice
-                _foundPeers.tryEmit(
-                    MeshPeerInfo(shortId = id, deviceAddress = srcDevice.deviceAddress, rssi = 0,
-                        displayName = txt["name"] ?: "", presence = PeerPresence.ONLINE),
-                )
-                wlog("peer discovered id=$id addr=${srcDevice.deviceAddress}")
-            },
-        )
-        manager?.addServiceRequest(channel, req, null)
+        runCatching {
+            val txt = mapOf("shortid" to shortId, "name" to displayName)
+            val info = WifiP2pDnsSdServiceInfo.newInstance("MeshChat", SERVICE_TYPE, txt)
+            manager?.addLocalService(channel, info, null)
+            val req = WifiP2pDnsSdServiceRequest.newInstance()
+            manager?.setDnsSdResponseListeners(
+                channel,
+                { instanceName, regType, srcDevice ->
+                    Log.d(TAG, "service resolved $instanceName $regType")
+                },
+                { fullName, txtRecord, srcDevice ->
+                    val txt = txtRecord?.mapKeys { it.key.toString() }
+                    val id = txt?.get("shortid") ?: return@setDnsSdResponseListeners
+                    knownDevices[id] = srcDevice
+                    _foundPeers.tryEmit(
+                        MeshPeerInfo(shortId = id, deviceAddress = srcDevice.deviceAddress, rssi = 0,
+                            displayName = txt["name"] ?: "", presence = PeerPresence.ONLINE),
+                    )
+                    wlog("peer discovered id=$id addr=${srcDevice.deviceAddress}")
+                },
+            )
+            manager?.addServiceRequest(channel, req, null)
+        }.onFailure { wwlog("registerServiceInfo failed: $it") }
     }
 
     private suspend fun discoveryLoop() {
