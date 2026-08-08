@@ -1,5 +1,6 @@
 package com.meshchat.app.mesh.service
 
+import com.meshchat.app.mesh.channel.ChannelFingerprint
 import com.meshchat.app.mesh.crypto.MeshCrypto
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.protocol.EnvelopeBody
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -1757,5 +1759,93 @@ class MeshServiceTest {
         assertEquals("hi all", stored.text)
         assertEquals(MessageStatus.DELIVERED, stored.status)
         creator.stop(); member.stop()
+    }
+
+    // ===== v1.1.66 频道系统 =====
+
+    /** 测试辅助：emitPeer 异步进 peerEntries，refreshPeers 需 heartbeatTick 触发；轮询直至节点进入 peers 流。 */
+    private fun awaitPeerDiscovered(service: MeshService, shortId: String) {
+        var guard = 0
+        while (guard++ < 100) {
+            service.heartbeatTick(System.currentTimeMillis())
+            if (service.peers.value.any { it.shortId == shortId }) return
+            Thread.sleep(20)
+        }
+        assertTrue("节点 $shortId 应进入 peers 流", service.peers.value.any { it.shortId == shortId })
+    }
+
+    @Test
+    fun `setChannel switches fingerprint and clears peers`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        transport.emitPeer(MeshPeerInfo(shortId = "F1", deviceAddress = "AA:BB:CC", rssi = -50, channelFingerprint = 0L))
+        awaitPeerDiscovered(service, "F1")
+        assertTrue("公共频道下 F1 可见", service.peers.value.any { it.shortId == "F1" })
+
+        service.setChannel("mesh-team")
+        assertEquals("频道名状态更新", "mesh-team", service.channelName.value)
+        assertEquals("传输层收到指纹", ChannelFingerprint.of("mesh-team"), transport.lastChannelFingerprint)
+        assertTrue("切换后节点表清空", service.peers.value.isEmpty())
+
+        service.setChannel(null)
+        assertNull("切回公共频道", service.channelName.value)
+        assertEquals("公共频道指纹归零", 0L, transport.lastChannelFingerprint)
+        service.stop()
+    }
+
+    @Test
+    fun `sendText refuses cross-channel target in private channel`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        service.setChannel("mesh-team")
+        val fp = ChannelFingerprint.of("mesh-team")
+        // 同频道节点：可发送
+        transport.emitPeer(MeshPeerInfo(shortId = "SAME", deviceAddress = "AA:BB:CC", rssi = -50, channelFingerprint = fp))
+        awaitPeerDiscovered(service, "SAME")
+        service.seedSessionKeyForTesting("SAME")
+        assertTrue("同频道可发送", service.sendText("conv-SAME", "SAME", "hi"))
+        // 跨频道节点（已记录但指纹不匹配）：拒绝
+        transport.emitPeer(MeshPeerInfo(shortId = "CROSS", deviceAddress = "DD:EE:FF", rssi = -50, channelFingerprint = ChannelFingerprint.of("other")))
+        awaitPeerDiscovered(service, "CROSS")
+        service.seedSessionKeyForTesting("CROSS")
+        assertFalse("跨频道拒绝发送", service.sendText("conv-CROSS", "CROSS", "hi"))
+        // 未发现节点（peerEntries 无记录）：拒绝
+        assertFalse("未发现节点拒绝发送", service.sendText("conv-GHOST", "GHOST", "hi"))
+        service.stop()
+    }
+
+    @Test
+    fun `sendText still works in public channel without fingerprint match`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        // 公共频道（指纹 0）：目标节点未发现也允许发送（保持存量 outbox 排队行为）
+        service.seedSessionKeyForTesting("GHOST")
+        assertTrue("公共频道未发现节点可发送", service.sendText("conv-GHOST", "GHOST", "hi"))
+        service.stop()
+    }
+
+    @Test
+    fun `handleEnvelope drops cross-channel frame from known peer`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = InMemoryTransport()
+        val store = InMemoryMeshStore()
+        val service = MeshService(transport = transport, store = store, identity = identity, dedup = DedupCache())
+        service.start()
+        service.setChannel("mesh-team")
+        transport.emitPeer(MeshPeerInfo(shortId = "CROSS", deviceAddress = "AA:BB:CC", rssi = -50, channelFingerprint = ChannelFingerprint.of("other")))
+        awaitPeerDiscovered(service, "CROSS")
+        // 跨频道节点发来 TEXT：被丢弃（不落库）
+        service.handleFrame(textFrame("t1", "CROSS", service.shortId, "hello"))
+        assertTrue("跨频道消息不落库", store.observeMessages("conv-CROSS").first().isEmpty())
+        service.stop()
     }
 }

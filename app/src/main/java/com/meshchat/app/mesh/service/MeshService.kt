@@ -1,6 +1,7 @@
 package com.meshchat.app.mesh.service
 
 import android.util.Log
+import com.meshchat.app.mesh.channel.ChannelFingerprint
 import com.meshchat.app.mesh.crypto.E2eeKeyStore
 import com.meshchat.app.mesh.crypto.InMemoryE2eeKeyStore
 import com.meshchat.app.mesh.crypto.MeshCrypto
@@ -255,6 +256,13 @@ class MeshService(
     /** 探测刷新周期：UI 节点状态每 200ms 更新一次（含 RSSI 与失联标注）。 */
     private val peerEntries = ConcurrentHashMap<String, PeerEntry>()
 
+    // ===== v1.1.66 频道系统（单频道制：公共 / 私人）=====
+    /** 当前频道名（null = 公共频道）。 */
+    private val _channelName = MutableStateFlow<String?>(null)
+    val channelName: StateFlow<String?> = _channelName.asStateFlow()
+    /** 当前频道指纹（0 = 公共频道）。 */
+    @Volatile private var channelFingerprint: Long = 0L
+
     /**
      * 节点条目。v1.1.55 起区分两个"活着"信号源：
      * - lastSeen：最近任何帧（协议+扫描）——广播可见性。
@@ -342,6 +350,29 @@ class MeshService(
         _blockedPeers.update { it - peerId }
         blockedStore.save(_blockedPeers.value)
         Log.i(TAG, "unblocked peer $peerId")
+    }
+
+    // ===== v1.1.66 频道系统 =====
+    /**
+     * 切换频道：null = 公共频道；非空 = 私人频道（指纹 = SHA-256 截断，广播只携带指纹不泄露频道名）。
+     * 切换后清空节点表与 2 跳路由（旧频道残留剔除），重新发现只按新频道过滤；会话/消息记录保留。
+     */
+    fun setChannel(name: String?) {
+        val trimmed = name?.trim()?.takeIf { it.isNotEmpty() }
+        val fp = if (trimmed == null) 0L else ChannelFingerprint.of(trimmed)
+        _channelName.value = trimmed
+        channelFingerprint = fp
+        transport.setChannel(fp)
+        transport.refreshAdvertising()   // v1.1.63 模式守卫：仅 NORMAL 重启广播；CLOSED/SILENT 广播本就停，扫描过滤读 volatile 即时生效
+        peerEntries.clear()
+        routeEntries.clear()             // 2 跳中继路由同样按频道隔离，旧频道路由失效
+        refreshPeers()
+    }
+
+    /** v1.1.66 对端是否在当前频道（发送拒绝原因区分）：公共频道恒 true；私人频道要求节点已发现且指纹匹配。 */
+    fun isPeerInCurrentChannel(peerId: String): Boolean {
+        if (channelFingerprint == 0L) return true
+        return peerEntries[peerId]?.info?.channelFingerprint == channelFingerprint
     }
 
     // ===== v1.1.57 端到端加密（E2EE）=====
@@ -558,6 +589,14 @@ class MeshService(
      */
     fun sendText(convId: String, dstId: String, text: String): Boolean {
         val isSelfLoop = dstId == identity.shortId
+        // v1.1.66 频道校验：私人频道下目标必须已发现且同频道；公共频道不校验（保持存量 outbox 排队行为）
+        if (!isSelfLoop && channelFingerprint != 0L) {
+            val peer = peerEntries[dstId]?.info
+            if (peer == null || peer.channelFingerprint != channelFingerprint) {
+                Log.w(TAG, "channel: dst $dstId not in current channel, refusing send")
+                return false
+            }
+        }
         val key = if (isSelfLoop) null else sessionKeyFor(dstId)
         if (!isSelfLoop && key == null) {
             Log.w(TAG, "e2ee: no session key for $dstId, refusing plaintext send")
@@ -1505,6 +1544,15 @@ class MeshService(
         if (envelopeIn.srcId in _blockedPeers.value) {
             Log.d(TAG, "drop frame from blocked peer ${envelopeIn.srcId}")
             return
+        }
+        // v1.1.66 频道校验：私人频道下已记录节点指纹不匹配 → 丢弃（防御残留连接/改装连入 GATT server）
+        if (channelFingerprint != 0L) {
+            peerEntries[envelopeIn.srcId]?.let { known ->
+                if (known.info.channelFingerprint != channelFingerprint) {
+                    Log.d(TAG, "drop cross-channel frame from ${envelopeIn.srcId}")
+                    return
+                }
+            }
         }
         // v1.1.57 E2EE：SecBody → 解密还原内层 body（TextBody/GroupBody）再走原逻辑；
         // 解密失败（无密钥/认证失败）→ 丢弃（防篡改/监听者注入）。信封路由字段（kind/dstId/ttl）不加密。
