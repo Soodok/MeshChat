@@ -90,6 +90,9 @@ fun MeshScreen(
     /** v1.1.53 发现模式（NORMAL 全开 / CLOSED 全停 / SILENT 静默只停广播）。 */
     discoveryMode: com.meshchat.app.mesh.transport.DiscoveryMode,
     onSetDiscoveryMode: (com.meshchat.app.mesh.transport.DiscoveryMode) -> Unit,
+    /** v1.1.64 拉黑：删除对话 = 拒绝连接与消息；Mesh 页已拉黑节点点击可解除。 */
+    blockedPeers: Set<String>,
+    onUnblockPeer: (String) -> Unit,
 ) {
     // v1.1.57：蓝牙未开启时拒绝开启搜索并弹系统授权窗申请打开（ACTION_REQUEST_ENABLE）
     val context = LocalContext.current
@@ -101,6 +104,8 @@ fun MeshScreen(
             bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
         }
     }
+    // v1.1.64 解除拉黑确认目标
+    var unblockTarget by remember { mutableStateOf<String?>(null) }
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
@@ -129,11 +134,16 @@ fun MeshScreen(
             }
         }
         items(nearbyPeers, key = { it.shortId }) { peer ->
+            val blocked = peer.shortId in blockedPeers
             PeerRow(
                 peer = peer,
                 connected = peer.shortId in sessions,
                 pending = peer.shortId in pendingInvites,
-                onClick = { onPeerSelected(peer.shortId) },
+                blocked = blocked,
+                onClick = {
+                    // v1.1.64：已拉黑节点点击 = 解除拉黑确认；否则正常连接流程
+                    if (blocked) unblockTarget = peer.shortId else onPeerSelected(peer.shortId)
+                },
             )
         }
         if (historyPeers.isNotEmpty()) {
@@ -145,6 +155,7 @@ fun MeshScreen(
                     peer = peer,
                     connected = false,
                     pending = false,
+                    blocked = peer.shortId in blockedPeers,
                     onClick = { onPeerSelected(peer.shortId) },
                 )
             }
@@ -236,6 +247,25 @@ fun MeshScreen(
             }
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+
+    // v1.1.64 解除拉黑确认框
+    unblockTarget?.let { target ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { unblockTarget = null },
+            title = { Text("解除拉黑 ${target}？") },
+            text = { Text("解除后对方可重新向您发起连接并发送消息。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    onUnblockPeer(target)
+                    onPeerSelected(target)   // 解除后直接进入连接流程
+                    unblockTarget = null
+                }) { Text("解除拉黑", color = MeshRed) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { unblockTarget = null }) { Text("取消") }
+            },
+        )
     }
 }
 
@@ -454,7 +484,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
 }
 
 @Composable
-private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClick: () -> Unit) {
+private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocked: Boolean, onClick: () -> Unit) {
     // 100ms 刷新"信号时间"：帧到达 → lastSeenAt 更新 → 数字归零跳动（<1s 毫秒显示）；帧停止 → 数字持续增大 → 直观感知断连
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(100); now = System.currentTimeMillis() } }
@@ -504,6 +534,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                 }
             }
             val statusText = when {
+                blocked -> "已拉黑 · 点击解除"   // v1.1.64：删除对话 = 拉黑
                 peer.relayVia.isNotBlank() -> "经 ${peer.relayVia} 可达 · 2跳"
                 else -> when (peer.presence) {
                     PeerPresence.ONLINE -> when {
@@ -518,6 +549,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, onClic
                 }
             }
             val statusColor = when {
+                blocked -> MeshRed.copy(alpha = 0.8f)   // v1.1.64 已拉黑红色
                 peer.relayVia.isNotBlank() -> MeshGreen
                 else -> when (peer.presence) {
                     PeerPresence.ONLINE -> if (connected) MeshGreen else TextSecondary

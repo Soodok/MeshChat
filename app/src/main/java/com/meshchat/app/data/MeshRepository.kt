@@ -29,6 +29,9 @@ interface MeshRepository {
     fun acceptInvite(peerId: String)
     fun rejectInvite(peerId: String)
     fun deleteConversation(peerId: String)
+    /** v1.1.64 拉黑：拒绝该节点的连接与消息（删除对话时自动拉黑）。 */
+    val blockedPeers: kotlinx.coroutines.flow.StateFlow<Set<String>>
+    fun unblockPeer(peerId: String)
     fun startDiscovery()
     fun localShortId(): String
     /** 发现开关（v1.1.49）：当前是否在广播+扫描。 */
@@ -136,9 +139,12 @@ class MeshRepositoryImpl(
 
     override fun deleteConversation(peerId: String) {
         store.deleteConversation("conv-$peerId")
-        service.removeSession(peerId)
-        service.removePeer(peerId)   // 同时遗忘节点：Mesh 页立即消失、重启不恢复（在线节点会被重新发现）
+        service.blockPeer(peerId)   // v1.1.64：删除对话 = 拉黑（解除会话 + 移除节点 + 拒绝其连接/消息）
     }
+
+    override val blockedPeers: kotlinx.coroutines.flow.StateFlow<Set<String>> = service.blockedPeers
+
+    override fun unblockPeer(peerId: String) = service.unblockPeer(peerId)
 
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
         // 信号格数由协议层速率比决定（≥60% 满格 / ≥25% 两格 / ≥5% 一格）；样本不足回退 RSSI 格数

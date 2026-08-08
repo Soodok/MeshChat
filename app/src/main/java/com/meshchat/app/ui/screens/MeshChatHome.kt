@@ -114,6 +114,9 @@ fun MeshChatHome(
     onSetLockPassword: (String) -> Unit,
     onChangeLockPassword: (old: String, new: String) -> Boolean,
     onRemoveLockPassword: () -> Unit,
+    /** v1.1.64 拉黑（删除对话 = 拒绝连接与消息；Mesh 页可解除）。 */
+    blockedPeers: Set<String>,
+    onUnblockPeer: (String) -> Unit,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -355,6 +358,8 @@ fun MeshChatHome(
                     },
                     discoveryMode = discoveryMode,
                     onSetDiscoveryMode = onSetDiscoveryMode,
+                    blockedPeers = blockedPeers,
+                    onUnblockPeer = onUnblockPeer,
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),

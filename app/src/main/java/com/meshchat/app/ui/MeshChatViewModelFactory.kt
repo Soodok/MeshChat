@@ -27,6 +27,7 @@ class MeshChatViewModelFactory : ViewModelProvider.Factory {
             localSecurityCoordinator = app.localSecurityCoordinator,
             debugStats = app.debugStats,
             appLock = app.appLock,   // v1.1.58 应用锁
+            setSilentMode = { app.silentMode = it },   // v1.1.64 静默偏好持久化
         ) as T
     }
 }

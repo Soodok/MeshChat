@@ -46,6 +46,8 @@ class MeshChatViewModel(
     private val debugStats: com.meshchat.app.mesh.debug.DebugStats,
     /** v1.1.58 应用锁：密码/指纹解锁 + DEK 保护敏感密钥库。 */
     private val appLock: com.meshchat.app.security.lock.AppLockManager,
+    /** v1.1.64 静默偏好持久化（Application 纯写 SharedPrefs，不触发服务调用）。 */
+    private val setSilentMode: (Boolean) -> Unit,
 ) : ViewModel() {
     /** 当前打开的会话目标（对端短 ID）；null = 未打开会话。 */
     private val conversationTarget = MutableStateFlow<String?>(null)
@@ -203,17 +205,27 @@ class MeshChatViewModel(
      */
     val discoveryMode: StateFlow<com.meshchat.app.mesh.transport.DiscoveryMode> = repository.discoveryMode
 
-    /** v1.1.53 下发发现模式。 */
-    fun setDiscoveryMode(mode: com.meshchat.app.mesh.transport.DiscoveryMode) = repository.setDiscoveryMode(mode)
+    /** v1.1.53 下发发现模式。v1.1.64 同步持久化静默偏好（重启/蓝牙重建后恢复静默）。 */
+    fun setDiscoveryMode(mode: com.meshchat.app.mesh.transport.DiscoveryMode) {
+        repository.setDiscoveryMode(mode)
+        setSilentMode(mode == com.meshchat.app.mesh.transport.DiscoveryMode.SILENT)
+    }
 
     /** 切换静默模式：NORMAL ↔ SILENT（静默 = 陌生人扫不到你，其余功能照常）。 */
     fun toggleSilentMode() {
         if (repository.discoveryMode.value == com.meshchat.app.mesh.transport.DiscoveryMode.SILENT) {
             repository.setDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL)
+            setSilentMode(false)
         } else {
             repository.setDiscoveryMode(com.meshchat.app.mesh.transport.DiscoveryMode.SILENT)
+            setSilentMode(true)
         }
     }
+
+    // ---- v1.1.64 拉黑（删除对话 = 拒绝连接与消息）----
+    val blockedPeers: StateFlow<Set<String>> = repository.blockedPeers
+
+    fun unblockPeer(peerId: String) = repository.unblockPeer(peerId)
 
     init {
         securityCapabilityManager.refresh()

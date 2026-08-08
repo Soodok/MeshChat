@@ -18,6 +18,7 @@ import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.service.MeshChatService
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.service.NotificationHelper
+import com.meshchat.app.mesh.service.SharedPrefsBlockedStore
 import com.meshchat.app.mesh.service.SharedPrefsGroupStore
 import com.meshchat.app.mesh.service.SharedPrefsSessionStore
 import com.meshchat.app.mesh.storage.EncryptedMeshStore
@@ -110,6 +111,18 @@ class MeshChatApplication : Application() {
     /** v1.1.58 应用锁：密码/指纹解锁 + DEK 保护敏感密钥库。 */
     val appLock by lazy { com.meshchat.app.security.lock.AppLockManager(this) }
 
+    /**
+     * v1.1.64 静默模式偏好（持久化）：开启后重启/蓝牙重建仍保持静默（陌生人扫不到本机）。
+     * 纯偏好读写，不直接动服务；生效由 applyDiscoveryMode 在启动/蓝牙重建时下发。
+     */
+    var silentMode: Boolean
+        get() = getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+            .getBoolean("silent_mode", false)
+        set(value) {
+            getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+                .edit().putBoolean("silent_mode", value).apply()
+        }
+
     val transport by lazy { BleTransport(this, advertiseShortId = identity.shortId, debugStats = debugStats) }
     val service by lazy {
         val notifications = NotificationHelper(this) { appLock.locked.value }   // v1.1.58 锁定态通知隐藏内容
@@ -119,6 +132,7 @@ class MeshChatApplication : Application() {
             tmpDir = { File(filesDir, "transfers") },
             sessionStore = SharedPrefsSessionStore(this),
             groupStore = SharedPrefsGroupStore(this),   // v1.1.50：群订阅/群名持久化
+            blockedStore = SharedPrefsBlockedStore(this),   // v1.1.64：删除对话=拉黑持久化
             e2eeStore = AndroidE2eeKeyStore(this) { appLock.dek() },   // v1.1.57 E2EE 密钥；v1.1.58 设密码后 DEK 加密存储
             onIncomingMessage = { fromId, fromName, text, convId ->
                 // v1.1.50：convId = 群会话键（group-<id>）或点对点 conv-<fromId>，通知点击直达对应会话
@@ -157,12 +171,19 @@ class MeshChatApplication : Application() {
         applyAutoDiscovery()
     }
 
-    /** 按"打开应用时自动搜索"设置同步发现层：关闭 = 启动进入 CLOSED（广播+扫描全停，保留连接与保活）；开启 = NORMAL。 */
+    /**
+     * 按设置同步发现层（v1.1.64 含静默恢复）：
+     * autoDiscovery 关 → CLOSED（广播+扫描全停）；静默开 → SILENT（只停广播）；否则 NORMAL。
+     * 启动（onCreate）/蓝牙重开重建后调用——此前静默模式不持久化，重启/蓝牙重建后广播被重新打开
+     * （用户实测"静默模式下陌生人仍可搜到"）。
+     */
     private fun applyAutoDiscovery() {
-        service.setDiscoveryMode(
-            if (autoDiscovery) com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL
-            else com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED,
-        )
+        val mode = when {
+            !autoDiscovery -> com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED
+            silentMode -> com.meshchat.app.mesh.transport.DiscoveryMode.SILENT
+            else -> com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL
+        }
+        service.setDiscoveryMode(mode)
     }
 
     override fun onCreate() {

@@ -45,6 +45,8 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val appLocked by viewModel.appLocked.collectAsStateWithLifecycle()
     val lockout by viewModel.lockout.collectAsStateWithLifecycle()
     val lockPasswordEnabled by viewModel.lockPasswordEnabled.collectAsStateWithLifecycle()
+    // v1.1.64 拉黑（删除对话 = 拒绝连接与消息）
+    val blockedPeers by viewModel.blockedPeers.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
         if (appLocked) {
             com.meshchat.app.ui.screens.AppLockScreen(
@@ -131,6 +133,8 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             onSetLockPassword = viewModel::setLockPassword,
             onChangeLockPassword = viewModel::changeLockPassword,
             onRemoveLockPassword = viewModel::removeLockPassword,
+            blockedPeers = blockedPeers,
+            onUnblockPeer = viewModel::unblockPeer,
         )
     }
 }

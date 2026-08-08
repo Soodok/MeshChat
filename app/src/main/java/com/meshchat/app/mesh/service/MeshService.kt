@@ -151,6 +151,8 @@ class MeshService(
     private val debugStats: DebugStats = DebugStats(),
     /** v1.1.57 E2EE 密钥存储（默认内存实现；生产注入 AndroidKeyStore + SharedPrefs 实现）。 */
     private val e2eeStore: E2eeKeyStore = InMemoryE2eeKeyStore(),
+    /** v1.1.64 拉黑持久化（删除对话 = 拉黑；默认 Noop，生产注入 SharedPrefsBlockedStore）。 */
+    private val blockedStore: BlockedStore = NoopBlockedStore,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -316,6 +318,31 @@ class MeshService(
     private val _groupMembers = MutableStateFlow<Map<String, Int>>(emptyMap())
     /** 群成员去重集合（v1.1.54）：groupId -> 已统计过的发送者短 ID（防重复计数）。 */
     private val groupMemberIds = ConcurrentHashMap<String, MutableSet<String>>()
+
+    // ===== v1.1.64 拉黑（删除对话 = 拒绝连接与消息）=====
+    /** 已拉黑短 ID（持久化）：其 INVITE/TEXT/PING 等所有帧被忽略——对方无法连接、无法发消息。 */
+    private val _blockedPeers = MutableStateFlow(blockedStore.load())
+    val blockedPeers: StateFlow<Set<String>> = _blockedPeers.asStateFlow()
+
+    /** 拉黑：拒绝该节点的连接与消息（删除对话时调用）。 */
+    fun blockPeer(peerId: String) {
+        _sessions.update { it - peerId }
+        sessionStore.save(_sessions.value)
+        _pendingInvites.update { it - peerId }
+        _invites.update { it - peerId }
+        _ackRetries.update { it - peerId }
+        _blockedPeers.update { it + peerId }
+        blockedStore.save(_blockedPeers.value)
+        removePeer(peerId)
+        Log.i(TAG, "blocked peer $peerId")
+    }
+
+    /** 解除拉黑：恢复可连接/收发。 */
+    fun unblockPeer(peerId: String) {
+        _blockedPeers.update { it - peerId }
+        blockedStore.save(_blockedPeers.value)
+        Log.i(TAG, "unblocked peer $peerId")
+    }
 
     // ===== v1.1.57 端到端加密（E2EE）=====
     /**
@@ -1474,6 +1501,11 @@ class MeshService(
 
     private fun handleEnvelope(envelopeIn: MeshEnvelope) {
         if (envelopeIn.srcId == identity.shortId) return // 忽略自身回环帧
+        // v1.1.64 拉黑：已拉黑节点的所有帧（INVITE/TEXT/PING/群消息）直接忽略——对方无法连接、无法发消息
+        if (envelopeIn.srcId in _blockedPeers.value) {
+            Log.d(TAG, "drop frame from blocked peer ${envelopeIn.srcId}")
+            return
+        }
         // v1.1.57 E2EE：SecBody → 解密还原内层 body（TextBody/GroupBody）再走原逻辑；
         // 解密失败（无密钥/认证失败）→ 丢弃（防篡改/监听者注入）。信封路由字段（kind/dstId/ttl）不加密。
         var envelope = envelopeIn
