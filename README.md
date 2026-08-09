@@ -3,6 +3,8 @@
 > 面向**无公网 / 弱网极端环境**的近场安全通信 Android 应用
 > A near-field secure-communication Android app for **offline / weak-network** environments.
 
+![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Language: Kotlin](https://img.shields.io/badge/Language-Kotlin-purple) ![Platform: Android 8.0+](https://img.shields.io/badge/Platform-Android%208.0%2B-blue) ![Version: v1.1.74](https://img.shields.io/badge/Version-v1.1.74-cyan) ![Tests: 207 passed](https://img.shields.io/badge/Tests-207%20passed-brightgreen) ![Encryption: E2EE](https://img.shields.io/badge/Encryption-E2EE%20(AES--256--GCM)-critical)
+
 ## 免责声明 / Disclaimer
 
 > 本项目仅用于学习与合法的应急通信研究。开源代码可被任何个人或组织以任何方式复制、修改与使用，包括但不限于违法犯罪用途；作者对任何滥用、误用或由此产生的后果不承担任何责任。实测距离（空旷室内约 40 米、丛林野外约 20 米，测试机型蓝牙 5.1）因设备与环境而异，请以现场实测为准。端到端加密保护传输内容，但无法防御第一次连接就被劫持，高危场景请线下核对指纹。本项目不构成任何安全性承诺。
