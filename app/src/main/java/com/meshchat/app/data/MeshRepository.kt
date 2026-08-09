@@ -40,6 +40,12 @@ interface MeshRepository {
     fun setChannel(name: String?)
     /** v1.1.66 对端是否在当前频道（发送被拒原因区分）。 */
     fun isPeerInCurrentChannel(peerId: String): Boolean
+    /** v1.1.74 MITM 防御：对端公钥指纹与首次记录不一致（身份变更）的节点集合。 */
+    val peerKeyChanged: kotlinx.coroutines.flow.StateFlow<Set<String>>
+    /** v1.1.74 对端公钥指纹（首次握手记录）；null = 未握手。 */
+    fun peerFingerprint(peerId: String): String?
+    /** v1.1.74 本机密钥是否降级内存密钥（不持久，重启更换）。 */
+    val localKeyFallback: Boolean
     fun startDiscovery()
     fun localShortId(): String
     /** 发现开关（v1.1.49）：当前是否在广播+扫描。 */
@@ -161,6 +167,12 @@ class MeshRepositoryImpl(
     override fun setChannel(name: String?) = service.setChannel(name)
 
     override fun isPeerInCurrentChannel(peerId: String): Boolean = service.isPeerInCurrentChannel(peerId)
+
+    override val peerKeyChanged: kotlinx.coroutines.flow.StateFlow<Set<String>> = service.peerKeyChanged
+
+    override fun peerFingerprint(peerId: String): String? = service.peerFingerprint(peerId)
+
+    override val localKeyFallback: Boolean get() = service.localKeyFallback
 
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
         // 信号格数由协议层速率比决定（≥60% 满格 / ≥25% 两格 / ≥5% 一格）；样本不足回退 RSSI 格数

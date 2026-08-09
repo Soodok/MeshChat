@@ -21,6 +21,7 @@ import com.meshchat.app.mesh.service.NotificationHelper
 import com.meshchat.app.mesh.service.SharedPrefsBlockedStore
 import com.meshchat.app.mesh.service.SharedPrefsGroupStore
 import com.meshchat.app.mesh.service.SharedPrefsSessionStore
+import com.meshchat.app.mesh.service.SharedPrefsPeerKeyStore
 import com.meshchat.app.mesh.storage.EncryptedMeshStore
 import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
@@ -161,6 +162,7 @@ class MeshChatApplication : Application() {
             sessionStore = SharedPrefsSessionStore(this),
             groupStore = SharedPrefsGroupStore(this),   // v1.1.50：群订阅/群名持久化
             blockedStore = SharedPrefsBlockedStore(this),   // v1.1.64：删除对话=拉黑持久化
+            peerKeyStore = SharedPrefsPeerKeyStore(this),   // v1.1.74：对端公钥指纹持久化（MITM 防御 TOFU）
             e2eeStore = AndroidE2eeKeyStore(this) { appLock.dek() },   // v1.1.57 E2EE 密钥；v1.1.58 设密码后 DEK 加密存储
             onIncomingMessage = { fromId, fromName, text, convId ->
                 // v1.1.50：convId = 群会话键（group-<id>）或点对点 conv-<fromId>，通知点击直达对应会话

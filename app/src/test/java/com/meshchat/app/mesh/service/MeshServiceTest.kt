@@ -1729,6 +1729,66 @@ class MeshServiceTest {
         service.stop()
     }
 
+    // ===== v1.1.74 MITM 防御（密钥连续性 TOFU）=====
+
+    private class MemoryPeerKeyStore : PeerKeyStore {
+        private val map = mutableMapOf<String, String>()
+        override fun fingerprint(peerId: String): String? = map[peerId]
+        override fun saveFingerprint(peerId: String, fp: String) { map[peerId] = fp }
+    }
+
+    @Test
+    fun `first handshake records peer key fingerprint (TOFU)`() {
+        val keyStore = MemoryPeerKeyStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+            peerKeyStore = keyStore,
+        )
+        val aPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
+        // A INVITE（带 A 公钥）→ B 派生会话密钥 + 首次信任并记录指纹
+        service.handleFrame(inviteWithKey("A", "B", aPubB64))
+        assertEquals("首次握手应记录对端指纹", MeshCrypto.fingerprint(aPubB64), service.peerFingerprint("A"))
+        assertTrue("首次握手不应标记身份变更", "A" !in service.peerKeyChanged.value)
+        service.stop()
+    }
+
+    @Test
+    fun `same peer key fingerprint does not flag identity change`() {
+        val keyStore = MemoryPeerKeyStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+            peerKeyStore = keyStore,
+        )
+        val aPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
+        // 首次握手 → 记录；相同公钥再次握手（重连/重复 ACK）→ 指纹一致，不告警
+        service.handleFrame(inviteWithKey("A", "B", aPubB64))
+        service.handleFrame(ackWithKey("A", "B", aPubB64))
+        assertTrue("指纹一致不应标记身份变更", "A" !in service.peerKeyChanged.value)
+        service.stop()
+    }
+
+    @Test
+    fun `changed peer key fingerprint flags identity change (possible MITM)`() {
+        val keyStore = MemoryPeerKeyStore()
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+            peerKeyStore = keyStore,
+        )
+        val firstPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
+        service.handleFrame(inviteWithKey("A", "B", firstPubB64))
+        assertTrue("首次握手不应标记身份变更", "A" !in service.peerKeyChanged.value)
+        // 对方公钥更换（重启/重装或被中间人劫持）→ 指纹不一致 → 标记身份变更告警
+        val secondPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
+        assertFalse("测试前提：两次公钥指纹必须不同", MeshCrypto.fingerprint(firstPubB64) == MeshCrypto.fingerprint(secondPubB64))
+        service.handleFrame(inviteWithKey("A", "B", secondPubB64))
+        assertTrue("指纹变化应标记身份变更（可能 MITM）", "A" in service.peerKeyChanged.value)
+        assertEquals("记录保留首次指纹供人工比对", MeshCrypto.fingerprint(firstPubB64), service.peerFingerprint("A"))
+        service.stop()
+    }
+
     @Test
     fun `group key distributed via join frame enables encrypted group messages`() {
         val creatorStore = InMemoryMeshStore()

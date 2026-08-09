@@ -73,6 +73,8 @@ fun IdentityKeyScreen(
     shortId: String,
     bluetoothName: String,
     bluetoothAddress: String,
+    /** v1.1.74 本机密钥是否降级内存密钥（不持久，重启更换——对端会收到身份变化提示）。 */
+    localKeyFallback: Boolean = false,
     onBack: () -> Unit,
 ) {
     var copied by rememberSaveable { mutableStateOf(false) }
@@ -133,6 +135,16 @@ fun IdentityKeyScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
+            // v1.1.74 MITM 防御：本机密钥降级提示（设备 KeyStore 限制 → 内存密钥，重启更换）
+            if (localKeyFallback) {
+                HorizontalDivider(color = Divider, modifier = Modifier.padding(top = 24.dp))
+                Text("本机密钥状态", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp))
+                Text(
+                    "本机密钥不持久（设备限制）· 重启后更换，对方可能收到身份变化提示",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MeshAmber,
+                )
+            }
         }
     }
 }

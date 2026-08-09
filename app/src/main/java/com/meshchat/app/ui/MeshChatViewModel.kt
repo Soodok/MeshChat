@@ -262,6 +262,16 @@ class MeshChatViewModel(
         repository.setChannel(name)
     }
 
+    // ---- v1.1.74 MITM 防御（公钥指纹 + 密钥连续性告警）----
+    /** 对端公钥指纹与首次记录不一致（身份变更）的节点集合。 */
+    val peerKeyChanged: StateFlow<Set<String>> = repository.peerKeyChanged
+
+    /** 对端公钥指纹（首次握手记录）；null = 未握手。 */
+    fun peerFingerprint(peerId: String): String? = repository.peerFingerprint(peerId)
+
+    /** 本机密钥是否降级内存密钥（不持久，重启更换——身份页提示用）。 */
+    val localKeyFallback: Boolean get() = repository.localKeyFallback
+
     init {
         securityCapabilityManager.refresh()
         refreshLocalSecurity()

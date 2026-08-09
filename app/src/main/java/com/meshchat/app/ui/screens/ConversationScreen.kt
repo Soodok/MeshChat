@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -51,6 +52,7 @@ import com.meshchat.app.ui.theme.Ink
 import com.meshchat.app.ui.theme.InkSoft
 import com.meshchat.app.ui.theme.MeshAmber
 import com.meshchat.app.ui.theme.MeshGreen
+import com.meshchat.app.ui.theme.MeshRed
 import com.meshchat.app.ui.theme.TextSecondary
 
 @Composable
@@ -66,6 +68,9 @@ fun ConversationScreen(
     onOpenFile: (ChatMessage) -> Unit = {},
     /** v1.1.50 群会话：标题状态行改群聊语义（广播域），气泡显示发送者昵称。 */
     isGroup: Boolean = false,
+    /** v1.1.74 MITM 防御：对端公钥指纹（null = 未握手）与身份变更标志（指纹与首次记录不一致）。 */
+    peerFingerprint: String? = null,
+    peerKeyChanged: Boolean = false,
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
     // 消息列表滚动：进入会话强制滚底；新消息到达且用户已在底部附近时跟随滚动（上滑看历史不被打断）
@@ -108,7 +113,7 @@ fun ConversationScreen(
     }
     Column(modifier = Modifier.fillMaxSize().background(Ink).imePadding()) {
         // 会话状态 + 对端网络状况已合并进标题栏（名字下方一行），不再单独占内容空间
-        ConversationHeader(title, connected, peerPresence, relayVia, onBack, isGroup)
+        ConversationHeader(title, connected, peerPresence, relayVia, onBack, isGroup, peerFingerprint, peerKeyChanged)
         Text(
             today,
             color = TextSecondary,
@@ -160,6 +165,8 @@ private fun ConversationHeader(
     relayVia: String = "",
     onBack: () -> Unit,
     isGroup: Boolean = false,
+    peerFingerprint: String? = null,
+    peerKeyChanged: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -216,6 +223,26 @@ private fun ConversationHeader(
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(start = 6.dp),
                     )
+                }
+                // v1.1.74 MITM 防御：对端公钥指纹 + 密钥连续性状态（点对点会话显示）
+                if (!peerFingerprint.isNullOrBlank()) {
+                    val fpText = peerFingerprint.chunked(4).joinToString(" ")
+                    if (peerKeyChanged) {
+                        // 身份变更：指纹与首次握手记录不一致——可能被中间人劫持，红色告警
+                        Text(
+                            "⚠ 公钥已变化 · 可能被中间人攻击 · 请线下比对指纹 $fpText",
+                            color = MeshRed,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier.padding(start = 2.dp, top = 4.dp),
+                        )
+                    } else {
+                        Text(
+                            "指纹 $fpText",
+                            color = MeshGreen,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier.padding(start = 2.dp, top = 4.dp),
+                        )
+                    }
                 }
             }
         }

@@ -48,6 +48,8 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     // v1.1.64 拉黑（删除对话 = 拒绝连接与消息）
     val blockedPeers by viewModel.blockedPeers.collectAsStateWithLifecycle()
     val channelName by viewModel.channelName.collectAsStateWithLifecycle()   // v1.1.66 当前频道（公共/私人）
+    // v1.1.74 MITM 防御：对端公钥指纹与首次记录不一致（身份变更）的节点集合
+    val peerKeyChanged by viewModel.peerKeyChanged.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
         if (appLocked) {
             com.meshchat.app.ui.screens.AppLockScreen(
@@ -143,6 +145,10 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             onBlockPeer = viewModel::blockPeer,
             channelName = channelName,
             onSetChannel = viewModel::setChannel,
+            // v1.1.74 MITM 防御：身份变更集合 / 本机密钥降级标志 / 对端指纹查询
+            peerKeyChanged = peerKeyChanged,
+            localKeyFallback = viewModel.localKeyFallback,
+            peerFingerprint = viewModel::peerFingerprint,
         )
     }
 }

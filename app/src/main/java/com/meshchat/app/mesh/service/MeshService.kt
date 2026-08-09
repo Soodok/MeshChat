@@ -154,6 +154,8 @@ class MeshService(
     private val e2eeStore: E2eeKeyStore = InMemoryE2eeKeyStore(),
     /** v1.1.64 拉黑持久化（删除对话 = 拉黑；默认 Noop，生产注入 SharedPrefsBlockedStore）。 */
     private val blockedStore: BlockedStore = NoopBlockedStore,
+    /** v1.1.74 对端公钥指纹持久化（密钥连续性 TOFU，MITM 防御；默认 Noop，生产注入 SharedPrefsPeerKeyStore）。 */
+    private val peerKeyStore: PeerKeyStore = NoopPeerKeyStore,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -262,6 +264,14 @@ class MeshService(
     val channelName: StateFlow<String?> = _channelName.asStateFlow()
     /** 当前频道指纹（0 = 公共频道）。 */
     @Volatile private var channelFingerprint: Long = 0L
+
+    // ===== v1.1.74 MITM 防御（密钥连续性 TOFU）=====
+    /** 对端公钥指纹与首次握手记录不一致（身份变更，可能被中间人劫持）的节点集合。 */
+    private val _peerKeyChanged = MutableStateFlow<Set<String>>(emptySet())
+    val peerKeyChanged: StateFlow<Set<String>> = _peerKeyChanged.asStateFlow()
+
+    /** 对端公钥指纹（首次握手记录）；null = 尚未与对方完成握手/未记录。 */
+    fun peerFingerprint(peerId: String): String? = peerKeyStore.fingerprint(peerId)
 
     /**
      * 节点条目。v1.1.55 起区分两个"活着"信号源：
@@ -392,9 +402,13 @@ class MeshService(
         runCatching { e2eeStore.localKeyPair() }.getOrElse { t ->
             Log.w(TAG, "AndroidKeyStore key pair failed, fallback to in-memory key", t)
             DebugLogBuffer.log("E2EE", "AndroidKeyStore 密钥生成失败，降级内存密钥（${t.message ?: t.javaClass.simpleName}）")
+            keyFallback = true
             MeshCrypto.generateKeyPair()
         }
     }
+    /** v1.1.74 本机密钥是否降级内存密钥（不持久）：重启后更换 → 对端会收到身份变化提示。 */
+    @Volatile private var keyFallback = false
+    val localKeyFallback: Boolean get() = keyFallback
     /** 本机公钥 SPKI Base64（握手交换）。 */
     private val localPubKeyB64: String by lazy { MeshCrypto.publicKeyB64(localKeyPair) }
     /** 对端会话密钥缓存（peerId → 32B）；启动时从 e2eeStore 惰性加载。 */
@@ -739,6 +753,18 @@ class MeshService(
         if (peerPubB64.isBlank()) return
         val peerPub = runCatching { MeshCrypto.publicKeyFromB64(peerPubB64) }.getOrNull()
             ?: run { Log.w(TAG, "e2ee: bad peer pubkey from $peerId"); return }
+        // v1.1.74 密钥连续性（TOFU）：比对首次握手记录的对端公钥指纹，变化 → 标记身份变更（MITM 告警）。
+        // 首次 = 信任并记录；后续不一致 = 对方公钥更换（重启/重装或被中间人劫持），UI 红色告警由人工确认。
+        val fp = MeshCrypto.fingerprint(peerPubB64)
+        val prev = peerKeyStore.fingerprint(peerId)
+        if (prev == null) {
+            peerKeyStore.saveFingerprint(peerId, fp)
+            _peerKeyChanged.update { it - peerId }
+        } else if (prev != fp) {
+            Log.w(TAG, "e2ee: KEY CHANGED for $peerId (prev=$prev now=$fp) — possible MITM")
+            DebugLogBuffer.log("E2EE", "对端 $peerId 公钥指纹变化（$prev → $fp），可能被中间人劫持")
+            _peerKeyChanged.update { it + peerId }
+        }
         val secret = MeshCrypto.sharedSecret(localKeyPair.private, peerPub)
         val key = MeshCrypto.deriveSessionKey(secret, keyInfo(peerId))
         sessionKeys[peerId] = key

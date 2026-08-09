@@ -129,6 +129,12 @@ fun MeshChatHome(
     /** v1.1.66 当前频道名与切换回调（公共/私人频道）。 */
     channelName: String?,
     onSetChannel: (String?) -> Unit,
+    /** v1.1.74 MITM 防御：对端公钥指纹与首次记录不一致（身份变更，可能被中间人劫持）的节点集合。 */
+    peerKeyChanged: Set<String>,
+    /** v1.1.74 本机密钥是否降级内存密钥（不持久，重启更换——身份页提示用）。 */
+    localKeyFallback: Boolean,
+    /** v1.1.74 对端公钥指纹查询（null = 未握手）。 */
+    peerFingerprint: (String) -> String?,
 ) {
     var destinationName by rememberSaveable { mutableStateOf(MainDestination.CHATS.name) }
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
@@ -227,6 +233,9 @@ fun MeshChatHome(
             onPickFile = if (isGroupConv) null else ({ filePicker.launch(arrayOf("*/*")) }),
             onOpenFile = onOpenFile,
             isGroup = isGroupConv,
+            // v1.1.74 MITM 防御：点对点会话显示对端指纹与身份变更告警（群聊/我的会话无对端概念）
+            peerFingerprint = if (isGroupConv || target == "ME") null else peerFingerprint(target),
+            peerKeyChanged = !isGroupConv && target != "ME" && target in peerKeyChanged,
         )
         return
     }
@@ -237,6 +246,7 @@ fun MeshChatHome(
                 shortId = localShortId,
                 bluetoothName = localBluetoothName,
                 bluetoothAddress = localBluetoothAddress,
+                localKeyFallback = localKeyFallback,   // v1.1.74 本机密钥降级提示
                 onBack = { profileDetail = null },
             )
             "settings" -> GeneralSettingsScreen(
