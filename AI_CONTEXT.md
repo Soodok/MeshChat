@@ -41,8 +41,7 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
-- **⚠️ 推送阻塞（2026-08-09，README 精简提交未推送）**：`c543d0f`（README 精简为卖点式介绍，76 行）已在本地 main，push 连续 3 次失败（443 超时/无法连接，github.com 不可达）。**下一位 Agent 首要任务：`git push origin main` 补推**（远程 origin/main 目前停在 `2f461b7`，落后本地 1 个提交；网络恢复后推送即可，无冲突风险）。
-- **README 更新（2026-08-09，用户要求"更新 GitHub 项目 MD"）**：新增「实测连接距离」区块（空旷室内约 40 米 / 丛林野外约 20 米，特定机型实测）+ 范围免责；特性重写强化稳定性卖点（三层送达确认零容错/GATT 双通道/E2EE+MITM 密钥连续性/隔离控制/频道系统/群聊/Wi-Fi Direct）；**修正 3 处过时内容**（E2EE 演示占位→已实现、测试 130→207 项、release 包体积）；免责新增「安全边界免责」（明确首次握手 TOFU 盲区，不替代官方应急体系）；架构树补 crypto/channel/wifidirect/security 目录。提交 `48d611e` 已推送 origin/main。**注意：README 不含版本更新记录/changelog（沿用用户 2026-08-07 决策）**。后续按用户反馈「技术细节太多别人看不下去」再精简为卖点式（c543d0f，未推送）。
+- **README 三连更（2026-08-09，已全部推送 origin/main）**：① 全量重写（实测距离 40m/20m + 稳定性特性 + 免责强化，`48d611e`）；② 按用户反馈精简为卖点式（76 行，`c543d0f`）；③ 新增「技术亮点」区块（**广播免连接通讯**——无需配对/稳定连接即可收发、4 档发射功率距离调优、为丢包而生多路确认、去中心化自愈、低功耗，`156684c`）。中途 push 曾连续 3 次失败（github.com 443 不可达，`f73d2ff` 记录阻塞），**网络恢复后已补推，origin/main 最新 = 156684c，工作树干净**。README 不含版本更新记录/changelog（沿用用户 2026-08-07 决策）。
 - **v1.1.74 MITM 防御·密钥连续性 TOFU（2026-08-09，用户"我现在很害怕，假如有中间人设备进行伪造和解密劫持呢？"→ 选最小版）**：被动窃听已由 E2EE（ECDH+AES-GCM）防住，本版补**主动 MITM 识别**——**公钥指纹显示 + 密钥连续性告警 + 本机密钥降级提示**。规格：`docs/superpowers/specs/2026-08-08-meshchat-mitm-fingerprint-design.md`（a901adb）。
   - **服务层**：`MeshService.kt` 新参 `peerKeyStore: PeerKeyStore`（默认 Noop）+ `_peerKeyChanged: StateFlow<Set<String>>`（指纹与首次记录不一致的节点）+ `peerFingerprint(peerId)` 查询 + `keyFallback` 标志（`localKeyPair` lazy 降级内存密钥时置位，`localKeyFallback` 暴露）；`deriveSessionKey` 每次收到对端公钥先算 `MeshCrypto.fingerprint(pubB64)`（SHA-256 前 8 字节 hex）：**首次 = 信任并记录（TOFU）；后续不一致 = 记日志 + `DebugLogBuffer` + 标记 peerKeyChanged**（记录保留首次指纹供人工比对）。`MeshCrypto.fingerprint` 新增。
   - **持久化**：`PeerKeyStore.kt`（新文件，service 包）——`SharedPrefsPeerKeyStore` 存 `meshchat_e2ee` 库键 `fp_<peerId>`；`MeshChatApplication` 注入（import 曾缺失导致首次编译失败，已补）。
