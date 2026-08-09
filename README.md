@@ -24,9 +24,22 @@ No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a dec
 **空旷室内：约 40 米；丛林野外：约 20 米**（特定机型实测，因设备与环境而异）。
 **≈40 m indoors in open space; ≈20 m in jungle/field vegetation** (measured on specific hardware; results vary).
 
+发射功率 4 档可调（默认最高 +1dBm），近距离可降低功率省电，远距离拉满换覆盖——距离与续航自己权衡。
+TX power is adjustable across 4 levels (default max +1 dBm): lower it to save battery up close, max it for coverage at range.
+
 走远了会显示「断线重连中」「离线」，走回来自动重新连上，全程无需手动操作。
 
 Walk out of range → the app shows reconnecting/offline. Walk back → it reconnects by itself.
+
+## 技术亮点 / Technical Highlights
+
+- **不连接也能通讯**：基于蓝牙广播收发消息，**无需配对、无需稳定连接**——连接只是让通讯更快，不是通讯的前提。靠近就能聊，松手就断也不会丢
+- **为丢包而生的传输**：广播天生会丢帧，多路确认 + 自动重发兜底，消息在嘈杂环境里照样必达
+- **去中心化自愈网络**：每个节点都是路由器，中间有人离开，消息自动绕路换邻居送达
+- **断网断电可用**：全程不碰基站、Wi-Fi、互联网，纯设备间 P2P 直连
+- **低功耗长续航**：低功耗蓝牙广播为主，待机不费电，需要传大文件时才开高速连接
+
+*Messaging over broadcast — no pairing or stable connection required; connections make it faster, not necessary. Built for lossy airwaves with multi-path receipts and auto-resend. Every node is a router: messages reroute around gaps. No cellular, Wi-Fi, or internet — pure device-to-device. BLE-broadcast-first keeps power draw minimal; high-speed links only light up for file transfers.*
 
 ## 特性 / Features
 
