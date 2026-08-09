@@ -41,7 +41,7 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
-- **README 三连更（2026-08-09，已全部推送 origin/main）**：① 全量重写（实测距离 40m/20m + 稳定性特性 + 免责强化，`48d611e`）；② 按用户反馈精简为卖点式（76 行，`c543d0f`）；③ 新增「技术亮点」区块（**广播免连接通讯**——无需配对/稳定连接即可收发、4 档发射功率距离调优、为丢包而生多路确认、去中心化自愈、低功耗，`156684c`）。中途 push 曾连续 3 次失败（github.com 443 不可达，`f73d2ff` 记录阻塞），**网络恢复后已补推，origin/main 最新 = 156684c，工作树干净**。README 不含版本更新记录/changelog（沿用用户 2026-08-07 决策）。
+- **README 迭代至差异化卖点版（2026-08-09，已全部推送 origin/main）**：演进路径 ①全量重写（`48d611e`）→ ②精简卖点式（`c543d0f`）→ ③加技术亮点区块（`156684c`）→ ④**收窄为差异化版（当前，`a0aa5a4`）**：用户反馈「测试机型均为蓝牙 5.1；别的蓝牙软件都有的功能写太多形不成对比优势，一带而过」。当前结构（62 行）：简介 → 实测距离（**蓝牙 5.1：室内 40m / 丛林 20m** + 4 档功率调优 + 自动重连）→ **差异化能力 6 条**（广播免连接通讯/去中心化自愈多跳/E2EE+指纹告警/私人频道/彻底拉黑/消息必达）→ 基础功能一行带过（聊天/文件/群聊/后台/应用锁/拓扑图/调试中心/安全评估）→ 技术栈 → 构建 → 许可；免责合并为一段（含蓝牙 5.1 距离免责 + 首次握手劫持盲区）。origin/main 最新 = a0aa5a4，工作树干净。README 不含版本更新记录/changelog（沿用用户 2026-08-07 决策）。
 - **v1.1.74 MITM 防御·密钥连续性 TOFU（2026-08-09，用户"我现在很害怕，假如有中间人设备进行伪造和解密劫持呢？"→ 选最小版）**：被动窃听已由 E2EE（ECDH+AES-GCM）防住，本版补**主动 MITM 识别**——**公钥指纹显示 + 密钥连续性告警 + 本机密钥降级提示**。规格：`docs/superpowers/specs/2026-08-08-meshchat-mitm-fingerprint-design.md`（a901adb）。
   - **服务层**：`MeshService.kt` 新参 `peerKeyStore: PeerKeyStore`（默认 Noop）+ `_peerKeyChanged: StateFlow<Set<String>>`（指纹与首次记录不一致的节点）+ `peerFingerprint(peerId)` 查询 + `keyFallback` 标志（`localKeyPair` lazy 降级内存密钥时置位，`localKeyFallback` 暴露）；`deriveSessionKey` 每次收到对端公钥先算 `MeshCrypto.fingerprint(pubB64)`（SHA-256 前 8 字节 hex）：**首次 = 信任并记录（TOFU）；后续不一致 = 记日志 + `DebugLogBuffer` + 标记 peerKeyChanged**（记录保留首次指纹供人工比对）。`MeshCrypto.fingerprint` 新增。
   - **持久化**：`PeerKeyStore.kt`（新文件，service 包）——`SharedPrefsPeerKeyStore` 存 `meshchat_e2ee` 库键 `fp_<peerId>`；`MeshChatApplication` 注入（import 曾缺失导致首次编译失败，已补）。
