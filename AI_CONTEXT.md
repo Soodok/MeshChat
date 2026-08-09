@@ -41,6 +41,7 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **README 更新（2026-08-09，用户要求"更新 GitHub 项目 MD"）**：新增「实测连接距离」区块（空旷室内约 40 米 / 丛林野外约 20 米，特定机型实测）+ 范围免责；特性重写强化稳定性卖点（三层送达确认零容错/GATT 双通道/E2EE+MITM 密钥连续性/隔离控制/频道系统/群聊/Wi-Fi Direct）；**修正 3 处过时内容**（E2EE 演示占位→已实现、测试 130→207 项、release 包体积）；免责新增「安全边界免责」（明确首次握手 TOFU 盲区，不替代官方应急体系）；架构树补 crypto/channel/wifidirect/security 目录。提交 `48d611e` 已推送 origin/main。**注意：README 不含版本更新记录/changelog（沿用用户 2026-08-07 决策）**。
 - **v1.1.74 MITM 防御·密钥连续性 TOFU（2026-08-09，用户"我现在很害怕，假如有中间人设备进行伪造和解密劫持呢？"→ 选最小版）**：被动窃听已由 E2EE（ECDH+AES-GCM）防住，本版补**主动 MITM 识别**——**公钥指纹显示 + 密钥连续性告警 + 本机密钥降级提示**。规格：`docs/superpowers/specs/2026-08-08-meshchat-mitm-fingerprint-design.md`（a901adb）。
   - **服务层**：`MeshService.kt` 新参 `peerKeyStore: PeerKeyStore`（默认 Noop）+ `_peerKeyChanged: StateFlow<Set<String>>`（指纹与首次记录不一致的节点）+ `peerFingerprint(peerId)` 查询 + `keyFallback` 标志（`localKeyPair` lazy 降级内存密钥时置位，`localKeyFallback` 暴露）；`deriveSessionKey` 每次收到对端公钥先算 `MeshCrypto.fingerprint(pubB64)`（SHA-256 前 8 字节 hex）：**首次 = 信任并记录（TOFU）；后续不一致 = 记日志 + `DebugLogBuffer` + 标记 peerKeyChanged**（记录保留首次指纹供人工比对）。`MeshCrypto.fingerprint` 新增。
   - **持久化**：`PeerKeyStore.kt`（新文件，service 包）——`SharedPrefsPeerKeyStore` 存 `meshchat_e2ee` 库键 `fp_<peerId>`；`MeshChatApplication` 注入（import 曾缺失导致首次编译失败，已补）。
