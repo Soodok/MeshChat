@@ -60,6 +60,10 @@ class WifiDirectTransport(
         const val TCP_PORT = 0x51C8          // 20936：应用层固定端口
         private const val DISCOVER_TIMEOUT_MS = 15_000L
         private const val TCP_CONNECT_TIMEOUT_MS = 5_000
+        /** RECONNECTING 停留时长：之后自动回 DISCOVERING 重试（防状态机卡死永不重连）。 */
+        private const val RECONNECT_BACKOFF_MS = 3_000L
+        /** 搜索连续无邻居的轮数阈值：达到后主动 createGroup 成为 GO，等待对端 join（DnsSd 发现失败时的兜底建连路径）。 */
+        private const val CREATE_GROUP_AFTER_ROUNDS = 3
     }
 
     enum class State { DISABLED, DISCOVERING, CONNECTING, GROUPED, RECONNECTING }
@@ -88,6 +92,9 @@ class WifiDirectTransport(
     /** 不可用原因（State 为 DISABLED 且增强开关开启时，Mesh 页据此精确提示）。 */
     private val _unavailableReason = MutableStateFlow(UnavailableReason.NONE)
     val unavailableReason: StateFlow<UnavailableReason> = _unavailableReason.asStateFlow()
+
+    /** 已请求 createGroup（防重复创建）；disable/失败重置。 */
+    @Volatile private var goRequested = false
 
     /** 服务发现填充：shortId ↔ P2P 设备。 */
     private val knownDevices = ConcurrentHashMap<String, WifiP2pDevice>()
@@ -186,6 +193,7 @@ class WifiDirectTransport(
         runCatching { serverSocket?.close() }
         serverSocket = null
         groupOwnerAddress = null
+        goRequested = false
         wlog("disabled")
     }
 
@@ -253,15 +261,32 @@ class WifiDirectTransport(
     }
 
     private suspend fun discoveryLoop() {
+        var idleRounds = 0
         while (scope.isActive && state != State.DISABLED) {
             if (state == State.DISCOVERING) {
                 manager?.discoverPeers(channel, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() = Unit
                     override fun onFailure(reason: Int) { wwlog("discover fail reason=$reason") }
                 })
-                // 对每个已知设备尝试连接（已建 TCP 跳过；多设备并发 connect 由系统 GO negotiation 合并成一个 group）
-                knownDevices.forEach { (id, dev) ->
-                    if (id != shortId && !sockets.containsKey(id)) connectTo(id, dev)
+                if (knownDevices.isEmpty()) {
+                    idleRounds++
+                    // 连续多轮无任何 P2P 邻居 → 主动 createGroup 成为 GO，等待对端 join（DnsSd 发现失败时的兜底建连）
+                    if (idleRounds >= CREATE_GROUP_AFTER_ROUNDS && !goRequested) {
+                        goRequested = true
+                        manager?.createGroup(channel, object : WifiP2pManager.ActionListener {
+                            override fun onSuccess() { wlog("created group as GO, waiting for peers to join") }
+                            override fun onFailure(reason: Int) {
+                                wwlog("createGroup fail reason=$reason")
+                                goRequested = false   // 允许下一轮重试
+                            }
+                        })
+                    }
+                } else {
+                    idleRounds = 0
+                    // 对每个已知设备尝试连接（已建 TCP 跳过；多设备并发 connect 由系统 GO negotiation 合并成一个 group）
+                    knownDevices.forEach { (id, dev) ->
+                        if (id != shortId && !sockets.containsKey(id)) connectTo(id, dev)
+                    }
                 }
             }
             delay(DISCOVER_TIMEOUT_MS)
@@ -301,7 +326,15 @@ class WifiDirectTransport(
             }
         } else {
             if (state != State.DISABLED) {
-                state = State.RECONNECTING   // P2 补指数退避重建；P1 由 discoveryLoop 下一轮重试
+                state = State.RECONNECTING   // 短暂停留后自动回 DISCOVERING 重试（防状态机卡死在 RECONNECTING 永不重连）
+                scope.launch {
+                    delay(RECONNECT_BACKOFF_MS)
+                    if (state == State.RECONNECTING) {
+                        goRequested = false
+                        state = State.DISCOVERING
+                        wlog("back to discovering for reconnect")
+                    }
+                }
             }
         }
     }
