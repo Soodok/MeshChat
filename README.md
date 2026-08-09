@@ -5,70 +5,44 @@
 
 ## 免责声明 / Disclaimer
 
-> **开源项目可能被用于恶意用途。** 本项目仅用于学习与合法的应急通信研究。开源代码可被任何个人或组织以任何方式复制、修改与使用，包括但不限于违法犯罪用途；作者对任何滥用、误用或由此产生的后果不承担任何责任。使用者须自行确保其使用方式符合所在国家/地区的法律法规。
+> 本项目仅用于学习与合法的应急通信研究。开源代码可被任何个人或组织以任何方式复制、修改与使用，包括但不限于违法犯罪用途；作者对任何滥用、误用或由此产生的后果不承担任何责任。实测距离（空旷室内约 40 米、丛林野外约 20 米，测试机型蓝牙 5.1）因设备与环境而异，请以现场实测为准。端到端加密保护传输内容，但无法防御第一次连接就被劫持，高危场景请线下核对指纹。本项目不构成任何安全性承诺。
 >
-> **Open-source software can be abused.** This project is provided solely for learning and legitimate emergency-communication research. The code may be copied, modified, and used by anyone for any purpose, including illegal ones; the authors assume no liability for any misuse or for the consequences thereof. You are solely responsible for ensuring your usage complies with all applicable laws and regulations.
-
-> **距离与安全免责。** 文中实测距离（空旷室内约 40 米、丛林野外约 20 米）来自特定机型与环境，实际范围因设备芯片、遮挡、天气而异，请以现场实测为准。端到端加密保护传输内容，但**无法防御第一次连接就被劫持**，高危场景请线下核对指纹。本项目不替代官方应急通信体系，不构成任何安全性承诺。
->
-> **Range & security disclaimer.** Measured ranges (≈40 m indoors, ≈20 m in jungle) vary by device and environment — verify on site. E2EE protects message content but **cannot stop hijacking on the very first connection**; verify fingerprints offline for high-stakes scenarios. Not a replacement for official emergency-communication systems; no security guarantee implied.
+> For learning and legitimate emergency-communication research only. Code may be reused for any purpose, including illegal ones; no liability for misuse. Measured ranges (≈40 m indoors, ≈20 m in jungle; Bluetooth 5.1 test devices) vary by hardware and environment — verify on site. E2EE protects content but cannot stop hijacking on the very first connection; verify fingerprints offline for high-stakes scenarios. No security guarantee implied.
 
 ## 项目简介 / About
 
-不依赖基站、Wi-Fi 或任何互联网，仅靠蓝牙就能在设备之间组成一张去中心化网络：互相发现、建立对话、收发消息和文件。没信号的地方也能聊——灾后应急、野外作业、地下空间、隔离区，都适用。
+不依赖基站、Wi-Fi 或任何互联网，仅靠蓝牙就能在设备之间组成一张去中心化网络：互相发现、建立对话、收发消息和文件。没信号的地方也能聊。
 
-No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a decentralized mesh to find each other, start conversations, and exchange messages and files — even where there is no signal. Built for disaster response, field work, underground spaces, and quarantined areas.
+No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a decentralized mesh to find each other, chat, and exchange files — even where there is no signal.
 
 ## 实测连接距离 / Measured Range
 
-**空旷室内：约 40 米；丛林野外：约 20 米**（特定机型实测，因设备与环境而异）。
-**≈40 m indoors in open space; ≈20 m in jungle/field vegetation** (measured on specific hardware; results vary).
+**蓝牙 5.1 实测：空旷室内约 40 米，丛林野外约 20 米。**
 
-发射功率 4 档可调（默认最高 +1dBm），近距离可降低功率省电，远距离拉满换覆盖——距离与续航自己权衡。
-TX power is adjustable across 4 levels (default max +1 dBm): lower it to save battery up close, max it for coverage at range.
+发射功率 4 档可调（默认最高），近距离降功率省电、远距离拉满换覆盖；走远了自动显示「断线重连中 / 离线」，走回来自动重连，无需手动操作。
 
-走远了会显示「断线重连中」「离线」，走回来自动重新连上，全程无需手动操作。
+*Measured on Bluetooth 5.1 devices: ≈40 m indoors in open space, ≈20 m in jungle vegetation. TX power is adjustable across 4 levels to trade battery for range; out-of-range shows reconnecting/offline and reconnects automatically.*
 
-Walk out of range → the app shows reconnecting/offline. Walk back → it reconnects by itself.
+## 差异化能力 / What Makes It Different
 
-## 技术亮点 / Technical Highlights
+- **不连接也能通讯**：基于蓝牙广播收发消息，无需配对、无需稳定连接——连接只让通讯更快，不是前提
+- **去中心化自愈多跳**：每台设备都是路由器，隔一台设备也能送达，有人离开自动绕路
+- **端到端加密 + 中间人告警**：消息出手机前加密；每个对话显示对方公钥指纹，身份异常立刻红色告警
+- **私人频道**：自定义频道名组一个「只有我们」的空间，不参与公共搜索
+- **彻底拉黑**：拉黑 / 删除对话 / 换频道，立即断开全部连接，对方再也看不到你
+- **消息必达**：广播丢包、切后台、息屏都不怕，自动重发确认直到对方收到
 
-- **不连接也能通讯**：基于蓝牙广播收发消息，**无需配对、无需稳定连接**——连接只是让通讯更快，不是通讯的前提。靠近就能聊，松手就断也不会丢
-- **为丢包而生的传输**：广播天生会丢帧，多路确认 + 自动重发兜底，消息在嘈杂环境里照样必达
-- **去中心化自愈网络**：每个节点都是路由器，中间有人离开，消息自动绕路换邻居送达
-- **断网断电可用**：全程不碰基站、Wi-Fi、互联网，纯设备间 P2P 直连
-- **低功耗长续航**：低功耗蓝牙广播为主，待机不费电，需要传大文件时才开高速连接
+*Broadcast-based messaging with no pairing or stable connection required. Every device is a router — multi-hop delivery that reroutes around gaps. E2EE with per-conversation key fingerprints that alert on identity change. Private channels invisible to public search. Blocking cuts every connection instantly. Messages are auto-retried until delivered.*
 
-*Messaging over broadcast — no pairing or stable connection required; connections make it faster, not necessary. Built for lossy airwaves with multi-path receipts and auto-resend. Every node is a router: messages reroute around gaps. No cellular, Wi-Fi, or internet — pure device-to-device. BLE-broadcast-first keeps power draw minimal; high-speed links only light up for file transfers.*
+## 基础功能 / Also Included
 
-## 特性 / Features
+聊天、文件传输、群聊、多跳中继、后台常驻、应用锁、拓扑图、调试中心、离线安全评估——该有的都有，不啰嗦。
 
-**基本通信** — *Core messaging*
-
-- **零基础设施聊天**：手机对手机直连，断网断电都能用
-- **文件传输**：直接互发文件，进度实时可见
-- **群聊**：一个区域内的设备可进同一个群（加密）
-- **多跳中继**：隔着一台设备也能送达消息，列表会显示「经 XX 可达」
-- **消息必达**：蓝牙丢包、切后台、息屏都不怕，反复确认直到对方收到
-- **后台常驻**：锁屏也收消息，点通知直达对话
-
-**安全与隐私** — *Security & privacy*
-
-- **端到端加密**：消息在离开手机前就加密，中间任何设备都看不懂
-- **中间人防护**：每个对话显示对方「指纹」，对方身份异常立刻红色告警
-- **私人频道**：自定义频道名就能组一个「只有我们」的空间，不参与公共搜索
-- **彻底拉黑**：拉黑/删除对话/换频道，立即断开所有连接，对方再也看不到你
-- **应用锁**：设置密码 + 指纹解锁，别人拿到手机也打不开
-
-**体验** — *Experience*
-
-- **Mesh 拓扑图**：谁连着谁一图看清，节点可拖拽，状态颜色区分
-- **离线评估**：锁屏、调试、无障碍等本地安全风险一目了然
-- **调试中心**：收发包速度、连接质量、信号强度实时看
+Chat, file transfer, group chat, background service, app lock, mesh topology, debug center, offline security audit — the essentials, all included.
 
 ## 技术栈 / Tech Stack
 
-Kotlin · Jetpack Compose · Room · kotlinx-serialization · Android 8.0+（API 26）
+Kotlin · Jetpack Compose · Room · Android 8.0+（API 26）
 207 项单元测试，正式包 R8 混淆 + 签名（约 1.9 MB）。
 
 ## 构建与运行 / Build & Run
@@ -78,9 +52,9 @@ Kotlin · Jetpack Compose · Room · kotlinx-serialization · Android 8.0+（API
 ./gradlew assembleRelease     # 正式包（R8 + 签名） / Release (R8 + signing)
 ```
 
-- Android Studio 打开工程根目录即可运行 `app` 模块 / Open the project root in Android Studio and run the `app` module.
+- Android Studio 打开工程根目录运行 `app` 模块 / Open in Android Studio and run the `app` module.
 - 需要真机蓝牙（API 26+）；Android 11 及以下需开启系统位置服务 / Requires real-device Bluetooth (API 26+); Android 11 and below need the location service enabled.
-- 正式签名凭证在 `keystore.properties`（不入库），**务必自行备份，丢失无法更新已发布版本** / Signing credentials live in `keystore.properties` (not committed). **Back them up — losing them makes released builds unupdatable.**
+- 正式签名凭证在 `keystore.properties`（不入库），务必自行备份 / Signing credentials live in `keystore.properties` (not committed). Back them up.
 
 ## 许可 / License
 
