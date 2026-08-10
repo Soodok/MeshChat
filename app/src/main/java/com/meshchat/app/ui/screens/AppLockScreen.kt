@@ -73,7 +73,10 @@ fun AppLockScreen(
     biometricAvailable: Boolean,
     lockout: LockoutState,
     onVerifyPassword: (String) -> Boolean,
-    onFinishBiometricUnlock: () -> Boolean,
+    /** v1.1.75 准备指纹解锁会话（Cipher+密文）；null = 指纹数据不可用（提示用密码解锁一次）。 */
+    onPrepareBiometricSession: () -> com.meshchat.app.security.lock.BiometricAuthSession?,
+    /** v1.1.75 指纹认证成功后用已授权会话解密 DEK。 */
+    onFinishBiometricUnlock: (com.meshchat.app.security.lock.BiometricAuthSession?) -> Boolean,
     onRemainingLockoutMs: () -> Long,
 ) {
     val context = LocalContext.current
@@ -92,6 +95,9 @@ fun AppLockScreen(
         }
     }
 
+    // v1.1.75 当前指纹解锁会话（Cipher 已绑定生物密钥）：认证成功回调用它解密 DEK
+    var activeSession by remember { mutableStateOf<com.meshchat.app.security.lock.BiometricAuthSession?>(null) }
+
     // v1.1.62 指纹认证改用系统 API：android.hardware.biometrics.BiometricPrompt（API 30+ 才公开 Builder）。
     // 原 androidx.biometric 兼容层在部分设备（华为/部分 ROM）点击 authenticate 抛异常 → 主线程崩溃卡退；
     // 系统 API 直接弹系统认证对话框、无 Fragment 依赖，且 authenticate 全链路 runCatching 兜底。
@@ -100,8 +106,8 @@ fun AppLockScreen(
     val biometricCallback = remember(context) {
         object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
-                // 认证成功 → keystore 已解锁生物密钥 → 解密 DEK（认证后解密，兼容认证前 init 被拒的 ROM）
-                if (!onFinishBiometricUnlock()) {
+                // v1.1.75 认证成功 → keystore 已授权生物密钥 → 用会话 cipher 解密 DEK（CryptoObject 必须非 null）
+                if (!onFinishBiometricUnlock(activeSession)) {
                     showBioError = true
                     com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证成功但 DEK 解密失败")
                 }
@@ -132,38 +138,47 @@ fun AppLockScreen(
     }
 
     // API 26/27/28/29（无公开系统 BiometricPrompt）兜底：androidx 兼容层（需 FragmentActivity 宿主）
+    val androidxCallback = remember(context) {
+        object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: androidx.biometric.BiometricPrompt.AuthenticationResult) {
+                if (!onFinishBiometricUnlock(activeSession)) showBioError = true
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                showBioError = true
+            }
+
+            override fun onAuthenticationFailed() {
+                showBioError = true
+            }
+        }
+    }
     val activity = context as? FragmentActivity
-    var androidxPrompt by remember { mutableStateOf<BiometricPrompt?>(null) }
+    var androidxPrompt by remember { mutableStateOf<androidx.biometric.BiometricPrompt?>(null) }
     LaunchedEffect(activity) {
         if (activity == null || Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) return@LaunchedEffect
-        androidxPrompt = BiometricPrompt(
+        androidxPrompt = androidx.biometric.BiometricPrompt(
             activity,
             ContextCompat.getMainExecutor(context),
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    if (!onFinishBiometricUnlock()) showBioError = true
-                }
-
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    showBioError = true
-                }
-
-                override fun onAuthenticationFailed() {
-                    showBioError = true
-                }
-            },
+            androidxCallback,
         )
     }
 
     fun unlockWithFingerprint() {
         showBioError = false
         error = null
+        // v1.1.75 必须携带 CryptoObject 认证：先准备会话（Cipher 已 init 解密模式并绑定生物密钥），
+        // 认证成功后 keystore 授权该 cipher，doFinal 解密 DEK 才不抛异常（原 null CryptoObject → 指纹永远无效）
+        val session = onPrepareBiometricSession()
+        if (session == null) {
+            error = "指纹数据不可用，请先用密码解锁一次（将自动重新录入指纹）"
+            return
+        }
+        activeSession = session
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && systemBiometricPrompt != null) {
             runCatching {
-                // API 29+ 统一四参签名：authenticate(CryptoObject, CancellationSignal, Executor, AuthenticationCallback)。
-                // CryptoObject 传 null（官方文档允许；Kotlin stub 标注 non-null 故用 null as 断言绕过）。
                 systemBiometricPrompt.authenticate(
-                    null as android.hardware.biometrics.BiometricPrompt.CryptoObject,
+                    android.hardware.biometrics.BiometricPrompt.CryptoObject(session.cipher),
                     android.os.CancellationSignal(),          // 不主动取消认证
                     ContextCompat.getMainExecutor(context),   // 回调线程
                     biometricCallback,
@@ -175,16 +190,30 @@ fun AppLockScreen(
             }
         } else {
             // API 26-29 兜底
-            val info = BiometricPrompt.PromptInfo.Builder()
+            val info = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
                 .setTitle("指纹解锁 MeshChat")
                 .setSubtitle("验证指纹以解锁应用")
                 .setNegativeButtonText("取消")
                 .build()
-            runCatching { androidxPrompt?.authenticate(info) }.onFailure { t ->
+            runCatching {
+                // 项目 androidx.biometric 为旧版 API：回调经构造器注入，这里只需 PromptInfo + CryptoObject
+                androidxPrompt?.authenticate(
+                    info,
+                    androidx.biometric.BiometricPrompt.CryptoObject(session.cipher),
+                )
+            }.onFailure { t ->
                 android.util.Log.e(TAG, "androidx biometric authenticate failed", t)
                 com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "androidx 指纹认证启动失败（${t.message ?: t.javaClass.simpleName}）")
                 error = "指纹认证启动失败（${t.message ?: t.javaClass.simpleName}），请用密码解锁"
             }
+        }
+    }
+
+    // v1.1.75 优先指纹：进入锁屏自动发起生物认证（无需点击），密码输入框仍可用作兜底
+    LaunchedEffect(Unit) {
+        if (biometricAvailable && onRemainingLockoutMs() <= 0L) {
+            delay(400)   // 等界面与系统认证 UI 就绪
+            unlockWithFingerprint()
         }
     }
 

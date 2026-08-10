@@ -97,8 +97,14 @@ class MeshChatViewModel(
     /** 密码解锁：正确返回 true 并解锁；错误递增失败计数。 */
     fun verifyLockPassword(password: String): Boolean = appLock.verifyPassword(password)
 
-    /** v1.1.59 指纹解锁：BiometricPrompt 认证成功回调里调用（认证后解密，兼容华为等 ROM）。 */
-    fun finishBiometricUnlockAfterAuth(): Boolean = appLock.finishBiometricUnlockAfterAuth()
+    /** v1.1.75 指纹解锁：准备认证会话（Cipher 绑定生物密钥）；null = 指纹数据不可用。 */
+    fun prepareBiometricSession(): com.meshchat.app.security.lock.BiometricAuthSession? =
+        appLock.prepareBiometricSession()
+
+    /** v1.1.75 指纹解锁：BiometricPrompt 认证成功回调里调用（认证后解密，兼容华为等 ROM）。 */
+    fun finishBiometricUnlockAfterAuth(
+        session: com.meshchat.app.security.lock.BiometricAuthSession? = null,
+    ): Boolean = appLock.finishBiometricUnlockAfterAuth(session)
 
     /** 剩余锁定毫秒数（>0 时禁用解锁并倒计时）。 */
     fun remainingLockoutMs(): Long = appLock.remainingLockoutMs()

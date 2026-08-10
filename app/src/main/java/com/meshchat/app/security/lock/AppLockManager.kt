@@ -109,24 +109,32 @@ class AppLockManager(private val context: Context) {
     }
 
     /**
-     * v1.1.59 指纹解锁（认证成功后解密）：BiometricPrompt 认证成功回调里调用。
+     * v1.1.75 指纹解锁（认证成功后解密）：BiometricPrompt 认证成功回调里调用。
      * 认证成功 → keystore 解锁生物密钥 → init + doFinal 必然成功。
      * 不依赖认证前 init（华为/部分 ROM 上 setUserAuthenticationRequired 密钥在认证前 init 会被拒 → 原方案"指纹不可用"）。
      * v1.1.63 自修复：blob 解密失败（新录指纹致旧生物密钥失效/旧 blob 不匹配）时，
      * 若内存已有 DEK（本会话曾密码解锁，DEK 锁定后保留）→ 用当前生物密钥重建指纹副本并解锁。
+     * v1.1.75 关键修复：指纹认证必须携带 CryptoObject（prepareBiometricSession 的 cipher）——
+     * keystore 生物密钥（setUserAuthenticationRequired）只有经 BiometricPrompt 认证后才被授权，
+     * 传 null CryptoObject 认证成功也无法解密（doFinal 抛 UserNotAuthenticatedException）→ 指纹"无效"。
      */
-    fun finishBiometricUnlockAfterAuth(): Boolean {
+    fun finishBiometricUnlockAfterAuth(session: BiometricAuthSession? = null): Boolean {
         if (isLockedOut()) return false
         val blob = prefs.getString(KEY_DEK_BY_BIO, null) ?: return false
-        val d = runCatching {
-            val raw = Base64.getDecoder().decode(blob)
-            val iv = raw.copyOfRange(0, LockCrypto.GCM_IV_BYTES)
-            val ct = raw.copyOfRange(LockCrypto.GCM_IV_BYTES, raw.size)
-            val key = biometricKey()
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
-            cipher.doFinal(ct)
-        }.getOrNull()
+        val d = if (session != null) {
+            runCatching { session.doFinal() }.getOrNull()
+        } else {
+            // 兼容旧调用/无会话兜底：直接解密（未授权时大概率失败 → 落自修复）
+            runCatching {
+                val raw = Base64.getDecoder().decode(blob)
+                val iv = raw.copyOfRange(0, LockCrypto.GCM_IV_BYTES)
+                val ct = raw.copyOfRange(LockCrypto.GCM_IV_BYTES, raw.size)
+                val key = biometricKey()
+                val cipher = Cipher.getInstance(TRANSFORMATION)
+                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
+                cipher.doFinal(ct)
+            }.getOrNull()
+        }
         if (d != null) {
             dek = d
             locked.value = false
@@ -144,6 +152,21 @@ class AppLockManager(private val context: Context) {
             true
         }.getOrDefault(false)
     }
+
+    /**
+     * v1.1.75 准备指纹解锁会话：读取指纹副本的 IV 并 init 解密模式 Cipher（绑定生物密钥）。
+     * 该 Cipher 必须作为 BiometricPrompt 的 CryptoObject 认证——认证成功后 doFinal 才被 keystore 授权。
+     * null = 无指纹副本/密钥失效（新录指纹未重建）/设备无生物识别 → UI 提示用密码解锁一次后自动重建。
+     */
+    fun prepareBiometricSession(): BiometricAuthSession? = runCatching {
+        val blob = prefs.getString(KEY_DEK_BY_BIO, null) ?: return null
+        val raw = Base64.getDecoder().decode(blob)
+        val iv = raw.copyOfRange(0, LockCrypto.GCM_IV_BYTES)
+        val ct = raw.copyOfRange(LockCrypto.GCM_IV_BYTES, raw.size)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, biometricKey(), GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
+        BiometricAuthSession(cipher, ct)
+    }.getOrNull()
 
     /** 移除密码（恢复无锁）：清空锁数据与 DEK（已加密的密钥库条目随之不可解——明文回退）。 */
     fun removePassword() {
@@ -251,3 +274,14 @@ data class LockoutState(
     val failCount: Int = 0,
     val lockoutUntilMs: Long = 0L,
 )
+
+/**
+ * v1.1.75 指纹解锁会话：Cipher 已绑定生物密钥并含 IV（解密模式），ct 为待解密密文。
+ * 认证成功（BiometricPrompt 携带 cipher 作为 CryptoObject）后调用 doFinal 完成解密。
+ */
+class BiometricAuthSession internal constructor(
+    val cipher: Cipher,
+    private val ct: ByteArray,
+) {
+    fun doFinal(): ByteArray = cipher.doFinal(ct)
+}

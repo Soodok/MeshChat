@@ -56,6 +56,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
                 biometricAvailable = viewModel.lockBiometricAvailable(),
                 lockout = lockout,
                 onVerifyPassword = viewModel::verifyLockPassword,
+                onPrepareBiometricSession = viewModel::prepareBiometricSession,   // v1.1.75 CryptoObject 指纹解锁
                 onFinishBiometricUnlock = viewModel::finishBiometricUnlockAfterAuth,
                 onRemainingLockoutMs = viewModel::remainingLockoutMs,
             )
