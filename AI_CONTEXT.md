@@ -41,6 +41,7 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **⚠️ 推送阻塞（2026-08-09，v1.1.75 提交未推送）**：`706b8e2`（v1.1.75 指纹解锁修复）已在本地 main，push 连续 3 次失败（443 无法连接 github.com，网络不可达）。**下一位 Agent 首要任务：`git push origin main` 补推**（远程 origin/main 停在 `505b3e5`，落后本地 1 个提交，无冲突风险）。APK `MeshChat-v1.1.75-debug.apk` 已在根目录。
 - **v1.1.75 指纹解锁修复（2026-08-09，用户"指纹解锁还是无效，要不直接调用系统应用锁？一般都是优先选择指纹解锁的"）**：**根因**——v1.1.62 改用系统 BiometricPrompt 时 `authenticate` 传 **`CryptoObject = null`**，而 DEK 指纹副本用 `setUserAuthenticationRequired(true)` 的生物密钥加密，AndroidKeyStore 要求此类密钥**必须经 BiometricPrompt+CryptoObject 认证后才被授权** → 认证"成功"但 keystore 从未解锁密钥 → doFinal 抛 UserNotAuthenticatedException → 解密失败 → 指纹永远无效。**修复**：
   - `AppLockManager` 新增 `prepareBiometricSession()`（读指纹副本 IV + init 解密模式 Cipher 绑定生物密钥）与 `BiometricAuthSession`（cipher+ct，认证后 doFinal）；`finishBiometricUnlockAfterAuth(session)` 优先用已授权会话解密，无会话兜底走原路径+自修复（内存 DEK 重建指纹副本）。
   - `AppLockScreen`：`unlockWithFingerprint()` 先 prepare 会话（null → 提示"请先用密码解锁一次"），认证时传 `CryptoObject(session.cipher)`（API 30+ 系统 API / API 26-29 androidx 旧版两参 `authenticate(PromptInfo, CryptoObject)`——回调经构造器注入）；**新增进入锁屏自动弹指纹**（LaunchedEffect 延迟 400ms，`biometricAvailable && 未锁定时`自动认证，密码框仍可兜底）。
