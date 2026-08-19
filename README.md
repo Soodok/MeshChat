@@ -55,15 +55,11 @@ Kotlin · Jetpack Compose · Room · Kotlin Coroutines · Android 8.0+ (API 26).
 
 ## 构建与运行 / Build & Run
 
-```bash
-./gradlew testDebugUnitTest   # 单元测试 / Unit tests
-./gradlew assembleRelease     # 正式包（R8 + 签名） / Release (R8 + signing)
-```
+正式版已就绪：`MeshChat-v1.2.0-release.apk` 可从 GitHub Releases 直接下载安装（需开启蓝牙；Android 11 及以下需开启系统定位）。
 
-- Android Studio 打开工程根目录运行 `app` 模块 / Open in Android Studio and run the `app` module.
-- 需要真机蓝牙（API 26+）；Android 11 及以下需开启系统位置服务 / Requires real-device Bluetooth (API 26+); Android 11 and below need the location service enabled.
-- 正式签名凭证在 `keystore.properties`（不入库），务必自行备份 / Signing credentials live in `keystore.properties` (not committed). Back them up.
-- Wi-Fi Direct 首次建组会弹系统确认框（Android Settings 进程弹出，应用无法绕过）/ First-time Wi-Fi Direct group creation shows a system confirmation dialog (owned by the Settings process; apps cannot bypass it).
+自行构建：Android Studio 打开工程根目录运行 `app` 模块即可（正式包需 `keystore.properties` 签名凭证，不入库，请自行备份）。
+
+Ready-to-install release: grab `MeshChat-v1.2.0-release.apk` from GitHub Releases (Bluetooth required; Android 11 and below need the location service enabled). To build yourself: open the project in Android Studio and run the `app` module (release signing needs `keystore.properties`, not committed — back it up).
 
 ## 作者 / Authors
 
