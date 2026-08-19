@@ -5,19 +5,19 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Language: Kotlin](https://img.shields.io/badge/Language-Kotlin-purple) ![Platform: Android 8.0+](https://img.shields.io/badge/Platform-Android%208.0%2B-blue) ![Version: v1.2.0](https://img.shields.io/badge/Version-v1.2.0-cyan) ![Tests: 221 passed](https://img.shields.io/badge/Tests-221%20passed-brightgreen) ![Encryption: E2EE](https://img.shields.io/badge/Encryption-E2EE%20(AES--256--GCM)-critical)
 
-## 免责声明 / Disclaimer
+## ⚠️ 免责声明 / Disclaimer
 
 > 本项目仅用于学习与合法的应急通信研究。开源代码可被任何个人或组织以任何方式复制、修改与使用，包括但不限于违法犯罪用途；作者对任何滥用、误用或由此产生的后果不承担任何责任。实测距离（空旷室内约 40 米、丛林野外约 20 米，测试机型蓝牙 5.1）因设备与环境而异，请以现场实测为准。端到端加密保护传输内容，但无法防御第一次连接就被劫持，高危场景请线下核对指纹。本项目不构成任何安全性承诺。
 >
 > For learning and legitimate emergency-communication research only. Code may be reused for any purpose, including illegal ones; no liability for misuse. Measured ranges (≈40 m indoors, ≈20 m in jungle; Bluetooth 5.1 test devices) vary by hardware and environment — verify on site. E2EE protects content but cannot stop hijacking on the very first connection; verify fingerprints offline for high-stakes scenarios. No security guarantee implied.
 
-## 项目简介 / About
+## 📡 项目简介 / About
 
 不依赖基站、Wi-Fi 或任何互联网，仅靠蓝牙就能在设备之间组成一张去中心化网络：互相发现、建立对话、收发消息和文件。没信号的地方也能聊。可选开启 Wi-Fi Direct 星域高速通道，与蓝牙双链路送达，消息更稳、文件更快。
 
 No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a decentralized mesh to find each other, chat, and exchange files — even where there is no signal. Optionally enable the Wi-Fi Direct fast channel for dual-path delivery: more reliable messaging, faster files.
 
-## 实测连接距离 / Measured Range
+## 📏 实测连接距离 / Measured Range
 
 **蓝牙 5.1 实测：空旷室内约 40 米，丛林野外约 20 米。**
 
@@ -25,7 +25,7 @@ No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a dec
 
 *Measured on Bluetooth 5.1 devices: ≈40 m indoors in open space, ≈20 m in jungle vegetation. TX power is adjustable across 4 levels to trade battery for range; out-of-range shows reconnecting/offline and reconnects automatically. When Bluetooth drops, the Wi-Fi Direct link on known peers takes over so messages still get through on both paths.*
 
-## 差异化能力 / What Makes It Different
+## ✨ 差异化能力 / What Makes It Different
 
 - **不连接也能通讯**：基于蓝牙广播收发消息，无需配对、无需稳定连接——连接只让通讯更快，不是前提
 - **去中心化自愈多跳**：每台设备都是路由器，隔一台设备也能送达，有人离开自动绕路
@@ -38,13 +38,13 @@ No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a dec
 
 *Broadcast-based messaging with no pairing or stable connection required. Every device is a router — multi-hop delivery that reroutes around gaps. E2EE (ECDH P-256 + AES-256-GCM) with per-conversation key fingerprints. Wi-Fi Direct mesh for dual-path delivery and fast file transfer; hybrid relaying (A-WiFi-B-BLE-C) keeps the mesh connected even when Bluetooth drops. Private channels invisible to public search. Blocking cuts every connection instantly. Messages are auto-retried until delivered. Emergency privacy wipe: tap the app title 6 times fast to erase all local data. App lock with password / fingerprint backed by AndroidKeyStore.*
 
-## 基础功能 / Also Included
+## 📦 基础功能 / Also Included
 
 聊天、文件传输、群聊、多跳中继、后台常驻、应用锁、拓扑图、调试中心、应用锁
 
 Chat, file transfer, group chat, background service, app lock, mesh topology, debug center, offline security audit — the essentials, all included.
 
-## 技术栈 / Tech Stack
+## 🛠️ 技术栈 / Tech Stack
 
 Kotlin · Jetpack Compose · Room · Kotlin 协程 · Android 8.0+（API 26）
 蓝牙 BLE（广播 / 扫描 / GATT 可靠通道）· Wi-Fi Direct（星域高速通道）· 多跳中继
@@ -53,7 +53,7 @@ Kotlin · Jetpack Compose · Room · Kotlin 协程 · Android 8.0+（API 26）
 
 Kotlin · Jetpack Compose · Room · Kotlin Coroutines · Android 8.0+ (API 26). BLE (advertise/scan/reliable GATT) · Wi-Fi Direct · multi-hop relay. E2EE: ECDH P-256 + AES-256-GCM · app lock backed by AndroidKeyStore. 221 unit tests; release builds are R8-minified and signed (≈1.5 MB).
 
-## 构建与运行 / Build & Run
+## 🚀 构建与运行 / Build & Run
 
 正式版已就绪：`MeshChat-v1.2.0-release.apk` 可从 GitHub Releases 直接下载安装（需开启蓝牙；Android 11 及以下需开启系统定位）。
 
@@ -61,14 +61,14 @@ Kotlin · Jetpack Compose · Room · Kotlin Coroutines · Android 8.0+ (API 26).
 
 Ready-to-install release: grab `MeshChat-v1.2.0-release.apk` from GitHub Releases (Bluetooth required; Android 11 and below need the location service enabled). To build yourself: open the project in Android Studio and run the `app` module (release signing needs `keystore.properties`, not committed — back it up).
 
-## 作者 / Authors
+## 👥 作者 / Authors
 
 - **Soodok** — 后端技术性功能：协议、路由、传输与加密（14 岁初中生 / a 14-year-old middle-school student）
 - **ide-chen** — 前端设计与界面交互 / frontend design & UI interaction
 
 开源开放，欢迎任何改进与批评。联系 QQ：1980380242 / Open source, feedback and pull requests welcome.
 
-## 许可 / License
+## 📄 许可 / License
 
 MIT License。本软件按"现状"提供，无任何明示或暗示担保。详见 `LICENSE`。
 Provided "as is", without warranty of any kind. See `LICENSE`.
