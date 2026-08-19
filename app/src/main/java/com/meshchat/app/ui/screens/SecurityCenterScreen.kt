@@ -80,7 +80,11 @@ fun SecurityCenterScreen(
 ) {
     LaunchedEffect(Unit) { onRefreshLocalSecurity() }
     val summary = SecurityCenterPresenter.summary(localSnapshot?.assessment)
-    val orderedStatuses = SecurityCapability.entries.mapNotNull { statuses[it] }
+    // v1.1.90 完善：只展示真实生效的能力（蓝牙/通知/完整性）；VPN 扫描与企业设备管理为本应用从未配置的
+    // 框架脚手架，永远显示"未配置"对用户是噪音 → 过滤不展示。
+    val orderedStatuses = SecurityCapability.entries
+        .filter { it != SecurityCapability.VPN_SCAN && it != SecurityCapability.ENTERPRISE_MANAGEMENT }
+        .mapNotNull { statuses[it] }
     var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
     // v1.1.83 设置密码成功后指纹副本缺失 → 自动弹"启用指纹"认证
     var pendingEnableFingerprint by remember { mutableStateOf(false) }
@@ -153,12 +157,9 @@ fun SecurityCenterScreen(
                             )
                         }
                         Text(
-                            if (hasLockPassword) {
-                                // v1.1.83 用真实指纹副本状态，避免"设备支持但未启用"误报
-                                if (lockFingerprintEnabled) "密码+指纹解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
-                                else if (lockBiometricAvailable) "密码解锁已启用（指纹未启用）：回前台自动锁定；可在解锁后自动提示或重新设置密码启用指纹。"
-                                else "密码解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
-                            } else "设置密码后：每次进入应用需密码/指纹解锁，会话/群密钥以最高强度加密存储，锁定期间通知不显示内容。",
+                            // v1.1.90 应用锁文案简化：不再区分指纹启用状态（配合解锁界面隐藏指纹提示的新交互）
+                            if (hasLockPassword) "已启用：每次进入应用需解锁，会话/群密钥以最高强度加密存储；回前台自动锁定，锁定期间通知不显示内容。"
+                            else "设置密码后：每次进入应用需解锁，会话/群密钥以最高强度加密存储，锁定期间通知不显示内容。",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                             modifier = Modifier.padding(top = 8.dp),

@@ -80,7 +80,12 @@ fun IdentityKeyScreen(
     var copied by rememberSaveable { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         DetailHeader(title = "身份", icon = Icons.Outlined.Key, onBack = onBack)
-        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())   // v1.1.90 内容可滚动，防小屏文字被遮挡
+                .padding(horizontal = 24.dp, vertical = 18.dp),
+        ) {
             Text("本机身份", style = MaterialTheme.typography.titleMedium)
             Text(
                 "短 ID 即本机在 Mesh 网络中的寻址标识，对端通过它向本机投递消息。",
@@ -200,7 +205,9 @@ fun GeneralSettingsScreen(
             .verticalScroll(rememberScrollState()),   // v1.1.59：内容超屏可滚动，修复被遮挡
     ) {
         DetailHeader(title = "通用设置", icon = Icons.Outlined.Settings, onBack = onBack)
-        Text("节点昵称", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+
+        // ---- v1.1.90 布局分组整理：按"身份 / 连接搜索 / 应用锁 / 星域通道"分组，每组带标题与分隔线 ----
+        SectionHeader("节点身份")
         OutlinedTextField(
             value = displayName,
             onValueChange = onDisplayNameChange,
@@ -215,7 +222,8 @@ fun GeneralSettingsScreen(
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
-        HorizontalDivider(color = Divider, modifier = Modifier.padding(top = 14.dp))
+
+        SectionHeader("连接与搜索")
         SettingsSwitchRow(
             title = "后台常驻",
             checked = backgroundEnabled,
@@ -240,9 +248,9 @@ fun GeneralSettingsScreen(
         )
 
         // ---- v1.1.58 应用锁 ----
-        HorizontalDivider(color = Divider, modifier = Modifier.padding(top = 14.dp))
+        SectionHeader("应用锁")
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Outlined.Lock, null, tint = Cyan, modifier = Modifier.size(20.dp))
@@ -253,15 +261,22 @@ fun GeneralSettingsScreen(
                     Modifier.size(8.dp).background(MeshGreen, androidx.compose.foundation.shape.CircleShape),
                 )
                 Text(
-                    if (lockBiometricAvailable) "已启用 · 密码+指纹" else "已启用",
+                    "已启用",
                     style = MaterialTheme.typography.bodySmall,
                     color = MeshGreen,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            } else {
+                Text(
+                    "未设置",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }
         Text(
-            "设密码后，会话/群密钥以最高强度加密存储；每次进入应用需密码或指纹解锁；连续 5 次密码错误将锁定 30 秒；锁定期间通知不显示内容。",
+            "设密码后，会话/群密钥以最高强度加密存储；每次进入应用需解锁；连续 5 次密码错误将锁定 30 秒；锁定期间通知不显示内容。",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
@@ -303,18 +318,20 @@ fun GeneralSettingsScreen(
         }
         LockAutomationWarning()
 
-        // ---- Beta v1.1.51：Wi-Fi Direct 增强（实验性，默认关）----
+        // ---- Beta v1.1.51：Wi-Fi Direct 增强（实验性，默认开——v1.1.87 用户决策常开）----
+        SectionHeader("星域通道")
         SettingsSwitchRow(
             title = "Wi-Fi Direct 增强",
             checked = wifiDirectEnabled,
             onCheckedChange = onWifiDirectEnabledChange,
         )
         Text(
-            "实验性：开启后自动与邻近设备建立 Wi-Fi Direct 星域——消息双通道送达、文件高速传输；关闭省电（默认关）。",
+            "实验性：开启后自动与邻近设备建立 Wi-Fi Direct 星域——消息双通道送达、文件高速传输；作为蓝牙不稳时的备份通道。",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
+        Spacer(Modifier.height(24.dp))
     }
 
     when (lockDialog) {
@@ -471,7 +488,12 @@ internal fun LockPasswordDialog(
 fun AboutScreen(onBack: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         DetailHeader(title = "关于 MeshChat", icon = Icons.Outlined.Info, onBack = onBack)
-        Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 22.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())   // v1.1.90 内容可滚动，防小屏文字被遮挡
+                .padding(horizontal = 24.dp, vertical = 22.dp),
+        ) {
             Text("MeshChat", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("离线近场安全通信", color = MeshGreen, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 6.dp))
             Text(
@@ -481,9 +503,31 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 28.dp),
             )
             HorizontalDivider(color = Divider, modifier = Modifier.padding(vertical = 24.dp))
-            Text("隐私与数据", style = MaterialTheme.typography.titleMedium)
+
+            // v1.1.90 关于页扩充：初衷 / 作者 / 技术栈 / 开源许可
+            Text("项目初衷", style = MaterialTheme.typography.titleMedium)
             Text(
-                "消息记录保存在本机。通信仅在附近设备间进行；请在共享设备上谨慎保留本地对话。",
+                "在基站瘫痪、公网中断或信号盲区的极端环境下，人与人之间最基础的沟通能力不能断。MeshChat 的初衷是：\n" +
+                    "· 不依赖任何中心化设施——没有基站、没有服务器、没有互联网也能互相通讯；\n" +
+                    "· 极端环境下优先可用——蓝牙广播即可传消息，连接只是加速手段，不是前提；\n" +
+                    "· 隐私是底线——消息端到端加密，记录只留本机，网络匿名、无账号体系。",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text("作者", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text(
+                "Soodok · 一个把\"离线也能聊\"当长期兴趣的开发者。开源开放，欢迎任何改进与批评。",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text("技术栈", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text(
+                "Kotlin · Jetpack Compose · Room · Kotlin 协程\n" +
+                    "蓝牙 BLE（广播/扫描/GATT 可靠通道）· Wi-Fi Direct（星域高速通道）\n" +
+                    "端到端加密：ECDH P-256 密钥协商 + AES-256-GCM\n" +
+                    "多跳中继 · 应用锁（AndroidKeyStore）· R8 混淆发布（约 1.9 MB）",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
@@ -500,6 +544,20 @@ fun AboutScreen(onBack: () -> Unit) {
                     .padding(top = 8.dp)
                     .clickable { uriHandler.openUri("https://github.com/Soodok/MeshChat") },
             )
+            Text("开源许可", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text(
+                "MIT License · 按\"现状\"提供，无任何明示或暗示担保。",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text("隐私与数据", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text(
+                "消息记录保存在本机。通信仅在附近设备间进行；请在共享设备上谨慎保留本地对话。",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
             Text("免责声明", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
             Text(
                 "开源项目可能被用于恶意用途。本项目仅用于学习与合法的应急通信研究，作者对任何滥用或误用不承担责任；使用者须确保其使用方式符合所在地区法律法规。",
@@ -507,6 +565,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
@@ -526,6 +585,19 @@ private fun DetailHeader(
         Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 12.dp))
     }
     HorizontalDivider(color = Divider)
+}
+
+/** v1.1.90 设置分组标题：组间分隔线 + 组名（青色小标题），让长设置页结构一目了然。 */
+@Composable
+private fun SectionHeader(text: String) {
+    HorizontalDivider(color = Divider, modifier = Modifier.padding(top = 8.dp))
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        color = Cyan,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+    )
 }
 
 @Composable
@@ -567,5 +639,4 @@ private fun SettingsSwitchRow(title: String, checked: Boolean, onCheckedChange: 
             ),
         )
     }
-    HorizontalDivider(color = Divider, modifier = Modifier.padding(start = 24.dp))
 }

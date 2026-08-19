@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.89（versionCode 151，构建时间 2026-08-19）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.90（versionCode 152，构建时间 2026-08-19）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -41,6 +41,14 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **v1.1.90 界面改良 5 项（2026-08-19，用户：①解锁界面不再提示指纹注册/状况 ②安全中心完善 ③通用设置分组整理 ④设置页可滚动防小屏遮盖 ⑤关于页加作者/初衷/技术栈）**：
+  - **① 解锁界面简化（AppLockScreen.kt）**：移除"指纹解锁" OutlinedButton 与"未检测到可用指纹"长提示；副标题动态——有指纹 `"正在验证指纹… 也可直接输入密码解锁"`、无指纹 `"输入密码解锁"`；自动弹指纹逻辑（LaunchedEffect 优先指纹，密码输入框兜底）保留；失败提示精简为"指纹验证未通过，请使用密码解锁"。
+  - **② 安全中心完善（SecurityCenterScreen.kt）**：应用锁状态文案简化——右侧显示"已启用/未设置"（不再区分指纹启用态）；`orderedStatuses` 过滤 `VPN_SCAN` 与 `ENTERPRISE_MANAGEMENT`（个人版框架脚手架能力，永不配置，移除噪音卡片）。
+  - **③ 通用设置分组（ProfileDetailScreens.kt）**：新增 `SectionHeader` composable（青色组标题+分隔线），`GeneralSettingsScreen` 重排为四分组「节点身份 / 连接与搜索 / 应用锁 / 星域通道」；`SettingsSwitchRow` 移除行末分隔线。
+  - **④ 设置页滚动**：`IdentityKeyScreen` 与 `AboutScreen` 内容 Column 补 `.fillMaxSize().verticalScroll(rememberScrollState())`，防小屏文字被遮挡（GeneralSettings 自 v1.1.59 已可滚动）。
+  - **⑤ 关于页扩充（AboutScreen.kt）**：新增 项目初衷（极端环境沟通不断/不依赖中心化/隐私底线）// 作者（Soodok）// 技术栈（Kotlin·Compose·Room·BLE·WFD·ECDH P-256+AES-256-GCM·多跳中继·AndroidKeyStore·R8）// 开源许可（MIT）// 版本。中文引号需转义（`\"离线也能聊\"`）。
+  - **验证**：`assembleDebug + testDebugUnitTest + lintDebug` 全通过（lint 0 errors / 41 warnings）；单测 **221/221**；versionCode 152 / versionName 1.1.90；APK `MeshChat-v1.1.90-debug.apk` 已装 emulator-5554；uiautomator dump 实测通用设置页四分组全部生效、页面可滚动、滚到底可见"星域通道"组。
+  - **下一步首要任务（真机收尾，同 v1.1.89）**：① 双机装 v1.1.90 验证 WFD 建组弹窗 + 混合链 A-WiFi-B-BLE-C + 文件走 WFD；② 关蓝牙 5s 看门狗自动启用 WFD + 消息双链路；③ Android 8.0/8.1 真机冒烟（v1.1.89 修复的 4 个 API 26-28 崩溃点）；④ R8 release 包真机回归（serialization 混淆风险，上架前必测）。
 - **v1.1.89 完结前全源码审计（2026-08-19，用户：推送 + 完结准备 + 审计权限/多机型适配/Android 8.0+ 兼容）**：
   - **🔴 致命（已修复并实测验证）**：Manifest `<service android:name=".MeshChatService">` 解析为 `com.meshchat.app.MeshChatService`，实际类在 `com.meshchat.app.mesh.service.MeshChatService` → **前台服务从未注册**（模拟器日志铁证 `Unable to start service ... not found`）——`startMesh()` 的 `startForegroundService` 在 Android 8-13 直接抛 ServiceNotFoundException 崩溃、"后台常驻/息屏收发"整个功能从未生效。修复：Manifest 改 `.mesh.service.MeshChatService`；`startMesh` 加 runCatching 兜底（失败降级直跑不崩溃）。**实测（Android 36 模拟器）：ServiceRecord 注册成功、持久通知"MeshChat 运行中"(id=1001, meshchat_service, FOREGROUND_SERVICE) 上线、无 FATAL**。
   - **🟠 API 26-28 崩溃点（Error 类不被 runCatching 捕获，全部已修）**：① WifiDirectTransport `requestDeviceInfo` 仅 API 29+（原无门控 → API 26-28 NoSuchMethodError 崩溃），改 Q+ 门控跳过；② AppLockScreen 框架 `BiometricPrompt.AuthenticationCallback` 仅 API 28+，原在 Compose 首帧无条件实例化 → API 26/27 NoClassDefFoundError，改 R+ 才创建（26-29 走 androidx 兼容层）；③ AppLockManager `canAuthenticate(int)`+`BIOMETRIC_STRONG` 仅 API 30+，原 Q+ 门控在 API 29 崩溃，门控提到 R；④ DebugCenterScreen `MediaStore.Downloads.EXTERNAL_CONTENT_URI` 仅 API 29+，低版本改公共 Downloads 目录直写。

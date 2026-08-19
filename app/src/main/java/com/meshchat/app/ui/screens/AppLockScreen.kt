@@ -19,14 +19,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -282,7 +280,8 @@ fun AppLockScreen(
             modifier = Modifier.padding(top = 20.dp),
         )
         Text(
-            "输入密码或使用指纹解锁",
+            // v1.1.90 解锁界面简化：不再提示指纹注册/指纹状况；有指纹自动弹验证，仅保留密码入口与简短失败提示
+            if (biometricAvailable) "正在验证指纹… 也可直接输入密码解锁" else "输入密码解锁",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
             modifier = Modifier.padding(top = 8.dp),
@@ -327,30 +326,12 @@ fun AppLockScreen(
             ) {
                 Text("解锁")
             }
-            if (biometricAvailable) {
-                OutlinedButton(
-                    onClick = { unlockWithFingerprint() },
-                    enabled = lockoutRemaining.longValue <= 0L,
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan),
-                ) {
-                    Icon(Icons.Outlined.Fingerprint, null, tint = Cyan, modifier = Modifier.size(20.dp))
-                    Text("指纹解锁", modifier = Modifier.padding(start = 8.dp))
-                }
-                if (showBioError) {
-                    Text(
-                        "指纹验证未通过，请重试或使用密码",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MeshAmber,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                }
-            } else {
+            if (showBioError) {
                 Text(
-                    "未检测到可用的指纹：设备未录入指纹或系统不支持，请用密码解锁（可在系统设置中录入指纹后重试）",
+                    "指纹验证未通过，请使用密码解锁",
                     style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    color = MeshAmber,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
             }
             Spacer(Modifier.height(16.dp))
