@@ -30,19 +30,17 @@ No base station, Wi-Fi, or internet required. Just Bluetooth. Devices form a dec
 - **不连接也能通讯**：基于蓝牙广播收发消息，无需配对、无需稳定连接——连接只让通讯更快，不是前提
 - **去中心化自愈多跳**：每台设备都是路由器，隔一台设备也能送达，有人离开自动绕路
 - **端到端加密**：ECDH P-256 密钥协商 + AES-256-GCM，消息出手机前加密；每个对话显示对方公钥指纹
-- **Wi-Fi Direct 星域高速通道**：与邻近设备自动成组，消息/回执/心跳双链路并行送达（按帧 ID 去重），文件块优先走高速通道
+- **Wi-Fi Direct 高速通道**：与邻近设备自动成组，消息/回执/心跳双链路并行送达（按帧 ID 去重），文件块优先走高速通道
 - **混合组网**：蓝牙失联时经 Wi-Fi Direct 发布，中继设备靠蓝牙继续传递——A-WiFi-B-BLE-C 双向回传，大型现场多组靠蓝牙互通
 - **私人频道**：自定义频道名组一个「只有我们」的空间，不参与公共搜索
-- **彻底拉黑**：拉黑 / 删除对话 / 换频道，立即断开全部连接，对方再也看不到你
 - **消息必达**：广播丢包、切后台、息屏都不怕，自动重发确认直到对方收到
-- **隐私逃生**：被威胁时快速连点应用标题 6 下，一键清除全部本地数据并退出（首次进入会告知该机制）
-- **应用锁**：密码 / 指纹解锁，会话与群密钥以 AndroidKeyStore 最高强度加密存储，回前台自动锁定
+- **隐私**：被威胁时快速连点应用标题 6 下，一键清除全部本地数据并退出（首次进入会告知该机制）
 
 *Broadcast-based messaging with no pairing or stable connection required. Every device is a router — multi-hop delivery that reroutes around gaps. E2EE (ECDH P-256 + AES-256-GCM) with per-conversation key fingerprints. Wi-Fi Direct mesh for dual-path delivery and fast file transfer; hybrid relaying (A-WiFi-B-BLE-C) keeps the mesh connected even when Bluetooth drops. Private channels invisible to public search. Blocking cuts every connection instantly. Messages are auto-retried until delivered. Emergency privacy wipe: tap the app title 6 times fast to erase all local data. App lock with password / fingerprint backed by AndroidKeyStore.*
 
 ## 基础功能 / Also Included
 
-聊天、文件传输、群聊、多跳中继、后台常驻、应用锁、拓扑图、调试中心、离线安全评估——该有的都有，不啰嗦。
+聊天、文件传输、群聊、多跳中继、后台常驻、应用锁、拓扑图、调试中心、应用锁
 
 Chat, file transfer, group chat, background service, app lock, mesh topology, debug center, offline security audit — the essentials, all included.
 
