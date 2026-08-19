@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.91（versionCode 153，构建时间 2026-08-19）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.2.0（versionCode 154，构建时间 2026-08-19）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -41,6 +41,11 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **v1.2.0 版本号跃升 + release 正式包（2026-08-19，用户："版本提到 1.2，测试一下，我开梯子了"）**：
+  - versionCode 154 / versionName **1.2.0**（自 v1.1.91 跃升，主版本进 1.2 里程碑）；README 徽章同步 v1.2.0。
+  - **验证**：`assembleDebug + testDebugUnitTest + lintDebug + assembleRelease` 全过——单测 **221/221**、lint 0 errors、R8 release `MeshChat-v1.2.0-release.apk`（**1,958,433 B ≈ 1.96MB**），apksigner verify v2 true / 1 signer。
+  - **推送**：v1.1.91（1444dbe）+ v1.2.0 一起 push（用户开梯子后 GitHub 可达）。
+  - **下一步首要任务（真机收尾）**：① 双机装 v1.2.0 验证 WFD 建组弹窗 + 混合链 A-WiFi-B-BLE-C + 文件走 WFD；② 关蓝牙 5s 看门狗自动启用 WFD + 消息双链路；③ **R8 release 包真机回归**（serialization 混淆风险，上架前必测）；④ Android 8.0/8.1 真机冒烟；⑤ 连点标题 6 下清数据真机验证。
 - **v1.1.91 开源收尾：UI 三项 + 隐私逃生 + 昵称输入修复 + release 正式包（2026-08-19，用户：①关于页去技术栈/双作者/加 QQ ②"我的"页滚动 ③通用设置重组：星域并入连接搜索、应用锁移入安全中心 ④隐私小巧思：标题连点 6 下清数据退出 + 首次弹窗告知 ⑤昵称修改失效修复 + 拒空名/限16字/确认键 + 确认后收键盘 ⑥"我的"页顶显名称）**：
   - **关于页（ProfileDetailScreens.kt）**：删除"技术栈"块；作者改双人——Soodok（14 岁初中生，后端：协议/路由/传输/加密）+ ide-chen（前端设计与界面交互）；新增"联系方式"项 QQ：1980380242。
   - **"我的"页滚动（ProfileScreen.kt）**：Column 补 `fillMaxSize().verticalScroll(...)`，防小屏遮挡；新增 `displayName` 参数，顶部固定"我"字样替换为本机昵称（副标题"本机身份"保留）。

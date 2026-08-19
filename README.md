@@ -3,7 +3,7 @@
 > 面向**无公网 / 弱网极端环境**的近场安全通信 Android 应用
 > A near-field secure-communication Android app for **offline / weak-network** environments.
 
-![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Language: Kotlin](https://img.shields.io/badge/Language-Kotlin-purple) ![Platform: Android 8.0+](https://img.shields.io/badge/Platform-Android%208.0%2B-blue) ![Version: v1.1.91](https://img.shields.io/badge/Version-v1.1.91-cyan) ![Tests: 221 passed](https://img.shields.io/badge/Tests-221%20passed-brightgreen) ![Encryption: E2EE](https://img.shields.io/badge/Encryption-E2EE%20(AES--256--GCM)-critical)
+![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Language: Kotlin](https://img.shields.io/badge/Language-Kotlin-purple) ![Platform: Android 8.0+](https://img.shields.io/badge/Platform-Android%208.0%2B-blue) ![Version: v1.2.0](https://img.shields.io/badge/Version-v1.2.0-cyan) ![Tests: 221 passed](https://img.shields.io/badge/Tests-221%20passed-brightgreen) ![Encryption: E2EE](https://img.shields.io/badge/Encryption-E2EE%20(AES--256--GCM)-critical)
 
 ## 免责声明 / Disclaimer
 
