@@ -9,6 +9,7 @@ import com.meshchat.app.mesh.protocol.PresenceBody
 import com.meshchat.app.mesh.routing.DedupCache
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.InMemoryMeshStore
+import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.StoredMessage
 import com.meshchat.app.mesh.transport.InMemoryTransport
 import com.meshchat.app.mesh.transport.MeshTransport
@@ -72,5 +73,28 @@ class MeshRepositoryTest {
         assertEquals("老王", c.name)
         assertEquals("在线心跳应标记绿色", PeerPresence.ONLINE, c.presence)
         assertEquals(Reachability.REACHABLE, c.reachability)
+    }
+
+    @Test
+    fun `file message bubble size parsed from numeric fileMeta`() = runTest {
+        // v1.1.86：fileMeta 的 "size" 是 JSON 数字（fileMetaJson 写入），旧实现按 Map<String,String> 解码必抛
+        // 类型不匹配 → 整段解析失败回退空表 → 气泡大小恒显 0B（仅活动传输的进度覆盖能显示真值）。
+        val store = InMemoryMeshStore()
+        store.insertMessage(
+            StoredMessage(
+                id = "f1", convId = "conv-OTHER", kind = "FILE",
+                srcId = "OTHER", dstId = "ME", text = "a.jpg",
+                fileMeta = """{"fileName":"a.jpg","mime":"image/jpeg","size":123456,"downloadsUri":""}""",
+                ts = 1_000, status = MessageStatus.DELIVERED,
+            ),
+        )
+        val repo = MeshRepositoryImpl(
+            MeshService(transport = CountingTransport(), store = store, identity = LocalIdentity("ME"), dedup = DedupCache()),
+            store,
+        )
+        val msg = repo.observeMessages("conv-OTHER").first().first()
+        assertEquals("fileMeta 数字 size 应解析为真实大小", 123456L, msg.file?.size)
+        assertEquals("a.jpg", msg.file?.fileName)
+        assertTrue("已送达文件应标记 done（可点击打开）", msg.file?.done == true)
     }
 }

@@ -327,7 +327,7 @@ class FileTransferManagerTest {
     }
 
     @Test
-    fun `file chunks go through broadcast not injected sendFrame`() = runTest {
+    fun `file chunks go through injected sendFrame - v1-1-84 fast channel first`() = runTest {
         val transport = CountingTransport()
         val sentVia = mutableListOf<Pair<String, MeshFrame>>()
         val manager = FileTransferManager(
@@ -337,14 +337,14 @@ class FileTransferManagerTest {
         )
         val bytes = randomBytes(File3.CHUNK_BYTES * 8)
         val fileId = manager.sendFile("conv-B", "B", { ByteArrayInputStream(bytes) }, "f.bin", "application/octet-stream", bytes.size.toLong())!!
-        // 数据块走 broadcast（CountingTransport 记录到 frames，v1.1.31 起无确认写改确认写 broadcast）：8 块 + START 帧
+        // v1.1.84：数据块优先走注入 sendFrame（Wi-Fi Direct/RFCOMM 高速通道），BLE broadcast 仅无连接兜底
         var guard = 0
-        while (fileChunks(transport.frames).size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
-        assertTrue("首窗 8 块应经 broadcast 到达", fileChunks(transport.frames).size >= 8)
-        assertTrue("START 元数据帧应经 broadcast 发出", transport.frames.any {
-            File3.isFile3(it.payload) && File3.parse(it.payload) is File3.Frame.StartFrame
+        while (fileChunks(sentVia.map { it.second }).size < 8 && guard++ < 100) kotlinx.coroutines.delay(20)
+        assertTrue("首窗 8 块应经 sendFrame 发出", fileChunks(sentVia.map { it.second }).size >= 8)
+        assertTrue("START 元数据帧应经 sendFrame 发出", sentVia.any {
+            File3.isFile3(it.second.payload) && File3.parse(it.second.payload) is File3.Frame.StartFrame
         })
-        assertEquals("数据块不得走注入 sendFrame（仅 ACK 通道）", 0, sentVia.size)
+        assertEquals("数据块不得回退 BLE broadcast", 0, fileChunks(transport.frames).size)
         // 全部窗口完成后停发
         while (manager.progress.value?.status != TransferStatus.DONE && guard++ < 200) {
             manager.onFileAck(ack(fileId, 8, emptyList()))
@@ -514,6 +514,25 @@ class FileTransferManagerTest {
         manager.onFile3Frame(File3.encodeStart("A", fid, 1, data.size.toLong(), false, "ghost.bin", "application/octet-stream"))
         assertEquals("补 START 后应收齐 DONE", TransferStatus.DONE, manager.progress.value?.status)
         assertTrue("收齐后应回最终 ACK（missing 空）", ackBodies(transport.frames).any { it.missing.isEmpty() })
+    }
+
+    @Test
+    fun `start after chunks corrects progress total bytes to real size`() = runTest {
+        // v1.1.86：块先到（START 晚到/重发）时会话以 size=0 建起并已发出 0B 进度，START 补元数据后必须
+        // 立即刷新进度纠正 totalBytes——否则 MeshChatViewModel 按 fileId 把气泡元数据覆盖成 0B。
+        val transport = CountingTransport()
+        val manager = FileTransferManager(
+            transport = transport, shortId = "B",
+            saver = FakeSaver(kotlin.io.path.createTempDirectory("sizeB").toFile()),
+            scope = backgroundScope, windowTimeoutMs = 200, maxWindowRetries = 5,
+        )
+        val fid = "12345678-1234-1234-1234-123456789014"
+        val data = randomBytes(File3.CHUNK_BYTES)
+        manager.onFile3Frame(File3.encodeChunk("A", fid, 0, 0L, data))
+        assertEquals("元数据未到前进度总字节为 0（气泡占位 0B）", 0L, manager.progress.value?.totalBytes)
+        manager.onFile3Frame(File3.encodeStart("A", fid, 1, data.size.toLong(), false, "size.bin", "application/octet-stream"))
+        assertEquals("START 补元数据后进度总字节应纠正为真实大小", data.size.toLong(), manager.progress.value?.totalBytes)
+        assertEquals("收齐应 DONE", TransferStatus.DONE, manager.progress.value?.status)
     }
 
     @Test

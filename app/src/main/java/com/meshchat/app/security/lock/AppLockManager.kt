@@ -41,10 +41,20 @@ class AppLockManager(private val context: Context) {
     private val _passwordEnabled = MutableStateFlow(hasPassword)
     val passwordEnabled: StateFlow<Boolean> = _passwordEnabled.asStateFlow()
 
+    /** v1.1.83 指纹版 DEK 副本是否存在（响应式，设置页显示"密码+指纹已启用"；存在才是真启用了指纹）。 */
+    private val _fingerprintEnabled = MutableStateFlow(hasFingerprintBlob)
+    val fingerprintEnabled: StateFlow<Boolean> = _fingerprintEnabled.asStateFlow()
+
+    /** 指纹版 DEK 副本是否缺失（缺失时 UI 应提示启用指纹）。 */
+    val biometricBlobMissing: Boolean get() = !hasFingerprintBlob
+
     /** 解锁后持有的数据密钥（内存；未设密码时为 null——密钥库保持明文）。 */
     @Volatile private var dek: ByteArray? = null
 
     val hasPassword: Boolean get() = prefs.contains(KEY_DEK_BY_PWD)
+
+    /** 指纹版 DEK 副本是否存在（指纹解锁可用性的真实判据）。 */
+    val hasFingerprintBlob: Boolean get() = prefs.contains(KEY_DEK_BY_BIO)
 
     /** 设备是否支持生物识别（指纹/面容）——供 UI 显示指纹按钮。 */
     fun biometricAvailable(): Boolean = runCatching {
@@ -61,14 +71,18 @@ class AppLockManager(private val context: Context) {
     /** 当前数据密钥（解锁后可用；未设密码 = null）。 */
     fun dek(): ByteArray? = dek
 
-    /** 设置/重置密码：生成新 DEK，同时写密码版与指纹版两份密文。 */
+    /**
+     * 设置/重置密码：生成新 DEK，同时写密码版与指纹版两份密文。
+     * v1.1.83 指纹版依赖 keystore：部分 ROM/模拟器（keystore2）对 setUserAuthenticationRequired 密钥连加密也要求认证 token，
+     * 直接加密失败则指纹副本留空 → UI 应随后通过 BiometricPrompt 认证（finishBiometricEnrollAfterAuth）补写。
+     */
     fun setPassword(password: String) {
         if (password.length < 4) throw IllegalArgumentException("密码至少 4 位")
         val newDek = LockCrypto.randomDek()
         val salt = ByteArray(LockCrypto.SALT_BYTES).also { SecureRandom().nextBytes(it) }
         val kek = LockCrypto.deriveKek(password, salt)
         val blobByPwd = LockCrypto.encryptDek(kek, newDek)
-        val blobByBio = runCatching { encryptWithBiometricKey(newDek) }.getOrNull()   // 无生物识别/设备锁屏 → 指纹副本为空，密码解锁时补写
+        val blobByBio = runCatching { encryptWithBiometricKey(newDek) }.getOrNull()   // 无生物识别/设备锁屏/加密需认证 → 指纹副本为空，由 UI 认证后补写
         prefs.edit()
             .putString(KEY_SALT, Base64.getEncoder().encodeToString(salt))
             .putString(KEY_DEK_BY_PWD, blobByPwd)
@@ -78,7 +92,8 @@ class AppLockManager(private val context: Context) {
         locked.value = false
         clearLockout()
         _passwordEnabled.value = true
-        Log.i(TAG, "app lock password set (DEK rotated)")
+        _fingerprintEnabled.value = blobByBio != null
+        Log.i(TAG, "app lock password set (DEK rotated, fingerprintBlob=${blobByBio != null})")
     }
 
     /** 修改密码：验证旧密码后仅重写密码版（DEK 不变 → 密钥库无需迁移）。 */
@@ -103,7 +118,8 @@ class AppLockManager(private val context: Context) {
         dek = d
         locked.value = false
         clearLockout()
-        // 密码解锁成功即刷新指纹副本：修复 ① 设密码时设备锁屏致指纹副本为空 ② 新录入指纹致旧生物密钥失效
+        // 密码解锁成功即刷新指纹副本：修复 ① 设密码时设备锁屏致指纹副本为空 ② 新录入指纹致旧生物密钥失效。
+        // 真机（加密无需认证）自动补写成功；keystore2 强制认证的设备由 UI 在解锁后弹"启用指纹"认证补写。
         refreshBiometricBlob(d)
         return true
     }
@@ -117,23 +133,38 @@ class AppLockManager(private val context: Context) {
      * v1.1.75 关键修复：指纹认证必须携带 CryptoObject（prepareBiometricSession 的 cipher）——
      * keystore 生物密钥（setUserAuthenticationRequired）只有经 BiometricPrompt 认证后才被授权，
      * 传 null CryptoObject 认证成功也无法解密（doFinal 抛 UserNotAuthenticatedException）→ 指纹"无效"。
+     * v1.1.82 参考官方（android/security-samples）：优先使用认证结果 result.cryptoObject.cipher 直接 doFinal——
+     * 该 cipher 就是 prepareBiometricSession 的会话 cipher（同一实例），但经认证结果取回不依赖 UI 状态捕获，
+     * 回调时序/Compose 重组下更可靠。
      */
-    fun finishBiometricUnlockAfterAuth(session: BiometricAuthSession? = null): Boolean {
+    fun finishBiometricUnlockAfterAuth(
+        session: BiometricAuthSession? = null,
+        authenticatedCipher: Cipher? = null,
+    ): Boolean {
         if (isLockedOut()) return false
         val blob = prefs.getString(KEY_DEK_BY_BIO, null) ?: return false
-        val d = if (session != null) {
-            runCatching { session.doFinal() }.getOrNull()
-        } else {
-            // 兼容旧调用/无会话兜底：直接解密（未授权时大概率失败 → 落自修复）
-            runCatching {
+        val d = when {
+            // v1.1.82 认证结果携带的 cipher（已用 blob IV init 解密模式，认证后 doFinal 被 keystore 授权）
+            authenticatedCipher != null -> runCatching {
                 val raw = Base64.getDecoder().decode(blob)
-                val iv = raw.copyOfRange(0, LockCrypto.GCM_IV_BYTES)
                 val ct = raw.copyOfRange(LockCrypto.GCM_IV_BYTES, raw.size)
-                val key = biometricKey()
-                val cipher = Cipher.getInstance(TRANSFORMATION)
-                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
-                cipher.doFinal(ct)
+                authenticatedCipher.doFinal(ct)
             }.getOrNull()
+            session != null -> {
+                runCatching { session.doFinal() }.getOrNull()
+            }
+            else -> {
+                // 兼容旧调用/无会话兜底：直接解密（未授权时大概率失败 → 落自修复）
+                runCatching {
+                    val raw = Base64.getDecoder().decode(blob)
+                    val iv = raw.copyOfRange(0, LockCrypto.GCM_IV_BYTES)
+                    val ct = raw.copyOfRange(LockCrypto.GCM_IV_BYTES, raw.size)
+                    val key = biometricKey()
+                    val cipher = Cipher.getInstance(TRANSFORMATION)
+                    cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(LockCrypto.GCM_TAG_BITS, iv))
+                    cipher.doFinal(ct)
+                }.getOrNull()
+            }
         }
         if (d != null) {
             dek = d
@@ -168,6 +199,41 @@ class AppLockManager(private val context: Context) {
         BiometricAuthSession(cipher, ct)
     }.getOrNull()
 
+    /**
+     * v1.1.83 准备"启用指纹"会话：ENCRYPT_MODE init 绑定生物密钥（init 无需认证 token）。
+     * 该 Cipher 必须作为 BiometricPrompt 的 CryptoObject 认证——认证成功后 doFinal 加密 DEK 才被 keystore 授权
+     * （官方 android/security-samples 标准：keystore2 上 setUserAuthenticationRequired 密钥连加密也要认证 token，
+     * 模拟器/部分 ROM 直接加密必报 KEY_USER_NOT_AUTHENTICATED → 指纹副本永远建不起来）。
+     * null = 无生物识别 / 无内存 DEK。
+     */
+    fun prepareBiometricEnrollSession(): BiometricEnrollSession? = runCatching {
+        if (!biometricAvailable()) return null
+        if (dek == null) return null
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, biometricKey())
+        BiometricEnrollSession(cipher)
+    }.getOrNull()
+
+    /**
+     * v1.1.83 指纹认证成功后补写指纹副本：用已授权 cipher（认证结果携带，优先）加密内存 DEK 存 KEY_DEK_BY_BIO。
+     * 覆盖设密码时指纹副本为空的设备（模拟器 keystore2 / 部分 ROM）。返回是否成功。
+     */
+    fun finishBiometricEnrollAfterAuth(
+        session: BiometricEnrollSession? = null,
+        authenticatedCipher: Cipher? = null,
+    ): Boolean {
+        val d = dek ?: return false
+        val cipher = authenticatedCipher ?: session?.cipher ?: return false
+        return runCatching {
+            val ct = cipher.doFinal(d)
+            val blob = Base64.getEncoder().encodeToString(cipher.iv + ct)
+            prefs.edit().putString(KEY_DEK_BY_BIO, blob).apply()
+            _fingerprintEnabled.value = true
+            Log.i(TAG, "fingerprint blob enrolled after auth")
+            true
+        }.getOrDefault(false)
+    }
+
     /** 移除密码（恢复无锁）：清空锁数据与 DEK（已加密的密钥库条目随之不可解——明文回退）。 */
     fun removePassword() {
         prefs.edit().remove(KEY_SALT).remove(KEY_DEK_BY_PWD).remove(KEY_DEK_BY_BIO).apply()
@@ -175,6 +241,7 @@ class AppLockManager(private val context: Context) {
         locked.value = false
         clearLockout()
         _passwordEnabled.value = false
+        _fingerprintEnabled.value = false
     }
 
     /** 锁定 UI（回前台/手动）：DEK 保留内存，后台服务继续工作。 */
@@ -235,13 +302,18 @@ class AppLockManager(private val context: Context) {
         }.generateKey()
     }
 
-    /** 密码解锁成功后刷新指纹副本（设备此刻必处于解锁状态——能输 App 密码）。 */
-    private fun refreshBiometricBlob(dek: ByteArray) {
-        if (!biometricAvailable()) return
-        runCatching {
+    /** 密码解锁成功后刷新指纹副本（设备此刻必处于解锁状态——能输 App 密码）。v1.1.83 返回是否成功并同步状态。 */
+    private fun refreshBiometricBlob(dek: ByteArray): Boolean {
+        if (!biometricAvailable()) return false
+        return runCatching {
             val newBlob = encryptWithBiometricKey(dek)
             prefs.edit().putString(KEY_DEK_BY_BIO, newBlob).apply()
-        }.onFailure { Log.w(TAG, "refresh biometric blob failed", it) }
+            _fingerprintEnabled.value = true
+            true
+        }.getOrElse {
+            Log.w(TAG, "refresh biometric blob failed", it)
+            false
+        }
     }
 
     private fun encryptWithBiometricKey(dek: ByteArray): String {
@@ -285,3 +357,11 @@ class BiometricAuthSession internal constructor(
 ) {
     fun doFinal(): ByteArray = cipher.doFinal(ct)
 }
+
+/**
+ * v1.1.83 启用指纹会话：Cipher 已绑定生物密钥（加密模式，init 无需认证）。
+ * 认证成功（BiometricPrompt 携带 cipher 作为 CryptoObject）后，由 finishBiometricEnrollAfterAuth 用其加密 DEK 存指纹副本。
+ */
+class BiometricEnrollSession internal constructor(
+    val cipher: Cipher,
+)

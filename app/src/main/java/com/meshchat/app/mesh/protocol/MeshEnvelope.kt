@@ -64,7 +64,21 @@ data class PresenceBody(
     val relays: List<String> = emptyList(),
     /** 心跳序列号（v1.1.16）：每次 PING 递增，接收端按缺口统计收包成功率/丢包率（协议层信号强度，不依赖系统 RSSI）；0 = 老版本未携带。 */
     val seq: Int = 0,
+    /** v1.1.80 中继链路健康：与 relays 对齐，每项 = 本机距最后一次收到该邻居心跳的毫秒数（0 = 未知）。
+     *  对端据此实时感知中继链路段新鲜度/延迟——B-C 断时 A 立即从"经 B 可达"降为"重连中"，不等 30s 路由过期。 */
+    val relayAges: List<Long> = emptyList(),
+    /** v1.1.80 往返延迟测量：PONG 回带所回应 PING 信封的 ts；发送方收到后 rtt ≈ now - pingTs（0 = 老版本/未知）。 */
+    val pingTs: Long = 0,
 ) : EnvelopeBody
+
+/**
+ * v1.1.79 拉黑通知：拉黑方广播该帧告知对方"你已被我拉黑"。
+ * 对方收到后解除会话 + 清除本机密钥指纹记录 + 断开连接（变回陌生节点），但不互拉黑（尊重"仅单向拒绝"语义）。
+ * 明文控制帧（同 INVITE），无敏感载荷。
+ */
+@Serializable
+@SerialName("BLOCK")
+data class BlockBody(val reason: String = "") : EnvelopeBody
 
 @Serializable
 @SerialName("GROUP")

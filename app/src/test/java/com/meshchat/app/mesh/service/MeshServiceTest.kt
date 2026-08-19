@@ -3,6 +3,7 @@ package com.meshchat.app.mesh.service
 import com.meshchat.app.mesh.channel.ChannelFingerprint
 import com.meshchat.app.mesh.crypto.MeshCrypto
 import com.meshchat.app.mesh.identity.LocalIdentity
+import com.meshchat.app.mesh.protocol.BlockBody
 import com.meshchat.app.mesh.protocol.EnvelopeBody
 import com.meshchat.app.mesh.protocol.File3
 import com.meshchat.app.mesh.protocol.FileBody
@@ -21,6 +22,7 @@ import com.meshchat.app.mesh.storage.StoredMessage
 import com.meshchat.app.mesh.transfer.FileSaver
 import com.meshchat.app.mesh.transport.DiscoveryMode
 import com.meshchat.app.mesh.transport.InMemoryTransport
+import com.meshchat.app.mesh.transport.LinkState
 import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.MeshTransport
 import com.meshchat.app.mesh.transport.PeerPresence
@@ -327,7 +329,7 @@ class MeshServiceTest {
     }
 
     @Test
-    fun `file chunks go through writeUnreliable even when rfcomm connected`() = runTest {
+    fun `file chunks go through rfcomm sendTo when connected - v1-1-84 fast channel first`() = runTest {
         val identity = LocalIdentity(shortId = "ME")
         val transport = CountingTransport()
         val store = InMemoryMeshStore()
@@ -345,13 +347,95 @@ class MeshServiceTest {
             rfcomm = rfcomm,
         )
         service.sendFile("conv-OTHER", "OTHER", { java.io.ByteArrayInputStream(ByteArray(100) { 1 }) }, "f.txt", "text/plain", 100)
-        // v1.1.28：文件数据块统一走 writeUnreliable（无确认写）且为 FILE3 二进制帧（MC3 魔数），不再经 rfcomm/sendFrame。
+        // v1.1.84：文件数据块优先走高速通道（rfcomm sendTo），BLE broadcast 仅无连接兜底。
         // MeshService 内部 scope 为 Dispatchers.Default（真实节流）→ 用真实等待而非测试虚拟时钟
         var guard = 0
         fun isFile3(frame: MeshFrame) = File3.isFile3(frame.payload)
-        while (transport.frames.none(::isFile3) && guard++ < 100) Thread.sleep(20)
-        assertTrue("文件块应经 writeUnreliable 发出（FILE3 帧）", transport.frames.any(::isFile3))
-        assertEquals("数据块不再走 rfcomm sendTo", 0, rfcommSent.size)
+        while (rfcommSent.none { isFile3(it.second) } && guard++ < 100) Thread.sleep(20)
+        assertTrue("文件块应经 rfcomm sendTo 发出（高速通道优先）", rfcommSent.any { isFile3(it.second) })
+        assertEquals("BLE 兜底不应发文件块", 0, transport.frames.count { isFile3(it) })
+        service.stop()
+    }
+
+    @Test
+    fun `text dual-sent over wfd tcp and ble when wfd connected - v1-1-87`() = runTest {
+        // v1.1.87 消息双链路（用户：双链路送达保证高效稳定）：TEXT 在 WFD 已连时并行经 TCP 单发，
+        // BLE 泛洪照旧——任一链路到达即送达，蓝牙不稳时消息仍经 WFD 到达。
+        val transport = CountingTransport()
+        val store = InMemoryMeshStore()
+        val wfdSent = mutableListOf<Pair<String, MeshFrame>>()
+        val wfd = object : WfdChannel {
+            override val incoming = MutableSharedFlow<MeshFrame>()
+            override val foundPeers = MutableSharedFlow<MeshPeerInfo>()
+            override fun isConnectedTo(peerId: String) = peerId == "OTHER"
+            override fun sendTo(peerId: String, frame: MeshFrame) { wfdSent.add(peerId to frame) }
+            override fun members() = setOf("OTHER")
+        }
+        val service = MeshService(
+            transport = transport, store = store, identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+            wfd = wfd,
+        )
+        service.seedSessionKeyForTesting("OTHER")
+        service.sendText("conv-OTHER", "OTHER", "hello dual")
+        assertTrue("BLE 泛洪照旧：TEXT 应仍在 broadcast", dataKinds(transport.frames).contains("TEXT"))
+        assertTrue("WFD 已连时 TEXT 应并行经 TCP 单发", wfdSent.any { it.first == "OTHER" && dataKinds(listOf(it.second)).contains("TEXT") })
+        // 心跳双链路：PING 并行发给 WFD 已连成员
+        service.broadcastPing()
+        assertTrue("PING 应并行发给 WFD 成员", wfdSent.any { dataKinds(listOf(it.second)).contains("PING") })
+        service.stop()
+    }
+
+    @Test
+    fun `text not dual-sent when wfd not connected - v1-1-87`() = runTest {
+        // WFD 未建连（无 TCP）：TEXT 仅走 BLE 泛洪兜底，不产生 wfd.sendTo
+        val transport = CountingTransport()
+        val wfdSent = mutableListOf<Pair<String, MeshFrame>>()
+        val wfd = object : WfdChannel {
+            override val incoming = MutableSharedFlow<MeshFrame>()
+            override val foundPeers = MutableSharedFlow<MeshPeerInfo>()
+            override fun isConnectedTo(peerId: String) = false
+            override fun sendTo(peerId: String, frame: MeshFrame) { wfdSent.add(peerId to frame) }
+            override fun members() = emptySet<String>()
+        }
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+            wfd = wfd,
+        )
+        service.seedSessionKeyForTesting("OTHER")
+        service.sendText("conv-OTHER", "OTHER", "hello single")
+        assertTrue("BLE 泛洪仍应发出", dataKinds(transport.frames).contains("TEXT"))
+        assertEquals("WFD 未连时不应单发", 0, wfdSent.size)
+        service.stop()
+    }
+
+    @Test
+    fun `relay forward dual-sent to wfd member - v1-1-88`() = runTest {
+        // v1.1.88 混合链 A-WiFi-B-BLE-C 反向闭环：中继节点 B 收到 C→A 的 TEXT，A 是 B 的 WFD 组成员 →
+        // 转发应并行经 WFD TCP 单发 A（BLE 泛洪照旧）——A 蓝牙断开/在 BLE 覆盖外仍能经 WFD 收到。
+        val transport = CountingTransport()
+        val wfdSent = mutableListOf<Pair<String, MeshFrame>>()
+        val wfd = object : WfdChannel {
+            override val incoming = MutableSharedFlow<MeshFrame>()
+            override val foundPeers = MutableSharedFlow<MeshPeerInfo>()
+            override fun isConnectedTo(peerId: String) = peerId == "A"
+            override fun sendTo(peerId: String, frame: MeshFrame) { wfdSent.add(peerId to frame) }
+            override fun members() = setOf("A")
+        }
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "B"), dedup = DedupCache(),
+            wfd = wfd,
+        )
+        // 中继节点 B：C 发给 A 的 TEXT（A 是本机 WFD 组成员）→ 转发双路
+        service.handleFrame(textFrame("t1", "C", "A", "hi"))
+        Thread.sleep(300)   // 等 BLE 转发抖动 50-250ms（WFD 单发同步执行，不等）
+        assertTrue(
+            "中继转发应并行经 WFD 单发到成员 A",
+            wfdSent.any { it.first == "A" && dataKinds(listOf(it.second)).contains("TEXT") },
+        )
+        assertTrue(
+            "BLE 泛洪转发照旧（A 之外更远节点仍可达）",
+            transport.frames.any { runCatching { MeshJson.decodeEnvelope(it.payloadText) }.getOrNull()?.dstId == "A" },
+        )
         service.stop()
     }
 
@@ -522,23 +606,28 @@ class MeshServiceTest {
     }
 
     @Test
-    fun `heartbeat pings at most every 500ms`() {
+    fun `heartbeat speeds up to 50ms when no online peer and relaxes to 1500ms when online`() {
+        // v1.1.81 动态心跳：无在线节点（GATT 连不上）→ 50ms 高频尝试恢复；有在线节点（GATT 保活畅通）→ 1.5s 低频省信道
         val transport = CountingTransport()
         val service = MeshService(
             transport = transport, store = InMemoryMeshStore(), identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
         )
         val t0 = System.currentTimeMillis()
-        service.sendPingIfDue(t0)                    // 首帧
-        service.sendPingIfDue(t0 + 200)
-        service.sendPingIfDue(t0 + 400)
-        assertEquals(1, dataKinds(transport.frames).count { it == "PING" })
-        service.sendPingIfDue(t0 + 500)              // 满 500ms → 第二帧（v1.1.56 默认心跳 500ms）
-        assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
-        service.sendPingIfDue(t0 + 600)
-        service.sendPingIfDue(t0 + 800)
-        assertEquals(2, dataKinds(transport.frames).count { it == "PING" })
-        service.sendPingIfDue(t0 + 1_000)            // 距上次 500ms → 第三帧
-        assertEquals(3, dataKinds(transport.frames).count { it == "PING" })
+        val pingCount = { dataKinds(transport.frames).count { it == "PING" } }
+        // 无在线节点：全失联 → 50ms 高频（首帧 + 60ms + 120ms）
+        service.sendPingIfDue(t0)
+        service.sendPingIfDue(t0 + 60)
+        service.sendPingIfDue(t0 + 120)
+        assertEquals("全失联应 50ms 高频心跳", 3, pingCount())
+        service.sendPingIfDue(t0 + 130)   // 距上次 10ms < 50ms → 节流
+        assertEquals("50ms 内节流", 3, pingCount())
+        // 有在线节点（B 心跳）→ 动态回到低频 1.5s
+        service.handleFrame(pingFrame("B", "老王"))
+        transport.frames.clear()
+        service.sendPingIfDue(t0 + 200)   // 距上次(lastPingAt=t0+120) 80ms < 1.5s → 不发
+        assertTrue("在线时 1.5s 内不应发 PING", transport.frames.isEmpty())
+        service.sendPingIfDue(t0 + 1_700) // 距上次 ~1.58s ≥ 1.5s → 发
+        assertTrue("在线时 1.5s 后应发 PING", transport.frames.isNotEmpty())
     }
 
     @Test
@@ -1002,8 +1091,8 @@ class MeshServiceTest {
         service.handleFrame(pingFrame("B", "老王"))
         val t0 = System.currentTimeMillis()
         service.sendPingIfDue(t0)          // PING #1
-        service.sendPingIfDue(t0 + 1_000)  // PING #2
-        service.sendPingIfDue(t0 + 2_000)  // PING #3 → 携带 relays
+        service.sendPingIfDue(t0 + 1_500)  // PING #2（v1.1.81 默认心跳 1.5s；在线时低频）
+        service.sendPingIfDue(t0 + 3_000)  // PING #3 → 携带 relays
         val pings = transport.frames
             .filter { it.type == FrameType.DATA }
             .map { MeshJson.decodeEnvelope(it.payloadText) }
@@ -1040,6 +1129,156 @@ class MeshServiceTest {
         // 中继 B 心跳超时（> OFFLINE_THRESHOLD_MS=15s）→ 经它的路由移除
         service.heartbeatTick(t0 + 20_000)
         assertTrue("中继失联后路由应过期", service.peers.value.none { it.shortId == "C" })
+    }
+
+    // ===== v1.1.80 中继链路健康（B-C 断 → A 实时降级显示）+ 直连边学习 =====
+
+    @Test
+    fun `relay link degrades when relay drops peer from relays`() {
+        // A(=ME) 经 B 中继到 C：B 把 C 移出新鲜邻居列表（B-C 断）→ A 立即降级"重连中"，不等 30s 路由过期
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("C")))
+        val c0 = service.peers.value.firstOrNull { it.shortId == "C" }
+        assertEquals("B-C 通 → C 经 B 可达", PeerPresence.ONLINE, c0?.presence)
+        assertEquals("B", c0?.relayVia)
+        // B 再次携带 relays（非空）但不含 C → C 被移出 B 新鲜邻居 → 立即降级
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("D")))
+        val c1 = service.peers.value.firstOrNull { it.shortId == "C" }
+        assertEquals("B-C 断应立即降级为重连中", PeerPresence.RECONNECTING, c1?.presence)
+        assertEquals("降级后仍保留中继路径信息", "B", c1?.relayVia)
+        // C 重新出现在 B 的 relays → 恢复"经 B 可达"
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("C")))
+        val c2 = service.peers.value.firstOrNull { it.shortId == "C" }
+        assertEquals("B-C 恢复应回到可达", PeerPresence.ONLINE, c2?.presence)
+    }
+
+    @Test
+    fun `relay age beyond freshness marks route degraded immediately`() {
+        // 老版本对端无 relayAges（空 → 全 0 默认新鲜）；新版本上报大 age（B 距最后见 C 已超 5s）→ 直接降级
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val now = System.currentTimeMillis()
+        val stalePing = MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(
+                MeshEnvelope(
+                    id = UUID.randomUUID().toString(), kind = "PING",
+                    srcId = "B", dstId = "", convId = "conv-B",
+                    ttl = 8, ts = now, body = PresenceBody(displayName = "老王", relays = listOf("C"), relayAges = listOf(8_000L)),
+                ),
+            ).toByteArray(),
+        )
+        service.handleFrame(stalePing)
+        val c = service.peers.value.firstOrNull { it.shortId == "C" }
+        assertEquals("B 上报 C 心跳年龄 >5s → 立即显示重连中", PeerPresence.RECONNECTING, c?.presence)
+        assertEquals("链路段年龄透出到 UI", 8_000L, c?.relayAgeMs)
+    }
+
+    @Test
+    fun `direct links learned from peer ping relays`() {
+        // 中继节点 B 需要知道 A-C 是否真实直连：从各节点 PING 携带的 relays（其一跳邻居）学习
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        // A(=ME 不在 relays) ... 实际场景：B 同时广播看到 C（B 的邻居），且 C 也广播看到 B → 学到 B-C 直连边
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("C")))
+        assertTrue("应学到 B-C 直连边", service.links.value.any { setOf(it.a, it.b) == setOf("B", "C") })
+        // 对称：C 也把 B 当一跳邻居 → 边状态保持 DIRECT
+        service.handleFrame(pingFrame("C", "小C", relays = listOf("B")))
+        val link = service.links.value.first { setOf(it.a, it.b) == setOf("B", "C") }
+        assertEquals(LinkState.DIRECT, link.state)
+    }
+
+    @Test
+    fun `direct link turns reconnecting when unconfirmed then expires`() {
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val t0 = System.currentTimeMillis()
+        service.handleFrame(pingFrame("B", "老王", relays = listOf("C")))
+        assertEquals(LinkState.DIRECT, service.links.value.first { setOf(it.a, it.b) == setOf("B", "C") }.state)
+        // 超 RELAY_LINK_FRESH_MS(5s) 未再确认 → 黄（重连中）
+        service.heartbeatTick(t0 + 6_000)
+        assertEquals(LinkState.RECONNECTING, service.links.value.first { setOf(it.a, it.b) == setOf("B", "C") }.state)
+        // 超 LINK_RECONNECT_WINDOW_MS(20s) → 移除（无连接）
+        service.heartbeatTick(t0 + 22_000)
+        assertTrue("长期未确认的直连边应移除", service.links.value.none { setOf(it.a, it.b) == setOf("B", "C") })
+    }
+
+    @Test
+    fun `ping relays carry relay ages aligned`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(pingFrame("B", "老王"))  // B 成为本机一跳新鲜邻居
+        val t0 = System.currentTimeMillis()
+        service.sendPingIfDue(t0)          // PING #1
+        service.sendPingIfDue(t0 + 1_500)  // PING #2（v1.1.81 默认心跳 1.5s）
+        service.sendPingIfDue(t0 + 3_000)  // PING #3 → 携带 relays + relayAges
+        val pings = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+            .filter { it.kind == "PING" && it.srcId == "ME" }
+        val third = pings[2].body as PresenceBody
+        assertEquals(listOf("B"), third.relays)
+        assertEquals("relayAges 与 relays 等长对齐", third.relays.size, third.relayAges.size)
+        assertTrue("B 的心跳年龄应为非负值", third.relayAges[0] >= 0)
+    }
+
+    @Test
+    fun `pong echoes ping timestamp enabling RTT`() {
+        val transport = CountingTransport()
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        val ping = MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(
+                MeshEnvelope(
+                    id = "ping1", kind = "PING",
+                    srcId = "B", dstId = "", convId = "conv-B",
+                    ttl = 8, ts = 12345L, body = PresenceBody(displayName = "老王"),
+                ),
+            ).toByteArray(),
+        )
+        service.handleFrame(ping)
+        val pongEnv = transport.frames
+            .filter { it.type == FrameType.DATA }
+            .map { MeshJson.decodeEnvelope(it.payloadText) }
+            .last { it.kind == "PONG" }
+        assertEquals("PONG 应回带所回应 PING 的 ts", 12345L, (pongEnv.body as PresenceBody).pingTs)
+    }
+
+    @Test
+    fun `pong pingTs computes peer rtt shown in peers flow`() {
+        val service = MeshService(
+            transport = CountingTransport(), store = InMemoryMeshStore(),
+            identity = LocalIdentity(shortId = "ME"), dedup = DedupCache(),
+        )
+        service.handleFrame(pingFrame("B", "老王"))  // B 成为直连节点
+        val t0 = System.currentTimeMillis()
+        val pong = MeshFrame(
+            FrameType.DATA,
+            MeshJson.encodeEnvelope(
+                MeshEnvelope(
+                    id = "pong1", kind = "PONG", srcId = "B", dstId = "ME", convId = "conv-ME",
+                    ttl = 8, ts = t0, body = PresenceBody(displayName = "老王", pingTs = t0 - 123),
+                ),
+            ).toByteArray(),
+        )
+        service.handleFrame(pong)
+        val b = service.peers.value.firstOrNull { it.shortId == "B" }
+        assertTrue("rtt 应约等于 123ms（含处理延迟，容忍上界）", b?.rttMs?.let { it in 123..2_000 } == true)
     }
 
     @Test
@@ -1167,9 +1406,10 @@ class MeshServiceTest {
     }
 
     @Test
-    fun `heartbeat pings continue in all discovery modes`() {
-        // v1.1.53（用户最终设计）：所有模式都发 PING——broadcast 只走 GATT 写/notify（与 advertise 无关），
-        // 静默/关闭扫描下保活已建立连接正是"继续连接联系人、关系人经保活感知在线"所需
+    fun `heartbeat pings in NORMAL and SILENT but not when offline CLOSED`() {
+        // v1.1.77（用户设想"关闭蓝牙 = 向所有用户放弃连接，跟普通离线一样"）：
+        // CLOSED 彻底离线——心跳 PING 停发（不产生任何蓝牙活动）；NORMAL/SILENT 照常保活。
+        // v1.1.53 的"所有模式保活 PING"仅保留于 NORMAL/SILENT（静默模式可连接联系人需保活）。
         val identity = LocalIdentity(shortId = "ME")
         val transport = CountingTransport()
         val service = MeshService(
@@ -1183,11 +1423,14 @@ class MeshServiceTest {
 
         service.sendPingIfDue(t0)                       // NORMAL：发 PING
         assertEquals("NORMAL 应发心跳", 1, pingCount())
-        service.setDiscoveryMode(DiscoveryMode.CLOSED)  // 全停（autoDiscovery=关）但保活
+        service.setDiscoveryMode(DiscoveryMode.CLOSED)  // 彻底离线：不发心跳
         service.sendPingIfDue(t0 + 1_000)
-        assertEquals("CLOSED 保留连接保活", 2, pingCount())
-        service.setDiscoveryMode(DiscoveryMode.SILENT)  // 静默只停广播，保活照常
+        assertEquals("CLOSED 离线不应发心跳", 1, pingCount())
+        service.setDiscoveryMode(DiscoveryMode.NORMAL)  // 恢复在线：心跳补发
         service.sendPingIfDue(t0 + 2_000)
+        assertEquals("恢复 NORMAL 应补发心跳", 2, pingCount())
+        service.setDiscoveryMode(DiscoveryMode.SILENT)  // 静默只停广播，保活照常
+        service.sendPingIfDue(t0 + 3_000)
         assertEquals("SILENT 保留连接保活", 3, pingCount())
         service.stop()
     }
@@ -1735,6 +1978,7 @@ class MeshServiceTest {
         private val map = mutableMapOf<String, String>()
         override fun fingerprint(peerId: String): String? = map[peerId]
         override fun saveFingerprint(peerId: String, fp: String) { map[peerId] = fp }
+        override fun remove(peerId: String) { map.remove(peerId) }
     }
 
     @Test
@@ -1770,7 +2014,9 @@ class MeshServiceTest {
     }
 
     @Test
-    fun `changed peer key fingerprint flags identity change (possible MITM)`() {
+    fun `changed peer key fingerprint is accepted as re-handshake not MITM`() {
+        // v1.1.78（用户修订）：密钥不同 = 默认曾经未发现过，重新建立连接确立新密钥——
+        // 覆盖 TOFU 记录为新指纹、不标记 peerKeyChanged（不再判 MITM 红色告警），对话记录按短 ID 保留。
         val keyStore = MemoryPeerKeyStore()
         val service = MeshService(
             transport = CountingTransport(), store = InMemoryMeshStore(),
@@ -1780,12 +2026,12 @@ class MeshServiceTest {
         val firstPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
         service.handleFrame(inviteWithKey("A", "B", firstPubB64))
         assertTrue("首次握手不应标记身份变更", "A" !in service.peerKeyChanged.value)
-        // 对方公钥更换（重启/重装或被中间人劫持）→ 指纹不一致 → 标记身份变更告警
+        // 对方公钥更换（重启/重装/降级路径）→ 视为重新握手：覆盖指纹记录 + 不告警
         val secondPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
         assertFalse("测试前提：两次公钥指纹必须不同", MeshCrypto.fingerprint(firstPubB64) == MeshCrypto.fingerprint(secondPubB64))
         service.handleFrame(inviteWithKey("A", "B", secondPubB64))
-        assertTrue("指纹变化应标记身份变更（可能 MITM）", "A" in service.peerKeyChanged.value)
-        assertEquals("记录保留首次指纹供人工比对", MeshCrypto.fingerprint(firstPubB64), service.peerFingerprint("A"))
+        assertTrue("新密钥应被接受（不标记身份变更）", "A" !in service.peerKeyChanged.value)
+        assertEquals("TOFU 记录应覆盖为新指纹", MeshCrypto.fingerprint(secondPubB64), service.peerFingerprint("A"))
         service.stop()
     }
 
@@ -1936,6 +2182,52 @@ class MeshServiceTest {
         service.blockPeer("B")
         service.unblockPeer("B")
         assertEquals("解除拉黑同步过滤集合", emptySet<String>(), transport.lastBlockedPeers)
+        service.stop()
+    }
+
+    // ===== v1.1.79 拉黑通知（BLOCK 帧）=====
+
+    @Test
+    fun `blockPeer broadcasts BLOCK notice to peer`() = runTest {
+        val identity = LocalIdentity(shortId = "ME")
+        val transport = CountingTransport()
+        val service = MeshService(transport = transport, store = InMemoryMeshStore(), identity = identity, dedup = DedupCache())
+        service.start()
+        service.blockPeer("B")
+        val env = MeshJson.decodeEnvelope(transport.frames.last { it.type == FrameType.DATA }.payloadText)
+        assertEquals("拉黑时应广播 BLOCK 通知帧", "BLOCK", env.kind)
+        assertEquals("通知帧源 = 拉黑方", "ME", env.srcId)
+        assertEquals("通知帧目标 = 被拉黑方", "B", env.dstId)
+        service.stop()
+    }
+
+    @Test
+    fun `receiving BLOCK clears session and fingerprint and disconnects peer`() = runTest {
+        val keyStore = MemoryPeerKeyStore()
+        val transport = InMemoryTransport()
+        val identity = LocalIdentity(shortId = "B")
+        val service = MeshService(
+            transport = transport, store = InMemoryMeshStore(), identity = identity,
+            dedup = DedupCache(), peerKeyStore = keyStore,
+        )
+        service.start()
+        // 先建立会话 + 记录对端指纹（INVITE + ACK 两步握手）
+        val aPubB64 = MeshCrypto.publicKeyB64(MeshCrypto.generateKeyPair())
+        service.handleFrame(inviteWithKey("A", "B", aPubB64))
+        service.handleFrame(ackWithKey("A", "B", aPubB64))
+        assertTrue("测试前提：A 在会话中", "A" in service.sessions.value)
+        assertEquals("测试前提：已记录 A 指纹", MeshCrypto.fingerprint(aPubB64), service.peerFingerprint("A"))
+        // A 发来 BLOCK 通知 → B 解除会话 + 清指纹 + 断连，变回陌生节点（不互拉黑）
+        val blockEnv = MeshEnvelope(
+            id = UUID.randomUUID().toString(), kind = "BLOCK",
+            srcId = "A", dstId = "B", convId = "", ttl = 3, ts = 0,
+            body = BlockBody(reason = "blocked"),
+        )
+        service.handleFrame(MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(blockEnv).toByteArray()))
+        assertFalse("收到 BLOCK 后解除会话", "A" in service.sessions.value)
+        assertNull("收到 BLOCK 后清除密钥指纹", service.peerFingerprint("A"))
+        assertEquals("收到 BLOCK 后断开连接", "A", transport.lastDisconnectedPeer)
+        assertEquals("对方拉黑不应反向拉黑对方", emptySet<String>(), service.blockedPeers.value)
         service.stop()
     }
 

@@ -47,8 +47,10 @@ class FileTransferManager(
     private val tmpDirProvider: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
     private val onProgress: (FileProgress) -> Unit = {},
     private val onSaved: (convId: String, fileId: String, fileName: String, mime: String, size: Long, uri: String?) -> Unit = { _, _, _, _, _, _ -> },
-    /** 文件帧发送通道：RFCOMM 连接时走 sendTo，否则回退 broadcast（由 MeshService 注入）。 */
+    /** 文件帧发送通道：Wi-Fi Direct/RFCOMM 连接时走 sendTo，否则回退 broadcast（由 MeshService 注入）。 */
     private val sendFrame: (dstId: String, frame: MeshFrame) -> Unit = { _, frame -> transport.broadcast(frame) },
+    /** v1.1.84 链路存活判据（任一高速通道/BLE 已连即可；默认仅 BLE，由 MeshService 注入扩展）。 */
+    private val isConnectedTo: (String) -> Boolean = { transport.isConnectedTo(it) },
     /** 调试统计内核（透传 MeshService 注入）。 */
     private val debugStats: com.meshchat.app.mesh.debug.DebugStats = com.meshchat.app.mesh.debug.DebugStats(),
 ) {
@@ -295,8 +297,9 @@ class FileTransferManager(
                 val stallRoundLimit = (stallTimeoutMs / windowTimeoutMs).coerceAtLeast(2)
                 var retries = 0
                 while (true) {
-                    // v1.1.38：重试无上限（零容错），仅链路断开才停止——对端 GATT 连接已断则不再硬撑重发
-                    if (!transport.isConnectedTo(s.dstId)) {
+                    // v1.1.38：重试无上限（零容错），仅链路断开才停止——对端连接已断则不再硬撑重发
+                    // v1.1.84：判据扩展到任一高速通道（Wi-Fi Direct/RFCOMM），文件走高速通道时不再因 BLE 断开误中止
+                    if (!isConnectedTo(s.dstId)) {
                         Log.w(TAG, "link to ${s.dstId} disconnected, abort ${s.fileId} at window [$windowStart..${s.expectEnd}]")
                         DebugLogBuffer.log(TAG, "send ABORT link disconnected dst=${s.dstId}")
                         finish(s, TransferStatus.FAILED)
@@ -441,6 +444,7 @@ class FileTransferManager(
      * START 元数据帧（v1.1.28）：文件名/mime/原始大小/压缩标志/总块数。每窗口重发保证到达（幂等）。
      * v1.1.31 起走确认写 broadcast：模拟器+真机复现 WRITE_NO_RESPONSE 无确认写返回 true 但被蓝牙栈
      * 静默丢弃（不回调无法感知失败），文件帧全丢、接收端 0 块——文件帧回退确认写（与心跳同路径，可靠）。
+     * v1.1.84 优先高速通道单发（Wi-Fi Direct TCP/RFCOMM），无连接回退 BLE 广播（中继仍可达）。
      */
     private fun broadcastStart3(s: SendSession) {
         val payload = File3.encodeStart(
@@ -449,20 +453,21 @@ class FileTransferManager(
         )
         val frame = MeshFrame(FrameType.DATA, payload)
         debugStats.recordSent(FrameKind.FILE_CHUNK, payload.size)
-        transport.broadcast(frame)
+        sendFrame(s.dstId, frame)
     }
 
     /**
      * 数据块帧（v1.1.28 FILE3 二进制；v1.1.36 v2：头带 byteOffset，接收端按字节偏移写盘，块大小可动态）。
      * v1.1.31 起走确认写 broadcast：无确认写（WRITE_NO_RESPONSE）在 Android 蓝牙栈静默丢帧
      * （返回 true 但实际未送达、无回调），文件帧回退确认写保证可靠；丢帧仍由窗口重传兜底。
+     * v1.1.84 优先高速通道单发（Wi-Fi Direct TCP/RFCOMM），无连接回退 BLE 广播（中继仍可达）。
      * 老版本对端 decode MC3 帧失败自动丢帧。
      */
     private fun broadcastChunk3(s: SendSession, seq: Int, data: ByteArray) {
         val payload = File3.encodeChunk(shortId, s.fileId, seq, seq * s.chunkBytes.toLong(), data)
         val frame = MeshFrame(FrameType.DATA, payload)
         debugStats.recordSent(FrameKind.FILE_CHUNK, payload.size)
-        transport.broadcast(frame)
+        sendFrame(s.dstId, frame)
     }
 
     private fun updateProgress(s: SendSession, status: TransferStatus) {
@@ -586,6 +591,9 @@ class FileTransferManager(
         session.size = start.origSize
         session.totalChunks = start.totalChunks
         session.compressed = start.compressed
+        // v1.1.86 START 补元数据后立即刷新进度：块先到（START 晚到/重发）时会话以 size=0 建起并已发出 0B 进度，
+        // 元数据补齐后必须立刻纠正，否则进度覆盖会把气泡大小显示成 0B（MeshChatViewModel 按 fileId 覆盖气泡元数据）
+        updateReceiveProgress(session, TransferStatus.RUNNING)
         // 块已先到齐（START 乱序/重发）：补上元数据即可收尾
         if (session.isComplete) completeReceive(session)
     }

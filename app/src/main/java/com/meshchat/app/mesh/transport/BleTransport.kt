@@ -234,9 +234,7 @@ class BleTransport(
 
     override fun start() {
         Log.d(TAG, "start: shortId=$advertiseShortId")
-        runCatching { registerServer() }
-            .onSuccess { Log.d(TAG, "gatt server registered") }
-            .onFailure { Log.e(TAG, "registerServer failed: $it") }
+        ensureGattServer()
         runCatching { startAdvertising() }
             .onSuccess { Log.d(TAG, "advertising started") }
             .onFailure { Log.e(TAG, "startAdvertising failed: $it") }
@@ -322,8 +320,10 @@ class BleTransport(
 
     /**
      * 下发发现模式（v1.1.53，用户最终设计）：
-     * - NORMAL：广播+扫描全开（幂等防重）。
-     * - CLOSED：广播+扫描全停（内部态，供"打开应用时自动搜索=关"启动使用；保留连接与保活）。
+     * - NORMAL：广播+扫描+GATT server 全开（幂等防重）。
+     * - CLOSED：**彻底离线**（v1.1.77，用户设想"关闭蓝牙 = 向所有用户放弃连接，跟普通离线一样"）——
+     *   停广播+停扫描+关闭 GATT server+断开全部连接+清连接表，应用层完全不产生蓝牙活动（即使系统蓝牙开着）；
+     *   恢复 NORMAL 时重建 server + 重新扫描自动重连。
      * - SILENT（静默模式）：**只停广播**——陌生人扫不到本机；scan/自动连接/已建立连接与保活全部照常
      *   （可连接陌生人建关系、可继续连接联系人，仅广播域不可见）。
      */
@@ -332,18 +332,40 @@ class BleTransport(
         currentDiscoveryMode = mode
         when (mode) {
             DiscoveryMode.NORMAL -> {
+                ensureGattServer()
                 runCatching { startAdvertising() }
                 runCatching { startScanning() }
             }
             DiscoveryMode.CLOSED -> {
                 stopAdvertising()
                 stopScan()
+                teardownGattServer()
             }
             DiscoveryMode.SILENT -> {
                 stopAdvertising()
                 runCatching { startScanning() }
             }
         }
+    }
+
+    /** 打开/复用 GATT server（幂等）：CLOSED 彻底离线关闭后，恢复 NORMAL 时重建。 */
+    private fun ensureGattServer() {
+        if (gattServer != null) return
+        runCatching { registerServer() }
+            .onSuccess { Log.d(TAG, "gatt server registered") }
+            .onFailure { Log.e(TAG, "registerServer failed: $it") }
+    }
+
+    /** v1.1.77 彻底离线：关闭 GATT server + 断开/清空全部连接与待发帧（不再接受任何连接）。 */
+    private fun teardownGattServer() {
+        gattServer?.close()
+        gattServer = null
+        serverDevices.clear()
+        subscribedDevices.clear()
+        gattClients.values.forEach { it.close() }
+        gattClients.clear()
+        connectAttempts.clear()
+        pendingFrames.clear()
     }
 
     private fun registerServer() {

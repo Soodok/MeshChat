@@ -21,6 +21,21 @@ enum class PeerPresence { ONLINE, UNRESPONSIVE, SEARCHING, RECONNECTING, OFFLINE
  */
 enum class DiscoveryMode { NORMAL, CLOSED, SILENT }
 
+/** v1.1.80 节点对直连边状态（拓扑图 peer-peer 边着色）：从对端 PING relays 学习（对端的一跳邻居 = 与其直连）。 */
+enum class LinkState { DIRECT, RECONNECTING }
+
+/**
+ * v1.1.80 学习到的节点对直连边：a/b 为短 ID（key 已排序，无方向性）。
+ * 供中继节点在拓扑图上如实显示"对方两台设备之间是否直连"（绿=直连正常 / 黄=直连断开重连中 / 无边=未知或无直连），
+ * 避免把无直连的节点对画成相连造成误判。
+ */
+data class LinkInfo(
+    val a: String,
+    val b: String,
+    val state: LinkState,
+    val lastSeenAt: Long,
+)
+
 /** 传输层发现的邻近节点信息。 */
 data class MeshPeerInfo(
     val shortId: String,
@@ -36,6 +51,10 @@ data class MeshPeerInfo(
     val lastSeenAt: Long = 0,
     /** 经中继可达的经由节点 shortId（v1.1.0）；空 = 一跳直连。路由表合成的 2 跳节点此字段非空。 */
     val relayVia: String = "",
+    /** v1.1.80 中继链路段新鲜度/延迟（ms）：中继节点 = 中继方上报的该节点心跳年龄（0 = 未知/老版本）；直连节点 = 0。 */
+    val relayAgeMs: Long = 0,
+    /** v1.1.80 直连往返延迟估算（ms）：最近一次 PING/PONG 往返（0 = 尚无样本）。 */
+    val rttMs: Long = 0,
     /** 对端广播发射功率(dBm)；广播包未带 TX power 字段时 = Int.MIN_VALUE（未知）。 */
     val txPower: Int = Int.MIN_VALUE,
     /** 链路信号强度(0-1) = 从对端收到 PONG 的速率 ÷ 本机 PING 发送速率（v1.1.17，协议层双向质量，替代 RSSI）；-1 = 样本不足。 */

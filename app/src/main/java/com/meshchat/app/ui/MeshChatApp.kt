@@ -18,6 +18,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
     val peers by viewModel.peers.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val links by viewModel.links.collectAsStateWithLifecycle()   // v1.1.80 节点对直连边
     val groups by viewModel.groups.collectAsStateWithLifecycle()
     val pendingInvites by viewModel.pendingInvites.collectAsStateWithLifecycle()
     val invites by viewModel.invites.collectAsStateWithLifecycle()
@@ -58,6 +59,9 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
                 onVerifyPassword = viewModel::verifyLockPassword,
                 onPrepareBiometricSession = viewModel::prepareBiometricSession,   // v1.1.75 CryptoObject 指纹解锁
                 onFinishBiometricUnlock = viewModel::finishBiometricUnlockAfterAuth,
+                onPrepareBiometricEnrollSession = viewModel::prepareBiometricEnrollSession,   // v1.1.83 启用指纹（认证后加密）
+                onFinishBiometricEnroll = viewModel::finishBiometricEnrollAfterAuth,
+                onBiometricBlobMissing = viewModel::lockBiometricBlobMissing,
                 onRemainingLockoutMs = viewModel::remainingLockoutMs,
             )
             return@Surface
@@ -66,6 +70,7 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             messages = messages,
             conversations = conversations,
             peers = peers,
+            links = links,
             sessions = sessions,
             groups = groups,
             onCreateGroup = viewModel::createGroup,
@@ -138,9 +143,13 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
             onClearDebugLogs = viewModel::clearDebugLogs,
             hasLockPassword = lockPasswordEnabled,
             lockBiometricAvailable = viewModel.lockBiometricAvailable(),
+            lockFingerprintEnabled = viewModel.lockFingerprintEnabled.collectAsStateWithLifecycle().value,   // v1.1.83 真实指纹状态
             onSetLockPassword = viewModel::setLockPassword,
             onChangeLockPassword = viewModel::changeLockPassword,
             onRemoveLockPassword = viewModel::removeLockPassword,
+            onBiometricBlobMissing = viewModel::lockBiometricBlobMissing,   // v1.1.83
+            onPrepareBiometricEnrollSession = viewModel::prepareBiometricEnrollSession,
+            onFinishBiometricEnroll = viewModel::finishBiometricEnrollAfterAuth,
             blockedPeers = blockedPeers,
             onUnblockPeer = viewModel::unblockPeer,
             onBlockPeer = viewModel::blockPeer,

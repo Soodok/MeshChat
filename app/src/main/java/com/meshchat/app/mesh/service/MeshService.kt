@@ -14,6 +14,7 @@ import com.meshchat.app.mesh.debug.PeerDebugInfo
 import com.meshchat.app.mesh.debug.RouteDecision
 import com.meshchat.app.mesh.identity.LocalIdentity
 import com.meshchat.app.mesh.identity.ShortIdGen
+import com.meshchat.app.mesh.protocol.BlockBody
 import com.meshchat.app.mesh.protocol.EnvelopeBody
 import com.meshchat.app.mesh.protocol.FileAckBody
 import com.meshchat.app.mesh.protocol.FileBody
@@ -43,6 +44,8 @@ import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.DiscoveryMode
 import com.meshchat.app.mesh.transport.MeshTransport
 import com.meshchat.app.mesh.transport.PeerPresence
+import com.meshchat.app.mesh.transport.LinkInfo
+import com.meshchat.app.mesh.transport.LinkState
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -68,8 +71,17 @@ import kotlinx.coroutines.launch
 private const val DEFAULT_TTL = 8
 private const val OUTBOX_TTL_MS = 60_000L
 private const val REFRESH_INTERVAL_MS = 200L      // 探测刷新周期 0.2s
-private const val HEARTBEAT_INTERVAL_MS = 500L   // PING 广播周期：500ms 校准一次（v1.1.56：用户实测 GATT 响应 3-4 次/s，1s 周期低估通道能力，双倍提频）
+/** v1.1.81 心跳（PING 广播）默认周期：1.5s（用户：500ms 占用信道太严重，主要依靠 GATT 保活；GATT 畅通即低频）。 */
+private const val HEARTBEAT_INTERVAL_MS = 1_500L
+/** v1.1.81 心跳最高频率：GATT 全部失联（无在线节点）时 50ms 高频尝试恢复（BLE 广播受系统 ~100ms 最小间隔限制，GATT 写通道上真实生效）。 */
+private const val MIN_HEARTBEAT_INTERVAL_MS = 50L
 private const val LOST_HEARTBEAT_MS = 2_000L      // 超过该时长无任何 PING/PONG/扫描帧 → 判失联（固定 2s 不随心跳联动——用户决策；500ms 心跳下容忍 4 帧丢失）
+/** v1.1.78 直连→中继降级阈值：一跳直连失联 ≥3s 才降级为"经中继可达"；v1.1.80 提到 5s（用户：中继场景 3s 频繁误报"正在尝试连接"，可容忍 5s）。 */
+private const val DIRECT_RELAY_FALLBACK_MS = 5_000L
+/** v1.1.80 中继链路段新鲜度阈值：中继方上报该节点心跳年龄 >5s → 该段疑似断 → 显示"重连中"（不等 30s 路由过期）。 */
+private const val RELAY_LINK_FRESH_MS = 5_000L
+/** v1.1.80 直连边重连窗口：确认过直连但超 RELAY_LINK_FRESH_MS 未刷新 → 黄（重连中）；再超本窗口 → 移除（无连接）。 */
+private const val LINK_RECONNECT_WINDOW_MS = 20_000L
 private const val OFFLINE_THRESHOLD_MS = 15_000L  // 无心跳超过该时长 → 离线（保留显示置黑，更快反映失联）
 private const val SEARCHING_TIMEOUT_MS = 6_000L   // 持久化恢复后 6 秒仍未找到 → 自动失联（避免无限寻找）
 private const val RECEIPT_TIMEOUT_MS = 3_000L     // 消息发出后未收到送达回执的等待时间，超时重发（更快确认）
@@ -120,6 +132,19 @@ interface RfcommChannel {
     fun sendTo(peerId: String, frame: MeshFrame)
 }
 
+/**
+ * v1.1.84 Wi-Fi Direct 高速通道最小契约（MeshService 只依赖帧合流/连接查询/点对点写，可测替身）。
+ * 与 RfcommChannel 同构：incoming 合流 handleFrame，foundPeers 合流节点表，sendTo 单发（TCP 可靠）。
+ */
+interface WfdChannel {
+    val incoming: SharedFlow<MeshFrame>
+    val foundPeers: SharedFlow<MeshPeerInfo>
+    fun isConnectedTo(peerId: String): Boolean
+    fun sendTo(peerId: String, frame: MeshFrame)
+    /** v1.1.87 已建 TCP 的组内成员（心跳/消息双链路广播用）。 */
+    fun members(): Set<String>
+}
+
 /** 群列表条目（v1.1.50）：id + 显示名（缺省"群-<id>"，随消息/创建帧学习群名后更新）+ 本机见过的发言成员数（v1.1.54）。 */
 data class GroupInfo(val id: String, val name: String, val memberCount: Int = 0)
 
@@ -134,6 +159,8 @@ class MeshService(
     private val tmpDir: () -> File = { File(System.getProperty("java.io.tmpdir"), "meshchat_transfers") },
     /** RFCOMM 高吞吐通道（可选）：文件帧优先走它，无连接回退 BLE broadcast。 */
     private val rfcomm: RfcommChannel? = null,
+    /** v1.1.84 Wi-Fi Direct 高速通道（可选，最高优先）：P2P TCP 已连节点单播帧优先走它。 */
+    private val wfd: WfdChannel? = null,
     /** 会话关系持久化（默认内存 Noop，不持久化；生产注入 SharedPrefsSessionStore）。 */
     private val sessionStore: SessionStore = object : SessionStore {
         override fun load(): Set<String> = emptySet()
@@ -171,6 +198,12 @@ class MeshService(
         transport = transport, shortId = identity.shortId, saver = fileSaver,
         scope = scope, tmpDirProvider = tmpDir,
         sendFrame = { dstId, frame -> sendFrame(dstId, frame) },
+        // v1.1.84 链路存活判据扩展到任一高速通道：wfd/rfcomm 已连时文件不再因 BLE 断开被误判中止
+        isConnectedTo = { peerId ->
+            transport.isConnectedTo(peerId) ||
+                (rfcomm?.isConnectedTo(peerId) == true) ||
+                (wfd?.isConnectedTo(peerId) == true)
+        },
         debugStats = debugStats,
         onProgress = { p ->
             // 终态同步落库状态（fileId 即消息 id）
@@ -199,7 +232,13 @@ class MeshService(
 
     // ===== v1.1.0 多跳中继：路由表 =====
     /** 2 跳路由条目：远端节点 -> (经由中继 shortId, 跳数, 最后确认时刻)。内存态，重启重建。 */
-    private data class RouteEntry(val via: String, val hops: Int, val lastSeenAt: Long)
+    private data class RouteEntry(
+        val via: String, val hops: Int, val lastSeenAt: Long,
+        /** v1.1.80 中继链路段新鲜度（ms）：中继方上报的该节点心跳年龄（0 = 未知/老版本）。 */
+        val relayAgeMs: Long = 0,
+        /** v1.1.80 中继链路段是否新鲜：中继方最近一次携带 relays 时含该节点。false = B-C 段疑似断（立即降级显示，不等路由过期）。 */
+        val relayFresh: Boolean = true,
+    )
     private val routeEntries = ConcurrentHashMap<String, RouteEntry>()
     /** PING 计数器：每 PING_RELAYS_EVERY 次心跳携带一次 relays 路由信息。 */
     private var pingCount = 0
@@ -208,6 +247,29 @@ class MeshService(
     /** 中继转发 outbox 重发状态：id -> 上次重发时刻 / 重试次数（内存态）。 */
     private val outboxLastSent = HashMap<String, Long>()
     private val outboxAttempts = HashMap<String, Int>()
+
+    // ===== v1.1.80 中继链路健康 + 直连边学习 =====
+    /** 学习到的节点对直连边：key = "短ID小|短ID大"，value = 最近一次确认时刻（对端 PING relays = 对端一跳邻居 → 对端与这些节点直连）。 */
+    private val directLinks = ConcurrentHashMap<String, Long>()
+    /** 直连边状态流（拓扑图 peer-peer 边着色：绿=直连，黄=重连中；无边 = 未知或无直连）。 */
+    private val _links = MutableStateFlow<List<LinkInfo>>(emptyList())
+    val links: StateFlow<List<LinkInfo>> = _links.asStateFlow()
+    /** 直连往返延迟（rttMs）：最近一次 PING/PONG 往返，供 UI 显示"延迟"。 */
+    private val peerRtt = ConcurrentHashMap<String, Long>()
+
+    private fun linkKey(a: String, b: String) = if (a < b) "$a|$b" else "$b|$a"
+
+    /** 刷新直连边状态流：DIRECT（≤ RELAY_LINK_FRESH_MS 内确认）→ RECONNECTING（超时未确认，仍在窗口内）。now 可注入（tick 用注入时间驱动状态转换）。 */
+    private fun refreshLinks(now: Long = System.currentTimeMillis()) {
+        _links.value = directLinks.entries.map { (k, t) ->
+            val sep = k.indexOf('|')
+            LinkInfo(
+                k.substring(0, sep), k.substring(sep + 1),
+                if (now - t <= RELAY_LINK_FRESH_MS) LinkState.DIRECT else LinkState.RECONNECTING,
+                t,
+            )
+        }
+    }
 
     /**
      * 链路质量窗口（v1.1.16）：基于对端 PING 序列号缺口估算收包成功率——协议层信号强度，不依赖系统 RSSI。
@@ -287,6 +349,8 @@ class MeshService(
 
     // ---- 调试主动控制（volatile 可调；默认值=常量，未调节时行为零变化；内存态重启回默认）----
     @Volatile private var heartbeatIntervalMs: Long = HEARTBEAT_INTERVAL_MS
+    /** v1.1.81 手动心跳档（调试中心 setHeartbeat）：非 null 时固定该档，动态心跳不覆盖。 */
+    @Volatile private var manualHeartbeatMs: Long? = null
     @Volatile private var lostHeartbeatMs: Long = LOST_HEARTBEAT_MS
     @Volatile private var resendBaseMs: Long = RECEIPT_TIMEOUT_MS
     @Volatile private var resendMaxMs: Long = MAX_RESEND_INTERVAL_MS
@@ -342,8 +406,11 @@ class MeshService(
     private val _blockedPeers = MutableStateFlow(blockedStore.load())
     val blockedPeers: StateFlow<Set<String>> = _blockedPeers.asStateFlow()
 
-    /** 拉黑：拒绝该节点的连接与消息（删除对话时调用）。v1.1.67 拉黑即断开已建立连接，对方立即失联→离线。 */
+    /** 拉黑：拒绝该节点的连接与消息（删除对话时调用）。v1.1.67 拉黑即断开已建立连接，对方立即失联→离线。
+     *  v1.1.79：先广播 BLOCK 通知（连接还在时送达概率最高），对方收到后解除会话+清指纹+断连变回陌生节点；
+     *  本机同步清除对端密钥指纹（下次解除拉黑重连时重新 TOFU 确立新密钥）。 */
     fun blockPeer(peerId: String) {
+        sendBlockNotice(peerId)   // v1.1.79 通知对方"你已被拉黑"
         _sessions.update { it - peerId }
         sessionStore.save(_sessions.value)
         _pendingInvites.update { it - peerId }
@@ -351,11 +418,26 @@ class MeshService(
         _ackRetries.update { it - peerId }
         _blockedPeers.update { it + peerId }
         blockedStore.save(_blockedPeers.value)
+        peerKeyStore.remove(peerId)   // v1.1.79 清除指纹，重新握手重新 TOFU
         removePeer(peerId)
         // v1.1.67 隔离彻底化：断开已建立的 GATT 连接（对方收不到本机心跳）+ 发现层过滤 + server 拒绝重连
         transport.disconnectPeer(peerId)
         transport.setBlockedPeers(_blockedPeers.value)
         Log.i(TAG, "blocked peer $peerId")
+    }
+
+    /** v1.1.79 广播拉黑通知帧（明文控制帧，同 INVITE 语义；对方收到后解除会话+清指纹+断连）。 */
+    private fun sendBlockNotice(peerId: String) {
+        val env = MeshEnvelope(
+            id = "blk-${identity.shortId}-${System.currentTimeMillis()}",
+            kind = "BLOCK", srcId = identity.shortId, dstId = peerId,
+            convId = "", ttl = 3, ts = System.currentTimeMillis(),
+            body = BlockBody(reason = "blocked"),
+        )
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray())
+        recordSentFrame(frame)
+        transport.broadcast(frame)
+        DebugLogBuffer.log("MeshSvc", "已广播拉黑通知给 $peerId")
     }
 
     /** 解除拉黑：恢复可连接/收发。v1.1.67 同步解除发现层过滤。 */
@@ -463,29 +545,19 @@ class MeshService(
                 }
             }
         }
-        peerJob = scope.launch {
-            transport.foundPeers.collect { info ->
-                runCatching {
-                    // 广播确认（第三通道）：对端随扫描响应广播"已收到的消息确认键"——
-                    // 无需任何 GATT 连接，双方在无线电范围内且都在扫描即可交换确认（彻底绕开连接状态问题）
-                    info.ackKeys.forEach { key -> confirmByAckKey(key) }
-                    val now = System.currentTimeMillis()
-                    val existing = peerEntries[info.shortId]
-                    // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖；
-                    // lastSeenAt 每次扫描帧到达都刷新 → info 必变 → _peers 流必 emit
-                    val displayName = existing?.info?.displayName ?: ""
-                    // v1.1.55：扫描帧只刷新 lastSeen（广播可见）+ scanSeenAt，**不刷新 appSeenAt**——
-                    // advertise 只证明蓝牙栈活着，不代表应用层活跃（对方后台冻结时广播仍在，
-                    // appSeenAt 保持过期 → heartbeatTick 判 UNRESPONSIVE，诚实标注"无响应"而非假在线）
-                    peerEntries[info.shortId] = PeerEntry(
-                        if (existing != null) info.copy(displayName = displayName, lastSeenAt = now) else info.copy(lastSeenAt = now),
-                        lastSeen = now, lost = false,
-                        appSeenAt = existing?.appSeenAt ?: 0L, scanSeenAt = now,
-                    )
-                    // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
-                    store.upsertPeer(info.shortId, displayName.ifBlank { info.displayName }, now, info.hops)
-                }.onFailure { Log.w(TAG, "peer update handling failed", it) }
+        // v1.1.84 Wi-Fi Direct 通道合流：P2P TCP 到达的帧（消息/心跳/文件块/ACK）同样走 handleFrame
+        wfd?.incoming?.let { flow ->
+            scope.launch {
+                flow.collect { frame ->
+                    runCatching { handleFrame(frame) }
+                        .onFailure { Log.w(TAG, "WFD frame handling failed", it) }
+                }
             }
+        }
+        peerJob = scope.launch {
+            transport.foundPeers.collect { info -> onPeerFound(info) }
+            // v1.1.84 Wi-Fi Direct 发现的节点合流进同一节点表（保留已学 hops/昵称，不覆盖 BLE 信息）
+            wfd?.foundPeers?.collect { info -> onPeerFound(info) }
         }
         tickJob = scope.launch {
             while (isActive) {
@@ -651,6 +723,8 @@ class MeshService(
         // 登记待确认：回执（RECEIPT）是广播帧可能丢失，由 resendPendingReceipts 超时重发收敛
         pendingReceipts[envelope.id] = PendingText(envelope, System.currentTimeMillis(), ackKey = ackKeyFor(envelope.id))
         route(envelope)
+        // v1.1.87 消息双链路：WFD 已连时并行 TCP 单发（BLE 泛洪照旧）——任一链路到达即送达
+        dualSendToWfd(envelope)
         return true
     }
 
@@ -753,17 +827,19 @@ class MeshService(
         if (peerPubB64.isBlank()) return
         val peerPub = runCatching { MeshCrypto.publicKeyFromB64(peerPubB64) }.getOrNull()
             ?: run { Log.w(TAG, "e2ee: bad peer pubkey from $peerId"); return }
-        // v1.1.74 密钥连续性（TOFU）：比对首次握手记录的对端公钥指纹，变化 → 标记身份变更（MITM 告警）。
-        // 首次 = 信任并记录；后续不一致 = 对方公钥更换（重启/重装或被中间人劫持），UI 红色告警由人工确认。
+        // v1.1.78 密钥连续性语义（用户修订）：公钥变化（重启/重装/降级路径/拉黑后重建）→ **视为重新首次握手**
+        // 直接接受新密钥并覆盖 TOFU 记录，不再判 MITM 红色告警（用户：密钥不同 = 默认曾经未发现过，重新建立连接确立新密钥）。
+        // 对话记录按短 ID 保留（convId 不随密钥变化）。首次 = 信任并记录。
         val fp = MeshCrypto.fingerprint(peerPubB64)
         val prev = peerKeyStore.fingerprint(peerId)
         if (prev == null) {
             peerKeyStore.saveFingerprint(peerId, fp)
             _peerKeyChanged.update { it - peerId }
         } else if (prev != fp) {
-            Log.w(TAG, "e2ee: KEY CHANGED for $peerId (prev=$prev now=$fp) — possible MITM")
-            DebugLogBuffer.log("E2EE", "对端 $peerId 公钥指纹变化（$prev → $fp），可能被中间人劫持")
-            _peerKeyChanged.update { it + peerId }
+            Log.i(TAG, "e2ee: key renewed for $peerId (prev=$prev now=$fp) — accept as re-handshake")
+            DebugLogBuffer.log("E2EE", "对端 $peerId 公钥指纹变化（$prev → $fp），视为重新握手确立新密钥")
+            peerKeyStore.saveFingerprint(peerId, fp)   // 覆盖 TOFU 记录，重新确立
+            _peerKeyChanged.update { it - peerId }
         }
         val secret = MeshCrypto.sharedSecret(localKeyPair.private, peerPub)
         val key = MeshCrypto.deriveSessionKey(secret, keyInfo(peerId))
@@ -933,11 +1009,77 @@ class MeshService(
         return fileId
     }
 
-    /** 文件帧发送路由：RFCOMM 已连接则走高速通道，否则 BLE broadcast 兜底。 */
+    /** 单播帧发送路由：v1.1.84 Wi-Fi Direct TCP（最快）→ RFCOMM → BLE 广播兜底（中继仍可达）。 */
     private fun sendFrame(dstId: String, frame: MeshFrame) {
         recordSentFrame(frame)
-        if (rfcomm != null && rfcomm.isConnectedTo(dstId)) rfcomm.sendTo(dstId, frame)
-        else transport.broadcast(frame)
+        when {
+            wfd != null && wfd.isConnectedTo(dstId) -> wfd.sendTo(dstId, frame)
+            rfcomm != null && rfcomm.isConnectedTo(dstId) -> rfcomm.sendTo(dstId, frame)
+            else -> transport.broadcast(frame)
+        }
+    }
+
+    /**
+     * v1.1.87 消息双链路：点对点帧（TEXT/重发/PONG）在 WFD 已连时**并行**经 TCP 单发——不替换 BLE 泛洪，
+     * 两路任一到达即送达（蓝牙不稳时消息仍走 WFD，反之亦然）。对端对重复帧按 envelope.id 去重（ForwardingDecision
+     * Drop / handleEnvelope 幂等），无重复投递。
+     */
+    private fun dualSendToWfd(envelope: MeshEnvelope) {
+        val dst = envelope.dstId
+        if (dst.isBlank() || dst == identity.shortId || wfd?.isConnectedTo(dst) != true) return
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(envelope).toByteArray())
+        recordSentFrame(frame)
+        wfd.sendTo(dst, frame)
+    }
+
+    /** v1.1.87 回执双链路：RECEIPT 帧在 WFD 已连时并行单发（BLE 广播照旧）——蓝牙不稳时送达确认仍能回传收敛。 */
+    private fun dualSendReceiptToWfd(envelope: MeshEnvelope) {
+        val dst = envelope.dstId
+        if (dst.isBlank() || dst == identity.shortId || wfd?.isConnectedTo(dst) != true) return
+        val receipt = "{\"id\":\"${envelope.id}\",\"srcId\":\"${envelope.srcId}\",\"dstId\":\"${envelope.dstId}\"}"
+        wfd.sendTo(dst, MeshFrame(FrameType.RECEIPT, receipt.toByteArray()))
+    }
+
+    /**
+     * v1.1.88 中继转发双链路：转发帧目标若为本机 WFD 组成员 → 并行经 WFD TCP 单发（BLE 泛洪已在 route 转发）。
+     * 目标节点蓝牙断开/在 BLE 覆盖外时仍能经 WFD 直达——A-WiFi-B-BLE-C 与 C-BLE-B-WiFi-A 混合链闭环。
+     * 对端对重复帧按 envelope.id 去重（ForwardingDecision Drop），无重复投递。
+     */
+    private fun dualRelayToWfd(forwarded: MeshEnvelope) {
+        val dst = forwarded.dstId
+        if (dst.isBlank() || dst == identity.shortId || wfd?.isConnectedTo(dst) != true) return
+        val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(forwarded).toByteArray())
+        recordSentFrame(frame)
+        wfd.sendTo(dst, frame)
+    }
+
+    /**
+     * v1.1.84 节点发现统一合流（BLE 扫描 + Wi-Fi Direct DnsSd）：
+     * 刷新 lastSeen/scanSeenAt，保留已学昵称与 hops（WFD 节点不携带 hops，不得覆盖 BLE/心跳学到的跳数）。
+     */
+    private fun onPeerFound(info: MeshPeerInfo) {
+        runCatching {
+            // 广播确认（第三通道）：对端随扫描响应广播"已收到的消息确认键"——
+            // 无需任何 GATT 连接，双方在无线电范围内且都在扫描即可交换确认（彻底绕开连接状态问题）
+            info.ackKeys.forEach { key -> confirmByAckKey(key) }
+            val now = System.currentTimeMillis()
+            val existing = peerEntries[info.shortId]
+            // 扫描帧不携带昵称（displayName 为空），保留心跳已学到的昵称，避免覆盖；
+            // lastSeenAt 每次扫描帧到达都刷新 → info 必变 → _peers 流必 emit
+            val displayName = existing?.info?.displayName ?: ""
+            val hops = if (info.hops > 0 || existing == null) info.hops else existing.info.hops
+            // v1.1.55：扫描帧只刷新 lastSeen（广播可见）+ scanSeenAt，**不刷新 appSeenAt**——
+            // advertise 只证明蓝牙栈活着，不代表应用层活跃（对方后台冻结时广播仍在，
+            // appSeenAt 保持过期 → heartbeatTick 判 UNRESPONSIVE，诚实标注"无响应"而非假在线）
+            peerEntries[info.shortId] = PeerEntry(
+                if (existing != null) info.copy(displayName = displayName, lastSeenAt = now, hops = hops)
+                else info.copy(lastSeenAt = now, hops = hops),
+                lastSeen = now, lost = false,
+                appSeenAt = existing?.appSeenAt ?: 0L, scanSeenAt = now,
+            )
+            // 扫描也落库：节点持久化不依赖 PING 交互，重启后必定恢复
+            store.upsertPeer(info.shortId, displayName.ifBlank { info.displayName }, now, hops)
+        }.onFailure { Log.w(TAG, "peer update handling failed", it) }
     }
 
     /** 发送统计（统一出口）：RECEIPT 帧按 RECEIPT 计，DATA 帧按信封 kind 计。 */
@@ -1147,6 +1289,16 @@ class MeshService(
                 rit.remove()
             }
         }
+        // v1.1.80 直连边清理：超 LINK_RECONNECT_WINDOW_MS 未确认 → 移除（节点对之间无连接）；状态流随 tick 刷新（DIRECT→RECONNECTING 推进）
+        val dlit = directLinks.entries.iterator()
+        while (dlit.hasNext()) {
+            val (k, t) = dlit.next()
+            if (now - t > LINK_RECONNECT_WINDOW_MS) {
+                Log.d(TAG, "link expired: $k")
+                dlit.remove()
+            }
+        }
+        refreshLinks(now)   // 直连边状态随 tick 推进（DIRECT→RECONNECTING），now 注入保证测试/真实时钟一致
         refreshPeers()
     }
 
@@ -1169,6 +1321,8 @@ class MeshService(
             val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(p.envelope).toByteArray())
             recordSentFrame(frame)
             transport.broadcast(frame)
+            // v1.1.87 重发双链路：WFD 已连时并行单发（BLE 丢帧时重发仍经 WFD 到达）
+            dualSendToWfd(p.envelope)
         }
     }
 
@@ -1182,17 +1336,25 @@ class MeshService(
     private fun sendPing() {
         pingCount++
         pingSeq++
-        // 路由信息节流：前 2 次心跳不带（空列表省带宽），第 3 次（3s）带一次
-        val relays = if (pingCount % PING_RELAYS_EVERY == 0) currentRelays() else emptyList()
+        val now = System.currentTimeMillis()
+        // 路由信息节流：前 2 次心跳不带（空列表省带宽），第 3 次（1.5s）带一次
+        val withRoutes = pingCount % PING_RELAYS_EVERY == 0
+        val relays = if (withRoutes) currentRelays() else emptyList()
+        // v1.1.80：与 relays 对齐携带各邻居心跳年龄（中继链路段新鲜度/延迟）——对端据此实时判断中继是否仍通
+        val relayAges = if (withRoutes) relays.map { now - (peerEntries[it]?.lastSeen ?: now) } else emptyList()
         val env = MeshEnvelope(
             id = UUID.randomUUID().toString(), kind = "PING",
             srcId = identity.shortId, dstId = "", convId = "conv-${identity.shortId}",
-            ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
-            body = PresenceBody(identity.displayName, relays = relays, seq = pingSeq),
+            ttl = DEFAULT_TTL, ts = now,
+            body = PresenceBody(identity.displayName, relays = relays, seq = pingSeq, relayAges = relayAges),
         )
         val frame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(env).toByteArray())
         recordSentFrame(frame)
         transport.broadcast(frame)
+        // v1.1.87 心跳双链路：PING 并行发给所有 WFD 已连成员（BLE 丢帧/蓝牙不稳时对端仍感知本机在线 + 学路由）
+        wfd?.members()?.forEach { member ->
+            if (member != identity.shortId) wfd.sendTo(member, frame)
+        }
     }
 
     /**
@@ -1200,10 +1362,18 @@ class MeshService(
      * 与 200ms tick 解耦，支持 50ms 级高频调试档——BLE 广播受系统约 100ms 最小间隔限制，
      * 高频档在已建立 GATT 连接通道（写/notify）上真实生效。
      *
-     * v1.1.53：**所有发现模式都发 PING**——broadcast 只走 GATT 写/notify（与 advertise 无关），
-     * 静默/关闭扫描模式下保活已建立连接正是用户要的（"继续连接联系人，关系人经保活感知在线"）。
+     * v1.1.53：SILENT/已建连接下所有模式保活 PING（静默模式可连接联系人，关系人经保活感知在线）。
+     * v1.1.77 修订：**CLOSED（彻底离线）停发 PING**——不产生任何蓝牙活动，与"普通离线"一致。
      */
     internal fun sendPingIfDue(now: Long = System.currentTimeMillis()) {
+        // v1.1.77 彻底离线（CLOSED）：不产生任何蓝牙活动，心跳 PING 停发（恢复 NORMAL 后 lastPingAt 过期立即补发）
+        if (_discoveryMode.value == DiscoveryMode.CLOSED) return
+        // v1.1.81 动态心跳：有在线节点（GATT 保活畅通）→ 低频 1.5s；全部失联（GATT 连不上）→ 50ms 高频加速恢复。
+        // 手动调试档（setHeartbeat）优先，不被动态覆盖。
+        if (manualHeartbeatMs == null) {
+            val anyOnline = peerEntries.values.any { now - it.appSeenAt <= lostHeartbeatMs }
+            heartbeatIntervalMs = if (anyOnline) HEARTBEAT_INTERVAL_MS else MIN_HEARTBEAT_INTERVAL_MS
+        }
         if (now - lastPingAt >= heartbeatIntervalMs) {
             lastPingAt = now
             sendPing()
@@ -1211,9 +1381,10 @@ class MeshService(
     }
 
     // ===== 调试主动控制（UI 调节经 DebugStats 控制总线下发；全部幂等可逆）=====
-    /** 心跳间隔（失联阈值保持 LOST_HEARTBEAT_MS=2s 固定，不随心跳联动——用户决策）。 */
+    /** 心跳间隔（失联阈值保持 LOST_HEARTBEAT_MS=2s 固定，不随心跳联动——用户决策）。手动档优先于 v1.1.81 动态心跳。 */
     fun setHeartbeat(intervalMs: Long) {
-        heartbeatIntervalMs = intervalMs.coerceIn(50L, 10_000L)
+        manualHeartbeatMs = intervalMs.coerceIn(50L, 10_000L)
+        heartbeatIntervalMs = manualHeartbeatMs!!
     }
 
     /** 消息重发退避（基础间隔 + 封顶）。 */
@@ -1271,6 +1442,7 @@ class MeshService(
     /** 恢复全部默认并确保未处于暂停态。 */
     fun resetDebugControls() {
         heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS
+        manualHeartbeatMs = null   // v1.1.81：恢复默认后回到动态心跳
         lostHeartbeatMs = LOST_HEARTBEAT_MS
         resendBaseMs = RECEIPT_TIMEOUT_MS
         resendMaxMs = MAX_RESEND_INTERVAL_MS
@@ -1294,18 +1466,37 @@ class MeshService(
     /**
      * 从 PING 携带的 relays 学习 2 跳路由（v1.1.0）：relay 已是本机一跳节点（lastSeen 新鲜）则忽略
      * （一跳优先，不走中继）；否则记"经 srcId 可达"。相同远端多中继时保留最新确认的条目。
+     * v1.1.80：① 学习 srcId 与其一跳邻居之间的直连边（拓扑图 peer-peer 边如实显示）；② 记录中继链路段
+     * 新鲜度（relayAgeMs/relayFresh）——srcId 本次携带 relays 但不含某旧路由节点 → 该段疑似断，立即降级显示。
      */
     private fun learnRoutes(srcId: String, body: PresenceBody) {
         val relays = body.relays
         if (relays.isEmpty()) return
         val now = System.currentTimeMillis()
-        for (relay in relays) {
+        val ages = body.relayAges   // 与 relays 对齐（老版本空 → 全 0 未知）
+        for (i in relays.indices) {
+            val relay = relays[i]
             if (relay == identity.shortId) continue
+            // srcId 与 relay 之间直连（srcId 的 relays = 其一跳邻居），无论 relay 是否也与本机直连
+            directLinks[linkKey(srcId, relay)] = now
             val direct = peerEntries[relay]
             if (direct != null && now - direct.lastSeen <= RELAY_FRESH_WINDOW_MS) continue // 一跳优先
-            routeEntries[relay] = RouteEntry(via = srcId, hops = 2, lastSeenAt = now)
+            val age = ages.getOrElse(i) { 0L }
+            routeEntries[relay] = RouteEntry(
+                via = srcId, hops = 2, lastSeenAt = now,
+                relayAgeMs = age, relayFresh = age <= RELAY_LINK_FRESH_MS,
+            )
         }
-        refreshPeers()  // 新学路由立即可见（markSeen 的刷新发生在 learnRoutes 之前）
+        // v1.1.80：中继方本次携带了 relays（非空）但某旧路由节点不在其中 → 被移出中继方新鲜邻居列表 → B-C 疑似断
+        // （不等到 ROUTE_EXPIRE_MS 才降级，B-C 断的瞬间 A 侧即可感知）
+        routeEntries.forEach { (peerId, r) ->
+            if (r.via == srcId && peerId !in relays && r.relayFresh) {
+                routeEntries[peerId] = r.copy(relayFresh = false)
+                Log.d(TAG, "relay link degraded: $peerId via $srcId dropped from relays")
+            }
+        }
+        refreshPeers()   // 新学路由立即可见（markSeen 的刷新发生在 learnRoutes 之前）
+        refreshLinks()   // 直连边立即可见
     }
 
     /** 本机近期收到的、来自指定对端的消息 id 列表（最多 50 条，随心跳 PONG 回执给对端确认送达）。 */
@@ -1401,20 +1592,24 @@ class MeshService(
         // 已会话联系人靠 GATT 保活心跳保持 ONLINE，照常显示）。恢复 NORMAL 后 peerEntries 全量恢复。
         val searchStopped = discoveryMode.value == DiscoveryMode.CLOSED
         peerEntries.values.forEach { e ->
-            val info = e.info.copy(signalRatio = signal)
+            val info = e.info.copy(signalRatio = signal, rttMs = peerRtt[e.info.shortId] ?: 0L)
             if (searchStopped && info.shortId !in _sessions.value) return@forEach
             result[info.shortId] = info
         }
         routeEntries.forEach { (peerId, r) ->
             if (searchStopped) return@forEach
             val direct = peerEntries[peerId]
-            val directOnline = direct != null && now - direct.lastSeen <= lostHeartbeatMs
+            // v1.1.78（用户：近距离直连优先）：直连失联 <5s 仍视为直连可用（不降级中继）；
+            // ≥5s（DIRECT_RELAY_FALLBACK_MS）才用 2 跳版本覆盖显示"经中继可达"。持续扫描下直连一恢复立即切回直连（markSeen 清 routeEntries）。
+            val directOnline = direct != null && now - direct.lastSeen <= DIRECT_RELAY_FALLBACK_MS
             if (!directOnline) {
                 result[peerId] = MeshPeerInfo(
                     shortId = peerId, deviceAddress = "", rssi = 0, hops = r.hops,
                     displayName = direct?.info?.displayName ?: "",  // 保留已学昵称
-                    lost = false, presence = PeerPresence.ONLINE,
-                    relayVia = r.via, lastSeenAt = r.lastSeenAt,
+                    // v1.1.80 中继链路健康：relayFresh=false（中继方已把该节点移出新鲜邻居列表）→ 降级为"重连中"（琥珀），
+                    // 而非继续显示"经中继可达"（绿色）——B-C 断的瞬间 A 即可感知，不等 30s 路由过期。
+                    lost = false, presence = if (r.relayFresh) PeerPresence.ONLINE else PeerPresence.RECONNECTING,
+                    relayVia = r.via, relayAgeMs = r.relayAgeMs, lastSeenAt = r.lastSeenAt,
                 )
             }
         }
@@ -1570,8 +1765,13 @@ class MeshService(
         }
     }
 
-    /** 查询对端是否经中继可达（v1.1.0）：命中路由表返回经由节点 shortId，否则 null。 */
-    fun relayViaFor(peerId: String): String? = routeEntries[peerId]?.via
+    /** 查询对端是否经中继可达（v1.1.0）：命中路由表返回经由节点 shortId，否则 null。
+     *  v1.1.78（用户：直连优先）：一跳直连新鲜（<3s）时返回 null——直连连得上就不走中继（含送达文案）。 */
+    fun relayViaFor(peerId: String): String? {
+        val direct = peerEntries[peerId]
+        if (direct != null && System.currentTimeMillis() - direct.lastSeen <= DIRECT_RELAY_FALLBACK_MS) return null
+        return routeEntries[peerId]?.via
+    }
 
     private fun handleEnvelope(envelopeIn: MeshEnvelope) {
         if (envelopeIn.srcId == identity.shortId) return // 忽略自身回环帧
@@ -1596,8 +1796,8 @@ class MeshService(
             envelope = envelopeIn.copy(body = resolved, enc = "aes-gcm-v1")
         }
         Log.d(TAG, "recv kind=${envelope.kind} src=${envelope.srcId} dst=${envelope.dstId} sessions=${_sessions.value.size}")
-        // 握手帧走双通道（write + notify）可能重复送达，按信封 id 去重
-        if (envelope.kind == "INVITE" || envelope.kind == "INVITE_ACK") {
+        // 握手/控制帧走双通道（write + notify）可能重复送达，按信封 id 去重
+        if (envelope.kind == "INVITE" || envelope.kind == "INVITE_ACK" || envelope.kind == "BLOCK") {
             if (dedup.contains(envelope.id)) return
             dedup.mark(envelope.id)
         }
@@ -1634,6 +1834,19 @@ class MeshService(
                     connectRfcomm(envelope.srcId)
                 }
             }
+            "BLOCK" -> {
+                // v1.1.79 拉黑通知（对方拉黑我）：解除会话 + 清除对端密钥指纹 + 断开连接，变回陌生节点。
+                // 不互拉黑（尊重"仅单向拒绝"语义——对方仍可被我搜索到，但重新邀请会被对方丢弃）。
+                val src = envelope.srcId
+                _sessions.update { it - src }
+                sessionStore.save(_sessions.value)
+                _pendingInvites.update { it - src }
+                _invites.update { it - src }
+                _ackRetries.update { it - src }
+                peerKeyStore.remove(src)   // 指纹重立：下次握手重新 TOFU 确立新密钥
+                transport.disconnectPeer(src)
+                DebugLogBuffer.log("MeshSvc", "收到 $src 的拉黑通知，已解除会话并清除密钥指纹")
+            }
             "PING" -> {
                 // 心跳广播帧：仅处理发往本机/广播；回 PONG 双向确认在线，同时交换昵称
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
@@ -1650,14 +1863,23 @@ class MeshService(
                     id = UUID.randomUUID().toString(), kind = "PONG",
                     srcId = identity.shortId, dstId = envelope.srcId, convId = "conv-${envelope.srcId}",
                     ttl = DEFAULT_TTL, ts = System.currentTimeMillis(),
-                    body = PresenceBody(identity.displayName, ackIds = ackIdsFor(envelope.srcId)),
+                    // v1.1.80：回带所回应 PING 的 ts → 发送方收到后 rtt ≈ now - pingTs（实时延迟显示）
+                    body = PresenceBody(identity.displayName, ackIds = ackIdsFor(envelope.srcId), pingTs = envelope.ts),
                 )
                 val pongFrame = MeshFrame(FrameType.DATA, MeshJson.encodeEnvelope(pong).toByteArray())
                 recordSentFrame(pongFrame)
                 transport.broadcast(pongFrame)
+                // v1.1.87 PONG 双链路：WFD 已连时并行单发（蓝牙不稳时对端仍收到送达确认 + 本机在线状态）
+                dualSendToWfd(pong)
             }
             "PONG" -> {
                 if (envelope.dstId.isNotBlank() && envelope.dstId != identity.shortId) return
+                // v1.1.80 往返延迟测量：PONG 回带所回应 PING 的 ts → rtt ≈ now - pingTs（广播往返近似单跳延迟；异常值忽略）。
+                // 必须在 markSeen（其内部 refreshPeers 输出本轮 rttMs）之前写入，否则 peers 流要等下一轮才带出新延迟。
+                (envelope.body as? PresenceBody)?.pingTs?.takeIf { it > 0 }?.let { pt ->
+                    val rtt = System.currentTimeMillis() - pt
+                    if (rtt in 0..10_000) peerRtt[envelope.srcId] = rtt
+                }
                 markSeen(envelope.srcId, (envelope.body as? PresenceBody)?.displayName ?: "")
                 // 硬实时送达确认：先消化对方随心跳回执的消息（标记送达并移出队列），再重发仍未确认的
                 (envelope.body as? PresenceBody)?.ackIds?.forEach { id ->
@@ -1810,6 +2032,10 @@ class MeshService(
                 } else {
                     broadcastData(forwarded)
                 }
+                // v1.1.88 中继转发双链路（A-WiFi-B-BLE-C 混合回传闭环）：
+                // 转发帧目标若为本机 WFD 组成员 → 并行经 WFD TCP 单发（BLE 泛洪照旧）。目标蓝牙断开/在 BLE
+                // 覆盖外时仍能经 WFD 直达；对端对重复帧按 envelope.id 去重。反向 C-BLE-B-WiFi-A 由此打通。
+                dualRelayToWfd(forwarded)
             }
             ForwardDecision.Drop -> {
                 debugStats.recordRoute(RouteDecision.DROP)
@@ -1831,6 +2057,8 @@ class MeshService(
         val receipt = "{\"id\":\"${envelope.id}\",\"srcId\":\"${envelope.srcId}\",\"dstId\":\"${envelope.dstId}\"}"
         debugStats.recordSent(FrameKind.RECEIPT, receipt.toByteArray().size)
         transport.broadcast(MeshFrame(FrameType.RECEIPT, receipt.toByteArray()))
+        // v1.1.87 回执双链路：WFD 已连时并行单发（蓝牙不稳时送达确认仍回传收敛）
+        dualSendReceiptToWfd(envelope)
     }
 
     private fun handleReceipt(frame: MeshFrame) {

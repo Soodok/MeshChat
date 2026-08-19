@@ -27,6 +27,7 @@ import com.meshchat.app.mesh.storage.MeshDatabase
 import com.meshchat.app.mesh.storage.RoomMeshStore
 import com.meshchat.app.mesh.transfer.AndroidFileSaver
 import com.meshchat.app.mesh.transport.BleTransport
+import com.meshchat.app.mesh.transport.PeerPresence
 import com.meshchat.app.mesh.wifidirect.WifiDirectTransport
 import com.meshchat.app.security.capability.AndroidSecurityCapabilityStateReader
 import com.meshchat.app.security.capability.SecurityCapabilityManager
@@ -40,11 +41,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** v1.1.87 蓝牙全失联持续该时长 → 自动启用 WFD 备份通道（用户：蓝牙不稳时 WFD 顶上）。 */
+private const val WFD_AUTO_ENABLE_AFTER_MS = 5_000L
+/** v1.1.87 蓝牙失联看门狗轮询周期。 */
+private const val WFD_AUTO_WATCH_INTERVAL_MS = 2_000L
+
 class MeshChatApplication : Application() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val bluetoothManager: BluetoothManager by lazy {
         getSystemService(BluetoothManager::class.java)
     }
+    /** v1.1.87 蓝牙全失联起始时刻（0 = 未失联）：看门狗据此判定"失联持续 >5s"。 */
+    @Volatile private var bleLostSince = 0L
 
     /** 消息存储：落库加密装饰器（v1.1.24）——正文/文件元数据/outbox 信封 AES-GCM + Keystore，Room schema 不动。 */
     val store by lazy { EncryptedMeshStore(RoomMeshStore(MeshDatabase.build(this)), this) }
@@ -137,15 +145,23 @@ class MeshChatApplication : Application() {
                 .edit().putString("channel_name", value?.trim()?.takeIf { it.isNotEmpty() }).apply()
         }
 
-    /** Wi-Fi Direct 增强层（Beta v1.1.51，独立目录 mesh/wifidirect）：可选，默认关闭；开启后自动与可达设备建连形成星域。 */
+    /** Wi-Fi Direct 增强层（Beta v1.1.51，独立目录 mesh/wifidirect）：开启后自动与可达设备建连形成星域。 */
     val wfd by lazy {
         WifiDirectTransport(this, shortId = identity.shortId, displayName = identity.displayName)
     }
 
-    /** Wi-Fi Direct 增强开关（设置页可改，默认关——省电；用户主动开启增强通讯能力）。 */
+    /**
+     * Wi-Fi Direct 增强开关（设置页可改，**v1.1.87 默认开——用户决策"WFD 默认保持连接状态，作为蓝牙不稳时的
+     * 备份通道 + 传文件高速通道"；v1.1.51~86 默认关省电）。首次启动迁移：老用户 prefs 已存 false 的补写为 true，
+     * 否则改默认值对存量安装不生效。
+     */
     var wifiDirectEnabled: Boolean
-        get() = getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
-            .getBoolean("wifi_direct_enabled", false)
+        get() {
+            val prefs = getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
+            // v1.1.87 首次运行迁移：默认开启
+            if (!prefs.contains("wifi_direct_enabled")) prefs.edit().putBoolean("wifi_direct_enabled", true).apply()
+            return prefs.getBoolean("wifi_direct_enabled", true)
+        }
         set(value) {
             getSharedPreferences("meshchat_settings", Context.MODE_PRIVATE)
                 .edit().putBoolean("wifi_direct_enabled", value).apply()
@@ -159,6 +175,7 @@ class MeshChatApplication : Application() {
             transport, store, identity, DedupCache(),
             fileSaver = AndroidFileSaver(this),
             tmpDir = { File(filesDir, "transfers") },
+            wfd = wfd,   // v1.1.84：Wi-Fi Direct 星域高速通道接入消息路由（单播帧最高优先）
             sessionStore = SharedPrefsSessionStore(this),
             groupStore = SharedPrefsGroupStore(this),   // v1.1.50：群订阅/群名持久化
             blockedStore = SharedPrefsBlockedStore(this),   // v1.1.64：删除对话=拉黑持久化
@@ -201,6 +218,49 @@ class MeshChatApplication : Application() {
         applyAutoDiscovery()
         // v1.1.66：启动恢复频道（公共/私人，与发现模式正交）
         applyChannel()
+        // v1.1.85：启动恢复 Wi-Fi Direct 星域（选项开启后搜索始终自动，无需每次手动开关）
+        applyWifiDirect()
+    }
+
+    /** v1.1.85 按偏好恢复 Wi-Fi Direct 星域：选项开启 → enable（幂等，已在跑则跳过）；WiFi 未开则 DISABLED 等待。 */
+    private fun applyWifiDirect() {
+        if (wifiDirectEnabled) wfd.enable()
+    }
+
+    /**
+     * v1.1.87 蓝牙失联看门狗（用户："WFD 作为蓝牙连接不稳定时启用"，默认保持连接 + 双链路并行搜索恢复）：
+     * 已会话节点全部失联（peers 流无 ONLINE 会话节点）持续 5s → 若 WFD 未运行则 wfd.enable()。
+     * **临时启用不改偏好**——手动关闭 WFD 偏好的用户，蓝牙失联时仍能获得备份通道；BLE 恢复（出现在线节点）即清零。
+     * WFD 建组需系统弹窗人手确认一次（Android Settings 进程，App 无权免弹）。
+     */
+    private val wfdAutoWatchdog = object : Runnable {
+        override fun run() {
+            runCatching {
+                val online = service.peers.value.any {
+                    it.shortId in service.sessions.value && it.presence == PeerPresence.ONLINE
+                }
+                val now = System.currentTimeMillis()
+                if (!online) {
+                    if (bleLostSince == 0L) {
+                        bleLostSince = now
+                        // v1.1.88 GO 边缘偏好：BLE 失联中的本机倾向当 GO 主导建组（中心节点按 MAC 规则 join 加入）
+                        wfd.setPreferGroupOwner(true)
+                    }
+                    if (now - bleLostSince >= WFD_AUTO_ENABLE_AFTER_MS &&
+                        wfd.state == WifiDirectTransport.State.DISABLED
+                    ) {
+                        Log.w("MeshApp", "BLE all-lost >5s, auto-enable Wi-Fi Direct backup channel")
+                        wfd.enable()
+                        bleLostSince = now   // 防高频重复 enable（enable 幂等，此处防每轮重试）
+                    }
+                } else {
+                    bleLostSince = 0L
+                    // v1.1.88 BLE 恢复 → 撤 GO 边缘偏好，回到 MAC 确定性选主
+                    wfd.setPreferGroupOwner(false)
+                }
+            }.onFailure { Log.w("MeshApp", "wfd watchdog iteration failed", it) }
+            mainHandler.postDelayed(this, WFD_AUTO_WATCH_INTERVAL_MS)
+        }
     }
 
     /**
@@ -226,6 +286,8 @@ class MeshChatApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         registerBluetoothStateReceiver()
+        // v1.1.87 蓝牙失联看门狗：全在线节点消失持续 5s → 自动启用 WFD 备份通道（双链路并行恢复）
+        mainHandler.post(wfdAutoWatchdog)
         // 进程一启动即开始扫描/心跳（"删掉后台再进"也自动寻找）：
         // 此刻 MainActivity 尚未创建、Android 12+ 限制前台服务后台启动，故直接启动 Mesh 逻辑本体（幂等），
         // 前台服务由 MainActivity onCreate/onResume 的 startMesh() 补上（App 已在前台，无启动限制）。
@@ -233,6 +295,8 @@ class MeshChatApplication : Application() {
         applyAutoDiscovery()
         // v1.1.66：进程启动即恢复频道（重启后保持频道隔离）
         applyChannel()
+        // v1.1.85：进程启动即恢复 Wi-Fi Direct 星域（重启后选项开启则自动搜索）
+        applyWifiDirect()
     }
 
     /**

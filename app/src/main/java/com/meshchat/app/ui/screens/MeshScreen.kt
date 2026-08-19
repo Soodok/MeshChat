@@ -72,6 +72,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.data.MeshPeer
+import com.meshchat.app.mesh.transport.LinkInfo
+import com.meshchat.app.mesh.transport.LinkState
 import com.meshchat.app.mesh.transport.PeerPresence
 import com.meshchat.app.ui.components.SignalBars
 import com.meshchat.app.ui.theme.Cyan
@@ -92,6 +94,8 @@ fun MeshScreen(
     modifier: Modifier = Modifier,
     peers: List<MeshPeer>,
     sessions: Set<String>,
+    /** v1.1.80 节点对直连边（拓扑图 peer-peer 边着色：绿=直连，黄=重连中；无边 = 无直连/未知）。 */
+    links: List<LinkInfo>,
     pendingInvites: Set<String>,
     onPeerSelected: (String) -> Unit,
     /** v1.1.53 发现模式（NORMAL 全开 / CLOSED 全停 / SILENT 静默只停广播）。 */
@@ -132,7 +136,7 @@ fun MeshScreen(
     val nearbyPeers = peers.filter { it.lastSeenAt > 0L && it.presence != PeerPresence.OFFLINE }
     val historyPeers = peers.filter { it.shortId in sessions && it !in nearbyPeers }
     LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 18.dp)) {
-        item { MeshTopology(peers = peers, sessions = sessions) }
+        item { MeshTopology(peers = peers, sessions = sessions, links = links) }
         // Wi-Fi Direct 状态栏（关闭不显示；开启且不可用=灰提示；搜索黄/已连接绿+信号栏/重连琥珀）
         if (wifiDirectEnabled) when (wifiDirectState) {
             com.meshchat.app.mesh.wifidirect.WifiDirectTransport.State.DISABLED -> {
@@ -253,7 +257,7 @@ fun MeshScreen(
                 Text(
                     text = when (discoveryMode) {
                         com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> "正在扫描邻近节点…"
-                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "搜索已停止 · 点击下方按钮开启"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "已离线 · 未使用蓝牙 · 点击下方按钮恢复"
                         com.meshchat.app.mesh.transport.DiscoveryMode.SILENT -> "静默模式 · 陌生人不可见，可发现他人"
                     },
                     style = MaterialTheme.typography.bodyMedium,
@@ -289,6 +293,28 @@ fun MeshScreen(
                     onClick = { onPeerSelected(peer.shortId) },
                     onBlock = { blockTarget = peer.shortId },   // v1.1.65 主动拉黑
                 )
+            }
+        }
+        // v1.1.76 已拉黑分区：blocked 节点被 removePeer + 发现层过滤后不在 peers 流，
+        // 无法经附近/历史列表点击解除 —— 此处从 blockedPeers 独立渲染，保证解除入口始终可用。
+        val blockedAlone = blockedPeers - nearbyPeers.map { it.shortId }.toSet() - historyPeers.map { it.shortId }.toSet()
+        if (blockedAlone.isNotEmpty()) {
+            item {
+                Text("已拉黑（${blockedAlone.size}）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
+            }
+            items(blockedAlone.sorted(), key = { "blocked-$it" }) { id ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { unblockTarget = id }
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(id, style = MaterialTheme.typography.titleMedium)
+                        Text("已拉黑 · 点击解除", style = MaterialTheme.typography.bodySmall, color = MeshRed.copy(alpha = 0.8f))
+                    }
+                }
             }
         }
         item {
@@ -365,7 +391,7 @@ fun MeshScreen(
                 Text(
                     text = when (discoveryMode) {
                         com.meshchat.app.mesh.transport.DiscoveryMode.NORMAL -> "搜索中 · 点击关闭"
-                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "搜索已停止 · 点击开启"
+                        com.meshchat.app.mesh.transport.DiscoveryMode.CLOSED -> "已离线 · 点击恢复在线"
                         com.meshchat.app.mesh.transport.DiscoveryMode.SILENT -> "静默模式 · 点击恢复搜索"
                     },
                     style = MaterialTheme.typography.bodyLarge,
@@ -502,7 +528,7 @@ private fun DiscoveryToggleButton(enabled: Boolean) {
 }
 
 @Composable
-private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
+private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>, links: List<LinkInfo>) {
     // 物理状态：节点位置/速度（运行时维护，跨 peers 变化保留）
     var canvasW by remember { mutableFloatStateOf(0f) }
     var canvasH by remember { mutableFloatStateOf(0f) }
@@ -532,7 +558,7 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
         .take(MAX_TOPOLOGY_PEERS)
 
     // 同步 peers → nodes + edges（保留已有节点位置，避免重组时跳变）
-    LaunchedEffect(peers, sessions, canvasW, canvasH) {
+    LaunchedEffect(peers, sessions, links, canvasW, canvasH) {
         if (canvasW <= 0f || canvasH <= 0f) return@LaunchedEffect
         val scale = minOf(canvasW, canvasH) / BASE_CANVAS
         val existing = nodes.associateBy { it.id }
@@ -552,6 +578,8 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
             val actualKind = when {
                 peer.presence == PeerPresence.SEARCHING || peer.presence == PeerPresence.RECONNECTING ||
                     peer.presence == PeerPresence.UNRESPONSIVE -> TopoKind.SEARCHING   // v1.1.55：无响应 = 黄虚线（广播可见但应用层无响应）
+                // v1.1.80：经中继可达（relayVia 非空）不显示为直连绿——即使双方有会话，真实路径仍是中继（蓝虚线 + 经X标注）
+                peer.relayVia.isNotBlank() -> TopoKind.REACHABLE
                 peer.shortId in sessions -> TopoKind.DIRECT
                 else -> TopoKind.REACHABLE
             }
@@ -559,18 +587,21 @@ private fun MeshTopology(peers: List<MeshPeer>, sessions: Set<String>) {
             val r = (if (peer.hops <= 1) 10f else if (peer.hops == 2) 8f else 7f) * scale
             nodes.add(TopoNode(
                 id = peer.shortId, name = peer.name, short = peer.shortId.take(2),
-                kind = actualKind, hops = peer.hops, r = r,
+                kind = actualKind, hops = peer.hops, r = r, relayVia = peer.relayVia,
                 x = old?.x ?: (cx + (Random.nextFloat() - 0.5f) * 160f * scale),
                 y = old?.y ?: (cy + (Random.nextFloat() - 0.5f) * 160f * scale),
                 vx = old?.vx ?: 0f, vy = old?.vy ?: 0f,
             ))
         }
-        // 生成 peer-peer mesh 骨干边（非失联 peer 之间互连）
+        // v1.1.80：peer-peer 边仅来自学习到的真实直连（对端 PING relays）——不再盲目全连 mesh 骨干，
+        // 避免中继节点把无直连的 A-C 画成相连造成误判。边颜色如实反映直连状态（绿=正常，黄=重连中）。
         edges.clear()
         val activePeers = nodes.filter { it.id != "ME" && it.kind != TopoKind.STALE }
+        val linkMap = links.associateBy { linkKey(it.a, it.b) }
         for (i in activePeers.indices) {
             for (j in i + 1 until activePeers.size) {
-                edges.add(TopoEdge(activePeers[i].id, activePeers[j].id))
+                val key = linkKey(activePeers[i].id, activePeers[j].id)
+                linkMap[key]?.let { edges.add(TopoEdge(activePeers[i].id, activePeers[j].id, it.state)) }
             }
         }
     }
@@ -684,6 +715,24 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocke
         ageMs < 1_000 -> "${ageMs}ms前"
         else -> "${ageMs / 1_000}s前"
     }
+    // v1.1.81 延迟（固定显示在信号行/网络判断左侧）：直连 = PING/PONG RTT；中继 = 链路年龄（路由最后确认至今 + 中继方上报段年龄，B-C 断后持续增大实时可感）。
+    // 颜色分级：≤5000ms 绿 / 5000~10000 黄 / >10000 红（分级取代持续跳动，降低视图抖动观感）
+    val latency = if (peer.relayVia.isNotBlank()) {
+        if (peer.relayAgeMs > 0) (now - peer.lastSeenAt).coerceAtLeast(0) + peer.relayAgeMs else -1L
+    } else {
+        peer.rttMs
+    }
+    val latencyText = when {
+        latency < 0 -> ""
+        latency < 1_000 -> "延迟 ${latency}ms"
+        else -> "延迟 ${latency / 1_000}s"
+    }
+    val latencyColor = when {
+        latency < 0 -> TextSecondary
+        latency > 10_000 -> MeshRed
+        latency > 5_000 -> MeshAmber
+        else -> MeshGreen
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -704,20 +753,20 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocke
             )
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            // v1.1.0 经中继可达（2 跳）：无真实信号/帧到达，隐藏信号行，改显"经 X 可达"
-            if (peer.relayVia.isBlank()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = ageText,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
-                    )
+            // 信号行：直连显示 时间 + 信号格 + dBm；中继无直接信号只显示路由新鲜度
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = ageText,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = if (peer.presence == PeerPresence.OFFLINE) TextSecondary else (if (peer.lost) MeshAmber else TextSecondary),
+                )
+                if (peer.relayVia.isBlank()) {
                     Spacer(Modifier.width(8.dp))
                     SignalBars(peer.strength)
                     Spacer(Modifier.width(8.dp))
+                    // v1.1.81 信号 = 直接 dBm（用户：协议层"收发失联包"百分比抽象易误判）
                     Text(
-                        // v1.1.17：有协议层信号强度显示百分比，否则回退 dBm（对端老版本/样本不足）
-                        text = if (peer.signalRatio >= 0) "${(peer.signalRatio * 100).toInt()}%" else "${peer.rssi} dBm",
+                        text = "${peer.rssi} dBm",
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         color = TextSecondary,
                     )
@@ -725,7 +774,11 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocke
             }
             val statusText = when {
                 blocked -> "已拉黑 · 点击解除"   // v1.1.64：删除对话 = 拉黑
-                peer.relayVia.isNotBlank() -> "经 ${peer.relayVia} 可达 · 2跳"
+                peer.relayVia.isNotBlank() -> when (peer.presence) {
+                    // v1.1.80：中继链路段断（relayFresh=false → RECONNECTING）→ 如实显示"重连中"，不再绿"可达"
+                    PeerPresence.RECONNECTING, PeerPresence.SEARCHING -> "经 ${peer.relayVia} 重连中"
+                    else -> "经 ${peer.relayVia} 可达 · 2跳"
+                }
                 else -> when (peer.presence) {
                     PeerPresence.ONLINE -> when {
                         connected -> "已连接 · 点击进入会话"
@@ -740,7 +793,7 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocke
             }
             val statusColor = when {
                 blocked -> MeshRed.copy(alpha = 0.8f)   // v1.1.64 已拉黑红色
-                peer.relayVia.isNotBlank() -> MeshGreen
+                peer.relayVia.isNotBlank() -> if (peer.presence == PeerPresence.RECONNECTING || peer.presence == PeerPresence.SEARCHING) MeshAmber else MeshGreen
                 else -> when (peer.presence) {
                     PeerPresence.ONLINE -> if (connected) MeshGreen else TextSecondary
                     PeerPresence.UNRESPONSIVE -> MeshAmber   // v1.1.55：琥珀 = 广播可见但无响应
@@ -748,11 +801,22 @@ private fun PeerRow(peer: MeshPeer, connected: Boolean, pending: Boolean, blocke
                     PeerPresence.OFFLINE -> TextSecondary
                 }
             }
-            Text(
-                text = statusText,
-                style = MaterialTheme.typography.bodySmall,
-                color = statusColor,
-            )
+            // v1.1.82 状态行：状态文本 + 延迟（延迟放回右侧、独立着色，不随数字跳动改变状态文本）
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColor,
+                )
+                if (latencyText.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = latencyText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = latencyColor,
+                    )
+                }
+            }
             if (!blocked) {
                 // v1.1.65：未拉黑节点提供主动拉黑入口（未连接陌生人也可拉黑，拉黑后对方无法连接/发消息）
                 IconButton(onClick = onBlock, modifier = Modifier.size(26.dp)) {
@@ -787,10 +851,15 @@ private class TopoNode(
     var y: Float,
     var vx: Float = 0f,
     var vy: Float = 0f,
+    /** v1.1.80 经中继可达的经由节点（非空 = 中继节点，绘制"经X"标注）；空 = 直连/本机。 */
+    var relayVia: String = "",
 )
 
-/** 拓扑边（peer-peer mesh 骨干，v1.0.x 用虚拟边模拟网状结构；v1.1.0 多跳中继后由 routeEntries 驱动）*/
-private class TopoEdge(val a: String, val b: String)
+/** 拓扑边（v1.1.80 起仅含学习到的真实直连边；v1.0.x 的 peer-peer mesh 全连接已移除——避免误判"对方直连"）*/
+private class TopoEdge(val a: String, val b: String, val state: LinkState = LinkState.DIRECT)
+
+/** 节点对排序键（无方向）：a<b → "a|b"。 */
+private fun linkKey(a: String, b: String) = if (a < b) "$a|$b" else "$b|$a"
 
 /** 物理引擎：库仑斥力 + 边弹簧(本机↔peer + peer↔peer mesh 骨干) + 中心引力 + 阻尼 + 微扰 + 边界反弹
  *  pinnedId 节点跳过力计算与位置更新（拖拽中由手指直接控制位置）
@@ -890,7 +959,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDotGrid() {
     }
 }
 
-/** 绘制 peer-peer mesh 骨干边（淡色，非失联 peer 之间互连）*/
+/** v1.1.80 绘制 peer-peer 真实直连边（仅学习到的直连；绿 = 直连正常，黄虚线 = 直连断开重连中）*/
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMeshEdges(
     nodes: List<TopoNode>, edges: List<TopoEdge>,
 ) {
@@ -899,16 +968,24 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMeshEdges(
     edges.forEach { e ->
         val a = byId[e.a] ?: return@forEach
         val b = byId[e.b] ?: return@forEach
-        drawLine(
-            color = Cyan.copy(alpha = 0.15f),
-            start = Offset(a.x, a.y), end = Offset(b.x, b.y),
-            strokeWidth = 1.2f * scale,
-            cap = StrokeCap.Round,
-        )
+        when (e.state) {
+            LinkState.DIRECT -> drawLine(
+                color = MeshGreen.copy(alpha = 0.5f),
+                start = Offset(a.x, a.y), end = Offset(b.x, b.y),
+                strokeWidth = 1.6f * scale,
+                cap = StrokeCap.Round,
+            )
+            LinkState.RECONNECTING -> drawLine(
+                color = MeshAmber.copy(alpha = 0.6f),
+                start = Offset(a.x, a.y), end = Offset(b.x, b.y),
+                strokeWidth = 1.6f * scale,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f * scale, 4f * scale), 0f),
+            )
+        }
     }
 }
 
-/** 绘制本机↔peer 边（按节点状态着色，失联不画——线断开）*/
+/** 绘制本机↔peer 边（按节点状态着色，失联不画——线断开；中继节点蓝虚线——路径非直连）*/
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
     nodes: List<TopoNode>,
 ) {
@@ -931,9 +1008,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyEdges(
                 cap = StrokeCap.Round,
             )
             TopoKind.REACHABLE -> drawLine(
-                color = Cyan.copy(alpha = 0.25f),
+                // v1.1.80：中继路径蓝虚线（区分于直连绿实线——"经中继到达"而非直连）
+                color = Cyan.copy(alpha = 0.55f),
                 start = start, end = end, strokeWidth = 1.8f * scale,
-                cap = StrokeCap.Round,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f * scale, 5f * scale), 0f),
             )
             TopoKind.ME, TopoKind.STALE -> { /* 不会到达 */ }
         }
@@ -1000,6 +1078,19 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTopologyNodes(
                 textAlign = android.graphics.Paint.Align.CENTER
             }
             c.nativeCanvas.drawText(n.name, cx, cy - n.r - 12f * scale, paint)
+        }
+        // v1.1.80 中继节点标注"经X"（节点下方）：明确该节点是经中继到达，非直连
+        if (n.kind == TopoKind.REACHABLE && n.relayVia.isNotBlank()) {
+            drawIntoCanvas { c ->
+                val paint = android.graphics.Paint().apply {
+                    color = Cyan.copy(alpha = 0.9f).toArgb()
+                    textSize = 11f * scale
+                    isAntiAlias = true
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    typeface = android.graphics.Typeface.MONOSPACE
+                }
+                c.nativeCanvas.drawText("经${n.relayVia.take(2)}", cx, cy + n.r + 16f * scale, paint)
+            }
         }
     }
 }

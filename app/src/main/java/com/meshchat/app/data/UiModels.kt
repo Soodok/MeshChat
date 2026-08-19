@@ -52,6 +52,8 @@ data class MeshPeer(
     val lastSeenAt: Long = 0,  // 最后收到对端帧的时刻（ms）：UI 显示"X 秒前信号"
     val relayVia: String = "",  // 经中继可达的经由节点 shortId（v1.1.0 多跳）；空 = 一跳直连
     val signalRatio: Double = -1.0,  // 链路信号强度(0-1) = PONG 回应速率 ÷ PING 发送速率；-1 样本不足（v1.1.17）
+    val relayAgeMs: Long = 0,   // v1.1.80 中继链路段新鲜度（ms）：中继方上报该节点心跳年龄；直连 = 0
+    val rttMs: Long = 0,        // v1.1.80 直连往返延迟估算（ms）：PING/PONG 往返；0 = 尚无样本
 )
 
 enum class MainDestination(val label: String, val icon: ImageVector) {

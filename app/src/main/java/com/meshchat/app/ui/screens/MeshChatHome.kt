@@ -46,6 +46,7 @@ import com.meshchat.app.data.ChatMessage
 import com.meshchat.app.data.ChatPreview
 import com.meshchat.app.data.MainDestination
 import com.meshchat.app.data.MeshPeer
+import com.meshchat.app.mesh.transport.LinkInfo
 import com.meshchat.app.security.capability.SecurityCapabilityStatus
 import com.meshchat.app.security.local.LocalSecuritySnapshot
 import com.meshchat.app.security.model.SecurityCapability
@@ -62,6 +63,8 @@ fun MeshChatHome(
     messages: List<ChatMessage>,
     conversations: List<ChatPreview>,
     peers: List<MeshPeer>,
+    /** v1.1.80 节点对直连边（拓扑图 peer-peer 边着色：绿=直连，黄=重连中；无边 = 无直连/未知）。 */
+    links: List<LinkInfo>,
     sessions: Set<String>,
     /** v1.1.50 群列表（已订阅群）。 */
     groups: List<com.meshchat.app.mesh.service.GroupInfo>,
@@ -118,9 +121,15 @@ fun MeshChatHome(
     /** v1.1.58 应用锁（设置页密码区）。 */
     hasLockPassword: Boolean,
     lockBiometricAvailable: Boolean,
+    /** v1.1.83 指纹版 DEK 副本真实状态（区别于设备支持）。 */
+    lockFingerprintEnabled: Boolean,
     onSetLockPassword: (String) -> Unit,
     onChangeLockPassword: (old: String, new: String) -> Boolean,
     onRemoveLockPassword: () -> Unit,
+    /** v1.1.83 设置密码后指纹副本缺失 → 弹认证启用指纹。 */
+    onBiometricBlobMissing: () -> Boolean,
+    onPrepareBiometricEnrollSession: () -> com.meshchat.app.security.lock.BiometricEnrollSession?,
+    onFinishBiometricEnroll: (com.meshchat.app.security.lock.BiometricEnrollSession?, javax.crypto.Cipher?) -> Boolean,
     /** v1.1.64 拉黑（删除对话 = 拒绝连接与消息；Mesh 页可解除）。 */
     blockedPeers: Set<String>,
     onUnblockPeer: (String) -> Unit,
@@ -252,16 +261,20 @@ fun MeshChatHome(
             "settings" -> GeneralSettingsScreen(
                 displayName = displayName,
                 onDisplayNameChange = onDisplayNameChange,
-                canEditDisplayName = sessions.isNotEmpty(),
+                canEditDisplayName = true,   // v1.1.78（用户）：昵称本地可改，无需会话
                 backgroundEnabled = backgroundEnabled,
                 onBackgroundEnabledChange = onBackgroundEnabledChange,
                 autoDiscovery = autoDiscovery,
                 onAutoDiscoveryChange = onAutoDiscoveryChange,
                 hasLockPassword = hasLockPassword,
                 lockBiometricAvailable = lockBiometricAvailable,
+                lockFingerprintEnabled = lockFingerprintEnabled,   // v1.1.83 真实指纹状态
                 onSetLockPassword = onSetLockPassword,
                 onChangeLockPassword = onChangeLockPassword,
                 onRemoveLockPassword = onRemoveLockPassword,
+                onBiometricBlobMissing = onBiometricBlobMissing,
+                onPrepareBiometricEnrollSession = onPrepareBiometricEnrollSession,
+                onFinishBiometricEnroll = onFinishBiometricEnroll,
                 wifiDirectEnabled = wifiDirectEnabled,
                 onWifiDirectEnabledChange = onWifiDirectEnabledChange,
                 onBack = { profileDetail = null },
@@ -290,9 +303,13 @@ fun MeshChatHome(
                 onBack = { profileDetail = null },
                 hasLockPassword = hasLockPassword,
                 lockBiometricAvailable = lockBiometricAvailable,
+                lockFingerprintEnabled = lockFingerprintEnabled,   // v1.1.83 真实指纹状态
                 onSetLockPassword = onSetLockPassword,
                 onChangeLockPassword = onChangeLockPassword,
                 onRemoveLockPassword = onRemoveLockPassword,
+                onBiometricBlobMissing = onBiometricBlobMissing,
+                onPrepareBiometricEnrollSession = onPrepareBiometricEnrollSession,
+                onFinishBiometricEnroll = onFinishBiometricEnroll,
             )
         }
         return
@@ -373,6 +390,7 @@ fun MeshChatHome(
                 MainDestination.MESH -> MeshScreen(
                     modifier = Modifier.padding(contentPadding),
                     peers = peers,
+                    links = links,
                     sessions = sessions,
                     pendingInvites = pendingInvites,
                     onPeerSelected = { peerId ->

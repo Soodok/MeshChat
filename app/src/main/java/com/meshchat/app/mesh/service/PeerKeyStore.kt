@@ -11,12 +11,16 @@ interface PeerKeyStore {
     fun fingerprint(peerId: String): String?
 
     fun saveFingerprint(peerId: String, fp: String)
+
+    /** v1.1.79 清除指纹记录（拉黑时双方清除）——下次重新握手重新 TOFU（指纹重立）。 */
+    fun remove(peerId: String)
 }
 
 /** 测试/未注入时的默认空实现（不记录 → 永不触发身份变更告警）。 */
 object NoopPeerKeyStore : PeerKeyStore {
     override fun fingerprint(peerId: String): String? = null
     override fun saveFingerprint(peerId: String, fp: String) {}
+    override fun remove(peerId: String) {}
 }
 
 /** SharedPreferences 实现：指纹存 meshchat_e2ee（与 E2EE 密钥同库），键 fp_<peerId>。 */
@@ -28,5 +32,9 @@ class SharedPrefsPeerKeyStore(context: Context) : PeerKeyStore {
 
     override fun saveFingerprint(peerId: String, fp: String) {
         prefs.edit().putString(key(peerId), fp).apply()
+    }
+
+    override fun remove(peerId: String) {
+        prefs.edit().remove(key(peerId)).apply()
     }
 }

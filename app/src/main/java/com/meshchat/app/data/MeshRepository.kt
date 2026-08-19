@@ -4,12 +4,17 @@ import com.meshchat.app.mesh.quality.BluetoothQuality
 import com.meshchat.app.mesh.service.MeshService
 import com.meshchat.app.mesh.storage.MessageStatus
 import com.meshchat.app.mesh.storage.MeshStore
+import com.meshchat.app.mesh.transport.LinkInfo
 import com.meshchat.app.mesh.transport.MeshPeerInfo
 import com.meshchat.app.mesh.transport.PeerPresence
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,6 +23,8 @@ interface MeshRepository {
     fun observeConversations(): Flow<List<ChatPreview>>
     fun observeMessages(convId: String): Flow<List<ChatMessage>>
     fun observePeers(): Flow<List<MeshPeer>>
+    /** v1.1.80 节点对直连边（拓扑图 peer-peer 边着色：绿=直连，黄=重连中；无边 = 无直连/未知）。 */
+    fun observeLinks(): Flow<List<LinkInfo>>
     fun observeSessions(): Flow<Set<String>>
     fun observePendingInvites(): Flow<Set<String>>
     fun observeInvites(): Flow<Map<String, Long>>
@@ -101,6 +108,8 @@ class MeshRepositoryImpl(
     override fun observePeers(): Flow<List<MeshPeer>> =
         service.peers.map { list -> list.map { it.toUiModel() } }
 
+    override fun observeLinks(): Flow<List<LinkInfo>> = service.links
+
     override fun startDiscovery() {
         service.start()               // 确保 Mesh 逻辑已启动（幂等）
         service.restartDiscovery()    // 强制重建 BLE：清空遗留状态（蓝牙从关到开/连接残留时必需）
@@ -153,7 +162,10 @@ class MeshRepositoryImpl(
 
     override fun deleteConversation(peerId: String) {
         store.deleteConversation("conv-$peerId")
-        service.blockPeer(peerId)   // v1.1.64：删除对话 = 拉黑（解除会话 + 移除节点 + 拒绝其连接/消息）
+        // v1.1.76：删除对话 = 仅清理本地记录 + 解除会话 + 移除节点（不再拉黑）。
+        // 重新搜索可再次发现对方并重新建立对话；彻底拒绝请用 Mesh 页「拉黑」按钮。
+        service.removeSession(peerId)
+        service.removePeer(peerId)
     }
 
     override val blockedPeers: kotlinx.coroutines.flow.StateFlow<Set<String>> = service.blockedPeers
@@ -175,21 +187,13 @@ class MeshRepositoryImpl(
     override val localKeyFallback: Boolean get() = service.localKeyFallback
 
     private fun MeshPeerInfo.toUiModel(): MeshPeer {
-        // 信号格数由协议层速率比决定（≥60% 满格 / ≥25% 两格 / ≥5% 一格）；样本不足回退 RSSI 格数
-        val strength = if (signalRatio >= 0.0) {
-            when {
-                signalRatio >= 0.6 -> 3
-                signalRatio >= 0.25 -> 2
-                signalRatio >= 0.05 -> 1
-                else -> 0
-            }
-        } else {
-            BluetoothQuality.bars(rssi)
-        }
+        // v1.1.81 信号格数 = 直接 dBm（用户：协议层"收发失联包"信号判断抽象易误判，改回 RSSI；阈值 90/100/110）
+        val strength = BluetoothQuality.bars(rssi)
         return MeshPeer(
             name = displayName.ifBlank { shortId }, shortId = shortId, hops = hops, strength = strength,
             rssi = rssi, lost = lost, reachable = !lost, presence = presence, lastSeenAt = lastSeenAt,
             relayVia = relayVia, signalRatio = signalRatio,
+            relayAgeMs = relayAgeMs, rttMs = rttMs,   // v1.1.80 中继链路健康/直连延迟
         )
     }
 
@@ -206,15 +210,22 @@ class MeshRepositoryImpl(
             MessageStatus.FAILED -> if (isGroup) "可能未送达" else "未送达"
         } + if (viaRelay) " · 经中继" else ""
         val file = if (kind == "FILE") {
+            // v1.1.86 修复：fileMeta 的 "size" 是 JSON 数字（fileMetaJson 写入），旧实现按 Map<String,String>
+            // 解码必抛类型不匹配 → 整段解析失败回退空表 → 气泡大小恒显 0B（仅活动传输的进度覆盖能显示真值）。
+            // 改用 JsonObject 按字段读取，兼容数字与字符串两种形态。
             val meta = runCatching {
-                kotlinx.serialization.json.Json.decodeFromString<Map<String, String>>(fileMeta ?: "{}")
-            }.getOrDefault(emptyMap())
+                kotlinx.serialization.json.Json.parseToJsonElement(fileMeta ?: "{}").jsonObject
+            }.getOrNull()
+            val sizePrim = meta?.get("size")?.jsonPrimitive
             FileUiMeta(
-                fileName = meta["fileName"] ?: text ?: "文件",
-                size = meta["size"]?.toLongOrNull() ?: 0L,
+                fileName = meta?.get("fileName")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: text ?: "文件",
+                size = sizePrim?.let {
+                    if (it.isString) it.content.toLongOrNull() else it.longOrNull
+                } ?: 0L,
                 progress = 0,
                 done = status == MessageStatus.DELIVERED,
-                uri = meta["downloadsUri"]?.takeIf { it.isNotBlank() },
+                uri = meta?.get("downloadsUri")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
             )
         } else null
         // v1.1.50 群聊气泡昵称：非本机群消息解析发送者昵称（markSeen 已学习，回退短 ID）

@@ -68,14 +68,36 @@ fun SecurityCenterScreen(
     /** v1.1.59 应用锁（安全中心密码设置入口）。 */
     hasLockPassword: Boolean,
     lockBiometricAvailable: Boolean,
+    /** v1.1.83 指纹版 DEK 副本是否真实存在（区别于"设备支持"）。 */
+    lockFingerprintEnabled: Boolean,
     onSetLockPassword: (String) -> Unit,
     onChangeLockPassword: (old: String, new: String) -> Boolean,
     onRemoveLockPassword: () -> Unit,
+    /** v1.1.83 设置密码后指纹副本缺失（keystore2 加密需认证）→ 弹认证启用指纹补写。 */
+    onBiometricBlobMissing: () -> Boolean,
+    onPrepareBiometricEnrollSession: () -> com.meshchat.app.security.lock.BiometricEnrollSession?,
+    onFinishBiometricEnroll: (com.meshchat.app.security.lock.BiometricEnrollSession?, javax.crypto.Cipher?) -> Boolean,
 ) {
     LaunchedEffect(Unit) { onRefreshLocalSecurity() }
     val summary = SecurityCenterPresenter.summary(localSnapshot?.assessment)
     val orderedStatuses = SecurityCapability.entries.mapNotNull { statuses[it] }
     var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
+    // v1.1.83 设置密码成功后指纹副本缺失 → 自动弹"启用指纹"认证
+    var pendingEnableFingerprint by remember { mutableStateOf(false) }
+    fun setLockPasswordAndMaybeEnroll(pw: String) {
+        onSetLockPassword(pw)
+        if (lockBiometricAvailable && onBiometricBlobMissing()) {
+            pendingEnableFingerprint = true
+        }
+    }
+
+    fun changeLockPasswordAndMaybeEnroll(old: String, new: String): Boolean {
+        val ok = onChangeLockPassword(old, new)
+        if (ok && lockBiometricAvailable && onBiometricBlobMissing()) {
+            pendingEnableFingerprint = true
+        }
+        return ok
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(Ink)) {
         SecurityCenterHeader(onBack)
@@ -132,7 +154,9 @@ fun SecurityCenterScreen(
                         }
                         Text(
                             if (hasLockPassword) {
-                                if (lockBiometricAvailable) "密码+指纹解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
+                                // v1.1.83 用真实指纹副本状态，避免"设备支持但未启用"误报
+                                if (lockFingerprintEnabled) "密码+指纹解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
+                                else if (lockBiometricAvailable) "密码解锁已启用（指纹未启用）：回前台自动锁定；可在解锁后自动提示或重新设置密码启用指纹。"
                                 else "密码解锁已启用：回前台自动锁定，会话/群密钥以最高强度加密存储。"
                             } else "设置密码后：每次进入应用需密码/指纹解锁，会话/群密钥以最高强度加密存储，锁定期间通知不显示内容。",
                             style = MaterialTheme.typography.bodySmall,
@@ -188,13 +212,14 @@ fun SecurityCenterScreen(
             title = "设置应用锁密码",
             confirmText = "设置",
             onChangeLockPassword = null,
-            onSetLockPassword = onSetLockPassword,
+            // v1.1.83 设置成功后指纹副本缺失 → 自动弹"启用指纹"认证
+            onSetLockPassword = ::setLockPasswordAndMaybeEnroll,
             onDismiss = { lockDialog = null },
         )
         LockDialog.CHANGE -> LockPasswordDialog(
             title = "修改应用锁密码",
             confirmText = "修改",
-            onChangeLockPassword = onChangeLockPassword,
+            onChangeLockPassword = ::changeLockPasswordAndMaybeEnroll,
             onSetLockPassword = null,
             onDismiss = { lockDialog = null },
         )
@@ -213,6 +238,15 @@ fun SecurityCenterScreen(
             },
         )
         null -> Unit
+    }
+
+    // v1.1.83 设置/修改密码成功但指纹副本缺失（keystore2 加密需认证）→ 自动弹"启用指纹"认证补写
+    if (pendingEnableFingerprint) {
+        EnableFingerprintPrompt(
+            onPrepareSession = onPrepareBiometricEnrollSession,
+            onFinishEnroll = onFinishBiometricEnroll,
+            onDone = { pendingEnableFingerprint = false },
+        )
     }
 }
 

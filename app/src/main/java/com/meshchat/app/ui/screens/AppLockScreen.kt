@@ -75,8 +75,12 @@ fun AppLockScreen(
     onVerifyPassword: (String) -> Boolean,
     /** v1.1.75 准备指纹解锁会话（Cipher+密文）；null = 指纹数据不可用（提示用密码解锁一次）。 */
     onPrepareBiometricSession: () -> com.meshchat.app.security.lock.BiometricAuthSession?,
-    /** v1.1.75 指纹认证成功后用已授权会话解密 DEK。 */
-    onFinishBiometricUnlock: (com.meshchat.app.security.lock.BiometricAuthSession?) -> Boolean,
+    /** v1.1.75 指纹认证成功后用已授权会话解密 DEK。v1.1.82 追加认证结果携带的 cipher（官方标准）。 */
+    onFinishBiometricUnlock: (com.meshchat.app.security.lock.BiometricAuthSession?, javax.crypto.Cipher?) -> Boolean,
+    /** v1.1.83 密码解锁后若指纹副本缺失（keystore2 加密需认证）→ 自动弹认证启用指纹。 */
+    onPrepareBiometricEnrollSession: () -> com.meshchat.app.security.lock.BiometricEnrollSession?,
+    onFinishBiometricEnroll: (com.meshchat.app.security.lock.BiometricEnrollSession?, javax.crypto.Cipher?) -> Boolean,
+    onBiometricBlobMissing: () -> Boolean,
     onRemainingLockoutMs: () -> Long,
 ) {
     val context = LocalContext.current
@@ -98,6 +102,9 @@ fun AppLockScreen(
     // v1.1.75 当前指纹解锁会话（Cipher 已绑定生物密钥）：认证成功回调用它解密 DEK
     var activeSession by remember { mutableStateOf<com.meshchat.app.security.lock.BiometricAuthSession?>(null) }
 
+    // v1.1.83 密码解锁成功且指纹副本缺失 → 解锁后自动弹"启用指纹"认证（认证后加密 DEK 补写副本）
+    var pendingEnableFingerprint by remember { mutableStateOf(false) }
+
     // v1.1.62 指纹认证改用系统 API：android.hardware.biometrics.BiometricPrompt（API 30+ 才公开 Builder）。
     // 原 androidx.biometric 兼容层在部分设备（华为/部分 ROM）点击 authenticate 抛异常 → 主线程崩溃卡退；
     // 系统 API 直接弹系统认证对话框、无 Fragment 依赖，且 authenticate 全链路 runCatching 兜底。
@@ -107,7 +114,8 @@ fun AppLockScreen(
         object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
                 // v1.1.75 认证成功 → keystore 已授权生物密钥 → 用会话 cipher 解密 DEK（CryptoObject 必须非 null）
-                if (!onFinishBiometricUnlock(activeSession)) {
+                // v1.1.82 官方标准：优先取认证结果携带的 cipher（同一会话 cipher），不依赖 UI 状态捕获
+                if (!onFinishBiometricUnlock(activeSession, result.cryptoObject?.cipher)) {
                     showBioError = true
                     com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证成功但 DEK 解密失败")
                 }
@@ -141,7 +149,7 @@ fun AppLockScreen(
     val androidxCallback = remember(context) {
         object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: androidx.biometric.BiometricPrompt.AuthenticationResult) {
-                if (!onFinishBiometricUnlock(activeSession)) showBioError = true
+                if (!onFinishBiometricUnlock(activeSession, result.cryptoObject?.cipher)) showBioError = true
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -171,7 +179,9 @@ fun AppLockScreen(
         // 认证成功后 keystore 授权该 cipher，doFinal 解密 DEK 才不抛异常（原 null CryptoObject → 指纹永远无效）
         val session = onPrepareBiometricSession()
         if (session == null) {
-            error = "指纹数据不可用，请先用密码解锁一次（将自动重新录入指纹）"
+            // v1.1.83 指纹副本缺失时不再提示"用密码解锁一次自动重建"（keystore2 加密也需认证），
+            // 而是直接走密码解锁后的自动"启用指纹"认证。
+            error = "指纹解锁未启用，请先用密码解锁（随后将自动提示启用指纹）"
             return
         }
         activeSession = session
@@ -227,6 +237,10 @@ fun AppLockScreen(
         if (ok) {
             password = ""
             error = null
+            // v1.1.83 密码解锁成功但指纹副本缺失（keystore2/模拟器加密需认证）→ 解锁后自动弹"启用指纹"认证补写
+            if (biometricAvailable && onBiometricBlobMissing()) {
+                pendingEnableFingerprint = true
+            }
         } else {
             error = if (lockout.failCount > 0) "密码错误（已错 ${lockout.failCount}/${MAX_FAILURES} 次，连续错误将锁定 30 秒）" else "密码错误"
         }
@@ -383,6 +397,102 @@ fun AppLockScreen(
                 color = TextSecondary,
                 modifier = Modifier.padding(start = 8.dp),
             )
+        }
+    }
+
+    // v1.1.83 密码解锁成功且指纹副本缺失 → 弹"启用指纹"认证（认证后加密 DEK 补写，官方 android/security-samples 标准）
+    if (pendingEnableFingerprint) {
+        EnableFingerprintPrompt(
+            onPrepareSession = onPrepareBiometricEnrollSession,
+            onFinishEnroll = onFinishBiometricEnroll,
+            onDone = { pendingEnableFingerprint = false },
+        )
+    }
+}
+
+/**
+ * v1.1.83 启用指纹解锁认证框：ENCRYPT_MODE 会话 cipher 作为 CryptoObject 弹系统认证，
+ * 认证成功后用已授权 cipher 加密内存 DEK 补写指纹副本（官方 android/security-samples 标准做法——
+ * keystore2 上 setUserAuthenticationRequired 密钥连加密也需认证 token，直接加密必报 KEY_USER_NOT_AUTHENTICATED）。
+ * 取消/失败/无会话 → onDone(false)（下次密码解锁或设置密码时仍会重新提示）。
+ */
+@Composable
+internal fun EnableFingerprintPrompt(
+    onPrepareSession: () -> com.meshchat.app.security.lock.BiometricEnrollSession?,
+    onFinishEnroll: (com.meshchat.app.security.lock.BiometricEnrollSession?, javax.crypto.Cipher?) -> Boolean,
+    onDone: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    val sessionRef = remember { mutableStateOf<com.meshchat.app.security.lock.BiometricEnrollSession?>(null) }
+    LaunchedEffect(Unit) {
+        val s = onPrepareSession()
+        if (s == null) {
+            onDone(false)
+            return@LaunchedEffect
+        }
+        sessionRef.value = s
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val prompt = android.hardware.biometrics.BiometricPrompt.Builder(context)
+                .setTitle("启用指纹解锁")
+                .setSubtitle("验证指纹后，将启用指纹快速解锁 MeshChat")
+                .setAllowedAuthenticators(
+                    android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                        android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+                )
+                .build()
+            val callback = object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
+                    val ok = onFinishEnroll(sessionRef.value, result.cryptoObject?.cipher)
+                    com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "启用指纹认证成功 → 指纹副本${if (ok) "已写入" else "写入失败"}")
+                    onDone(ok)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "启用指纹认证中断 code=$errorCode $errString")
+                    onDone(false)
+                }
+
+                override fun onAuthenticationFailed() {
+                    com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "启用指纹认证失败（未匹配）")
+                    onDone(false)
+                }
+            }
+            runCatching {
+                prompt.authenticate(
+                    android.hardware.biometrics.BiometricPrompt.CryptoObject(s.cipher),
+                    android.os.CancellationSignal(),
+                    ContextCompat.getMainExecutor(context),
+                    callback,
+                )
+            }.onFailure { t ->
+                android.util.Log.e(TAG, "enable-fingerprint prompt failed", t)
+                onDone(false)
+            }
+        } else {
+            // API 26-29 兜底：androidx 兼容层（需 FragmentActivity 宿主）
+            val activity = context as? FragmentActivity
+            if (activity == null) {
+                onDone(false)
+                return@LaunchedEffect
+            }
+            val cb = object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: androidx.biometric.BiometricPrompt.AuthenticationResult) {
+                    val ok = onFinishEnroll(sessionRef.value, result.cryptoObject?.cipher)
+                    onDone(ok)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) { onDone(false) }
+                override fun onAuthenticationFailed() { onDone(false) }
+            }
+            val info = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
+                .setTitle("启用指纹解锁")
+                .setSubtitle("验证指纹后，将启用指纹快速解锁 MeshChat")
+                .setNegativeButtonText("取消")
+                .build()
+            runCatching {
+                androidx.biometric.BiometricPrompt(activity, ContextCompat.getMainExecutor(context), cb)
+                    .authenticate(info, androidx.biometric.BiometricPrompt.CryptoObject(s.cipher))
+            }.onFailure { onDone(false) }
         }
     }
 }

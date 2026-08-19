@@ -165,9 +165,15 @@ fun GeneralSettingsScreen(
     /** v1.1.58 应用锁（密码/指纹/DEK 加密密钥库）。 */
     hasLockPassword: Boolean,
     lockBiometricAvailable: Boolean,
+    /** v1.1.83 指纹版 DEK 副本真实状态。 */
+    lockFingerprintEnabled: Boolean,
     onSetLockPassword: (String) -> Unit,
     onChangeLockPassword: (old: String, new: String) -> Boolean,
     onRemoveLockPassword: () -> Unit,
+    /** v1.1.83 设置密码后指纹副本缺失 → 弹认证启用指纹。 */
+    onBiometricBlobMissing: () -> Boolean,
+    onPrepareBiometricEnrollSession: () -> com.meshchat.app.security.lock.BiometricEnrollSession?,
+    onFinishBiometricEnroll: (com.meshchat.app.security.lock.BiometricEnrollSession?, javax.crypto.Cipher?) -> Boolean,
     /** Beta v1.1.51：Wi-Fi Direct 增强（默认关——省电，主动开启增强通讯能力）。 */
     wifiDirectEnabled: Boolean,
     onWifiDirectEnabledChange: (Boolean) -> Unit,
@@ -175,6 +181,17 @@ fun GeneralSettingsScreen(
 ) {
     var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
     var lockError by remember { mutableStateOf<String?>(null) }
+    // v1.1.83 设置/修改密码成功后指纹副本缺失 → 自动弹"启用指纹"认证
+    var pendingEnableFingerprint by remember { mutableStateOf(false) }
+    fun setLockPasswordAndMaybeEnroll(pw: String) {
+        onSetLockPassword(pw)
+        if (lockBiometricAvailable && onBiometricBlobMissing()) pendingEnableFingerprint = true
+    }
+    fun changeLockPasswordAndMaybeEnroll(old: String, new: String): Boolean {
+        val ok = onChangeLockPassword(old, new)
+        if (ok && lockBiometricAvailable && onBiometricBlobMissing()) pendingEnableFingerprint = true
+        return ok
+    }
 
     Column(
         modifier = Modifier
@@ -305,13 +322,14 @@ fun GeneralSettingsScreen(
             title = "设置应用锁密码",
             confirmText = "设置",
             onChangeLockPassword = null,
-            onSetLockPassword = onSetLockPassword,
+            // v1.1.83 设置成功后指纹副本缺失 → 自动弹"启用指纹"认证
+            onSetLockPassword = ::setLockPasswordAndMaybeEnroll,
             onDismiss = { lockDialog = null },
         )
         LockDialog.CHANGE -> LockPasswordDialog(
             title = "修改应用锁密码",
             confirmText = "修改",
-            onChangeLockPassword = onChangeLockPassword,
+            onChangeLockPassword = ::changeLockPasswordAndMaybeEnroll,
             onSetLockPassword = null,
             onDismiss = { lockDialog = null },
         )
@@ -330,6 +348,15 @@ fun GeneralSettingsScreen(
             },
         )
         null -> Unit
+    }
+
+    // v1.1.83 设置/修改密码成功但指纹副本缺失（keystore2 加密需认证）→ 自动弹"启用指纹"认证补写
+    if (pendingEnableFingerprint) {
+        EnableFingerprintPrompt(
+            onPrepareSession = onPrepareBiometricEnrollSession,
+            onFinishEnroll = onFinishBiometricEnroll,
+            onDone = { pendingEnableFingerprint = false },
+        )
     }
 }
 

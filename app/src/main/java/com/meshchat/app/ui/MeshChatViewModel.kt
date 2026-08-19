@@ -8,6 +8,7 @@ import com.meshchat.app.data.ConversationPreferences
 import com.meshchat.app.data.FileUiMeta
 import com.meshchat.app.data.MeshPeer
 import com.meshchat.app.data.MeshRepository
+import com.meshchat.app.mesh.transport.LinkInfo
 import com.meshchat.app.mesh.debug.DebugControl
 import com.meshchat.app.mesh.transfer.TransferStatus
 import com.meshchat.app.security.capability.SecurityCapabilityManager
@@ -101,10 +102,30 @@ class MeshChatViewModel(
     fun prepareBiometricSession(): com.meshchat.app.security.lock.BiometricAuthSession? =
         appLock.prepareBiometricSession()
 
-    /** v1.1.75 指纹解锁：BiometricPrompt 认证成功回调里调用（认证后解密，兼容华为等 ROM）。 */
+    /** v1.1.75 指纹解锁：BiometricPrompt 认证成功回调里调用（认证后解密，兼容华为等 ROM）。
+     *  v1.1.82 authenticatedCipher = 认证结果 result.cryptoObject.cipher（官方标准，避免 UI 状态捕获）。 */
     fun finishBiometricUnlockAfterAuth(
         session: com.meshchat.app.security.lock.BiometricAuthSession? = null,
-    ): Boolean = appLock.finishBiometricUnlockAfterAuth(session)
+        authenticatedCipher: javax.crypto.Cipher? = null,
+    ): Boolean = appLock.finishBiometricUnlockAfterAuth(session, authenticatedCipher)
+
+    // ===== v1.1.83 启用指纹链路（认证后加密 DEK 存指纹副本，官方 android/security-samples 标准）=====
+
+    /** 指纹版 DEK 副本是否真实存在（UI 据此显示"密码+指纹已启用"，而非仅设备支持）。 */
+    val lockFingerprintEnabled: StateFlow<Boolean> = appLock.fingerprintEnabled
+
+    /** 指纹副本缺失（设置密码/解锁后 UI 应弹认证启用指纹补写）。 */
+    fun lockBiometricBlobMissing(): Boolean = appLock.biometricBlobMissing
+
+    /** 准备"启用指纹"认证会话（ENCRYPT_MODE Cipher，init 无需认证）。 */
+    fun prepareBiometricEnrollSession(): com.meshchat.app.security.lock.BiometricEnrollSession? =
+        appLock.prepareBiometricEnrollSession()
+
+    /** 指纹认证成功后用已授权 cipher 加密 DEK 补写指纹副本。 */
+    fun finishBiometricEnrollAfterAuth(
+        session: com.meshchat.app.security.lock.BiometricEnrollSession? = null,
+        authenticatedCipher: javax.crypto.Cipher? = null,
+    ): Boolean = appLock.finishBiometricEnrollAfterAuth(session, authenticatedCipher)
 
     /** 剩余锁定毫秒数（>0 时禁用解锁并倒计时）。 */
     fun remainingLockoutMs(): Long = appLock.remainingLockoutMs()
@@ -132,7 +153,8 @@ class MeshChatViewModel(
     }
 
     fun updateDisplayName(value: String) {
-        if (sessions.value.isNotEmpty()) setDisplayName(value)
+        // v1.1.78（用户）：用户名改名无需连接，本地直接修改并随心跳广播。
+        setDisplayName(value)
     }
 
     // ---- 调试中心（必须在 init 之前声明：Kotlin 按声明顺序初始化，init 里 startDebugLoop 立即读取这些属性）----
@@ -386,6 +408,10 @@ class MeshChatViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val peers: StateFlow<List<MeshPeer>> = repository.observePeers()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** v1.1.80 节点对直连边（拓扑图 peer-peer 边着色：绿=直连，黄=重连中）。 */
+    val links: StateFlow<List<LinkInfo>> = repository.observeLinks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val sessions: StateFlow<Set<String>> = repository.observeSessions()
