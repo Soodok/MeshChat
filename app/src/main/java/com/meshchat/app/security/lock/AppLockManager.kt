@@ -56,9 +56,11 @@ class AppLockManager(private val context: Context) {
     /** 指纹版 DEK 副本是否存在（指纹解锁可用性的真实判据）。 */
     val hasFingerprintBlob: Boolean get() = prefs.contains(KEY_DEK_BY_BIO)
 
-    /** 设备是否支持生物识别（指纹/面容）——供 UI 显示指纹按钮。 */
+    /** 设备是否支持生物识别（指纹/面容）——供 UI 显示指纹按钮。
+     *  v1.1.89 审计修复：canAuthenticate(int) 与 Authenticators.BIOMETRIC_STRONG 仅 API 30+，
+     *  原 Q+ 门控在 API 29 上抛 NoSuchMethodError（Error 不被 runCatching 捕获 → 崩溃）；门控提到 R。 */
     fun biometricAvailable(): Boolean = runCatching {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val bm = context.getSystemService(BiometricManager::class.java)
             bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
         } else {

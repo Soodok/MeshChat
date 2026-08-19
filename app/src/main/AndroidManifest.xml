@@ -16,8 +16,11 @@
     <!-- API 33+：NEARBY_WIFI_DEVICES 近似权限（替代位置权限），neverForLocation 表明不用于定位 -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
-    <!-- API <=32 位置权限：API <=30 BLE 扫描必需；API 31-32 Wi-Fi Direct discoverPeers 也必需（33+ 由 NEARBY_WIFI_DEVICES 覆盖） -->
+    <!-- API <=32 位置权限：API <=30 BLE 扫描必需；API 31-32 Wi-Fi Direct discoverPeers 也必需（33+ 由 NEARBY_WIFI_DEVICES 覆盖）。
+         FINE 与 COARSE 同声明（Android 12+ 允许用户只授"大致位置"，双声明保证可选性） -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="32" />
     <!-- Wi-Fi Direct 数据通道走标准 TCP/UDP Socket，必须 INTERNET -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -51,7 +54,7 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".MeshChatService"
+            android:name=".mesh.service.MeshChatService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
     </application>

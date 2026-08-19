@@ -1,6 +1,7 @@
 package com.meshchat.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.os.Build
@@ -16,7 +17,9 @@ import com.meshchat.app.ui.theme.MeshChatTheme
 import com.meshchat.app.security.model.SecurityCapability
 
 class MainActivity : ComponentActivity() {
-    /** 按系统版本请求正确的 BLE 权限：API 31+ 用新蓝牙权限；API <=30 用位置权限（旧权限由 Manifest 声明即授予）。 */
+    /** 按系统版本请求正确的 BLE 权限：API 31+ 用新蓝牙权限；API <=30 用位置权限（旧权限由 Manifest 声明即授予）。
+     *  NEARBY_WIFI_DEVICES 常量在 API 33+ 分支内引用（InlinedApi 常量为编译期内联，此处仅做字符串入队，运行时安全）。 */
+    @SuppressLint("InlinedApi")
     private val requiredPermissions: Array<String> = buildList {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             add(Manifest.permission.BLUETOOTH_SCAN)

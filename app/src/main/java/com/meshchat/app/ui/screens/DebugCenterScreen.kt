@@ -1,5 +1,6 @@
 package com.meshchat.app.ui.screens
 
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -451,22 +452,32 @@ private fun LogCard(logs: List<String>, onClear: () -> Unit) {
     }
 }
 
-/** 导出诊断日志到公共 Download（MediaStore，API 29+ 免权限）。 */
+/** 导出诊断日志到公共 Download：API 29+ 走 MediaStore（免权限）；API 26-28 走公共目录（需 WRITE_EXTERNAL_STORAGE 运行时权限）。
+ *  v1.1.89 审计修复：MediaStore.Downloads.EXTERNAL_CONTENT_URI 仅 API 29+，低版本直接引用 → NoSuchFieldError 崩溃。 */
 private fun exportDebugLogToDownloads(context: Context): String {
     val content = com.meshchat.app.mesh.debug.DebugLogBuffer.dump()
     if (content.isBlank()) return "日志为空（先传一次文件）"
     return runCatching {
         val name = "meshchat_debug_log.txt"
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-            put(MediaStore.Downloads.IS_PENDING, 1)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return "导出失败（MediaStore 不可用）"
+            context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+            val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+            context.contentResolver.update(uri, done, null, null)
+        } else {
+            val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS,
+            )
+            if (dir.exists() || dir.mkdirs()) {
+                java.io.File(dir, name).writeText(content)
+            }
         }
-        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return "导出失败（MediaStore 不可用）"
-        context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
-        val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
-        context.contentResolver.update(uri, done, null, null)
-        "meshchat_debug_log.txt"
+        name
     }.getOrElse { "导出失败：$it" }
 }

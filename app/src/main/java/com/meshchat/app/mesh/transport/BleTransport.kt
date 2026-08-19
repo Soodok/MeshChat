@@ -1,5 +1,6 @@
 package com.meshchat.app.mesh.transport
 
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -31,7 +32,13 @@ import java.util.UUID
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
-/** 蓝牙载体实现：广播通告（Service Data 携带短 ID）+ 扫描发现（按 Service Data 识别）+ GATT 服务端/客户端 + 帧收发。 */
+/**
+ * 蓝牙载体实现：广播通告（Service Data 携带短 ID）+ 扫描发现（按 Service Data 识别）+ GATT 服务端/客户端 + 帧收发。
+ * v1.1.89 审计：所有 GATT/广播/扫描调用所需的运行时权限（BLUETOOTH_SCAN/CONNECT/ADVERTISE、定位）在
+ * MainActivity 启动时统一请求；本类每个权限敏感调用均已 runCatching 兜底或仅在授权后入口（transport.start）触发，
+ * 权限被拒/运行时撤销时优雅降级而非崩溃。lint 无法识别 runCatching 兜底，故类级抑制 MissingPermission。
+ */
+@android.annotation.SuppressLint("MissingPermission")
 class BleTransport(
     private val context: Context,
     private val serviceUuid: UUID = UUID.fromString("0000A5E1-0000-1000-8000-00805F9B34FB"),
@@ -188,7 +195,7 @@ class BleTransport(
             offset: Int,
             value: ByteArray?,
         ) {
-            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+            gattServer?.let { server -> runCatching { server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null) } }
             val enabled = value != null && value.isNotEmpty() && value[0].toInt() != 0
             if (enabled) {
                 subscribedDevices.add(device.address)
@@ -214,7 +221,7 @@ class BleTransport(
         ) {
             debugStats.recordWriteRequestReceived()
             Log.d(TAG, "write request from ${device.address} (${value?.size ?: 0}B)")
-            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+            gattServer?.let { server -> runCatching { server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null) } }
             // 关键修复：收到对端写帧即视为"可 notify 回传"——收到帧本身证明链路活着。
             // 对端进程被杀后重连时，CCCD 订阅写入经常丢失（server 端 subscribedDevices 为空），
             // 回执/PONG 的 notify 会被静默丢弃，导致重启方永远收不到送达确认（直到二次重启补订阅）。
@@ -369,7 +376,13 @@ class BleTransport(
     }
 
     private fun registerServer() {
-        gattServer = bluetoothManager.openGattServer(context, gattServerCallback)
+        // v1.1.89 审计防御：openGattServer 在 API 31+ 需 BLUETOOTH_CONNECT，权限被拒/运行时撤销 → SecurityException；
+        // runCatching 兜底降级（无 server 通道仅影响 notify 回传，central 写通道照常）
+        gattServer = runCatching { bluetoothManager.openGattServer(context, gattServerCallback) }.getOrNull()
+        if (gattServer == null) {
+            Log.w(TAG, "openGattServer failed (permission revoked / BT off?)")
+            return
+        }
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         val characteristic = BluetoothGattCharacteristic(
             charUuid,
@@ -436,7 +449,9 @@ class BleTransport(
                 .addServiceData(ParcelUuid(ACK_UUID), ackBytes)
                 .build()
         } else null
-        advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
+        // v1.1.89 审计防御：API 31+ 需 BLUETOOTH_ADVERTISE；权限撤销 → SecurityException，runCatching 兜底降级
+        runCatching { advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback) }
+            .onFailure { Log.w(TAG, "startAdvertising failed: $it"); advertisingStarted = false }
     }
 
     private fun startScanning() {
@@ -447,7 +462,9 @@ class BleTransport(
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        scanner.startScan(null, settings, scanCallback)
+        // v1.1.89 审计防御：API 31+ 需 BLUETOOTH_SCAN；权限撤销 → SecurityException，runCatching 兜底降级
+        runCatching { scanner.startScan(null, settings, scanCallback) }
+            .onFailure { Log.w(TAG, "startScan failed: $it"); scanningStarted = false }
     }
 
     /** 停广播（幂等）。 */
@@ -566,7 +583,9 @@ class BleTransport(
 
                     /** discoverServices + 超时兜底：部分 ROM 上回调永不触发，导致帧滞留 pendingFrames。 */
                     private fun discoverServicesWithTimeout(gatt: BluetoothGatt) {
-                        gatt.discoverServices()
+                        // v1.1.89 审计防御：API 31+ 需 BLUETOOTH_CONNECT；权限撤销 → SecurityException 兜底
+                        runCatching { gatt.discoverServices() }
+                            .onFailure { Log.w(TAG, "discoverServices failed: $it") }
                         val timer = object : Runnable {
                             override fun run() {
                                 when {
@@ -716,6 +735,7 @@ class BleTransport(
      * API 26-32 用三参（单参 NoSuchMethodError）。返回值：API 33+ 单参 boolean；API 26-32 三参
      * 编译期 int（SDK 36 定义）运行时 boolean（true=1/false=0）→ 判 r != 0。
      */
+    @SuppressLint("NewApi")   // v1.1.89 审计：3 参 writeCharacteristic 自 API 21 存在（API 33+ 弃用）；lint 对弃用重载误报 NewApi，实际有 SDK 分支门控
     private fun writeCharacteristicCompat(
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,

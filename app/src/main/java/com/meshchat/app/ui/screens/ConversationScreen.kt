@@ -322,7 +322,8 @@ private fun FileCard(f: FileUiMeta, message: ChatMessage, onOpen: () -> Unit) {
 }
 
 private fun formatSize(bytes: Long): String = when {
-    bytes >= 1024 * 1024 -> String.format("%.1f MB", bytes / 1024f / 1024f)
-    bytes >= 1024 -> String.format("%.1f KB", bytes / 1024f)
+    // v1.1.89 显式 Locale：String.format 默认语言环境在部分 locale 下格式异常（DefaultLocale lint）
+    bytes >= 1024 * 1024 -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1024f / 1024f)
+    bytes >= 1024 -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024f)
     else -> "$bytes B"
 }

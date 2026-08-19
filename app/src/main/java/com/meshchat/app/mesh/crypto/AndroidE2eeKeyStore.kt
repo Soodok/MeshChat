@@ -1,5 +1,6 @@
 package com.meshchat.app.mesh.crypto
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -24,6 +25,7 @@ class AndroidE2eeKeyStore(
 
     private val alias = "meshchat_e2ee_p256"
 
+    @SuppressLint("WrongConstant")   // v1.1.89 审计：PURPOSE_AGREE 为 API 28+ 常量，用数字值 16 保 minSdk 26 编译（生成失败由调用方 runCatching 降级内存密钥）
     override fun localKeyPair(): KeyPair {
         if (keyStore.containsAlias(alias)) {
             val entry = keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry

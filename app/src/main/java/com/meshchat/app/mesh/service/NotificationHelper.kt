@@ -29,7 +29,7 @@ class NotificationHelper(
     private val nm = context.getSystemService(NotificationManager::class.java)
 
     fun ensureChannels() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        // minSdk 26（API 26+）恒满足渠道要求，无需 SDK 分支
         nm.createNotificationChannel(
             NotificationChannel(SERVICE_CHANNEL, "MeshChat 后台服务", NotificationManager.IMPORTANCE_MIN),
         )

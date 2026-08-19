@@ -1,6 +1,7 @@
 package com.meshchat.app
 
 import android.app.Application
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -202,15 +203,23 @@ class MeshChatApplication : Application() {
     }
 
     /** 本机蓝牙名称（用于界面展示本设备蓝牙信息）；无权限/异常时返回 null 而非崩溃。 */
+    @get:SuppressLint("MissingPermission")
     val localBluetoothName: String? get() = runCatching { bluetoothManager.adapter?.name }.getOrNull()
 
-    /** 本机蓝牙 MAC 地址（界面展示用）；无权限/异常时返回 null 而非崩溃。 */
+    /** 本机蓝牙 MAC 地址（界面展示用；仅调试展示，非功能依赖）；无权限/异常时返回 null 而非崩溃。 */
+    @get:SuppressLint("HardwareIds", "MissingPermission")
     val localBluetoothAddress: String? get() = runCatching { bluetoothManager.adapter?.address }.getOrNull()
 
-    /** 启动 Mesh 服务：后台常驻开启时走前台服务（息屏/后台继续收发），否则前台直跑。 */
+    /** 启动 Mesh 服务：后台常驻开启时走前台服务（息屏/后台继续收发），否则前台直跑。
+     *  v1.1.89 审计：startForegroundService 组件未注册时抛 ServiceNotFoundException、Android 12+ 后台启动抛
+     *  ForegroundServiceStartNotAllowedException——runCatching 兜底：失败时降级直跑（不崩溃，功能照常）。 */
     fun startMesh() {
         if (backgroundEnabled) {
-            startForegroundService(Intent(this, MeshChatService::class.java))
+            runCatching { startForegroundService(Intent(this, MeshChatService::class.java)) }
+                .onFailure {
+                    Log.w("MeshApp", "startForegroundService failed, fallback to direct service.start: $it")
+                    service.start()
+                }
         } else {
             service.start()
         }

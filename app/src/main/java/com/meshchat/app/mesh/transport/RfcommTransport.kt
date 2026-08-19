@@ -29,7 +29,10 @@ import kotlinx.coroutines.launch
 /**
  * 经典蓝牙 RFCOMM 高吞吐载体：文件数据传输通道（BLE 发现/握手保留）。
  * 服务端 listen+accept；客户端 connect(address)（自动配对）；peerId→socket 映射；4 字节长度前缀分帧。
+ * v1.1.89 审计：RFCOMM 调用需 BLUETOOTH_CONNECT（API 31+），权限启动时统一请求；本类权限敏感调用均已
+ * runCatching 兜底，权限被拒时优雅降级（RFCOMM 不可用，文件回退 BLE/WFD），lint 无法识别故类级抑制。
  */
+@android.annotation.SuppressLint("MissingPermission")
 class RfcommTransport(
     private val context: Context,
     private val sdpUuid: UUID = UUID.fromString("0000A5E3-0000-1000-8000-00805F9B34FB"),

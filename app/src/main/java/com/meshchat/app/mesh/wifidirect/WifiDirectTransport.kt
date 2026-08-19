@@ -52,8 +52,11 @@ import kotlinx.coroutines.launch
  * v1.1.84 接入 MeshService 消息路由（WfdChannel）：P2P TCP 通道不再空转——
  * 单播帧（消息/心跳/文件块）优先走它，BLE 广播仅作中继/兜底。
  *
- * P1 范围：一对一连接打通。P2 扩展多成员星域（UDP 组内广播/成员表/断开重建）见规格 §8。
+ * v1.1.89 审计：WifiP2pManager 调用需 NEARBY_WIFI_DEVICES（API 33+）/定位（API 31-32），启动时统一请求，
+ * enable() 入口经 diagnoseUnavailable 校验权限，缺失时降级 DISABLED 不触发任何 P2P 调用；各权限敏感调用均
+ * runCatching 兜底，lint 无法识别故类级抑制 MissingPermission。
  */
+@android.annotation.SuppressLint("MissingPermission")
 class WifiDirectTransport(
     private val context: Context,
     private val shortId: String,
@@ -196,13 +199,19 @@ class WifiDirectTransport(
         startTcpServer()
         // v1.1.85 获取本机 P2P 信息（MAC + 设备名）：requestPeers 的 deviceList 可能包含本机自己，
         // 需用本机 MAC/设备名双重判据排除，否则会 connect 自己（reason=2 死循环）
-        runCatching { manager?.requestDeviceInfo(channel ?: return@runCatching) { d ->
-            if (d != null) {
-                localDeviceAddress = d.deviceAddress
-                localDeviceName = d.deviceName
-                wlog("local p2p device name=${d.deviceName} addr=${d.deviceAddress}")
-            }
-        } }
+        // v1.1.89 审计修复：requestDeviceInfo 仅 API 29+ 存在，API 26-28 调用抛 NoSuchMethodError
+        // （Error 不被 runCatching 捕获 → 崩溃）；低版本跳过，localDeviceAddress=null 回落默认 intent。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { manager?.requestDeviceInfo(channel ?: return@runCatching) { d ->
+                if (d != null) {
+                    localDeviceAddress = d.deviceAddress
+                    localDeviceName = d.deviceName
+                    wlog("local p2p device name=${d.deviceName} addr=${d.deviceAddress}")
+                }
+            } }
+        } else {
+            Log.d(TAG, "requestDeviceInfo requires API 29+, skip (API ${Build.VERSION.SDK_INT})")
+        }
         scope.launch { discoveryLoop() }
         // v1.1.86 TCP 保活：组内无流量时周期性写身份帧，探半开 socket + 防 ROM 丢闲置组
         scope.launch { tcpKeepaliveLoop() }

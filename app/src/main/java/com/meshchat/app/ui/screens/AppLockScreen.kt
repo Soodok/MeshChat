@@ -105,31 +105,31 @@ fun AppLockScreen(
     // v1.1.83 密码解锁成功且指纹副本缺失 → 解锁后自动弹"启用指纹"认证（认证后加密 DEK 补写副本）
     var pendingEnableFingerprint by remember { mutableStateOf(false) }
 
-    // v1.1.62 指纹认证改用系统 API：android.hardware.biometrics.BiometricPrompt（API 30+ 才公开 Builder）。
-    // 原 androidx.biometric 兼容层在部分设备（华为/部分 ROM）点击 authenticate 抛异常 → 主线程崩溃卡退；
-    // 系统 API 直接弹系统认证对话框、无 Fragment 依赖，且 authenticate 全链路 runCatching 兜底。
-    // 注：系统 BiometricPrompt 构造器为 @hide（package-private），公开用法 = Builder.build() + authenticate(callback,...)。
-    //     API 28/29 系统 API 仍不可用（Builder 无 setAllowedAuthenticators），只能走 androidx。
-    val biometricCallback = remember(context) {
-        object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
-                // v1.1.75 认证成功 → keystore 已授权生物密钥 → 用会话 cipher 解密 DEK（CryptoObject 必须非 null）
-                // v1.1.82 官方标准：优先取认证结果携带的 cipher（同一会话 cipher），不依赖 UI 状态捕获
-                if (!onFinishBiometricUnlock(activeSession, result.cryptoObject?.cipher)) {
+    // v1.1.89 审计修复：框架 BiometricPrompt.AuthenticationCallback 仅 API 28+ 存在，且回调只在 R+ 系统认证路径
+    // 使用；原实现对象在 Compose 首帧即实例化 → API 26/27 引用不存在类 → NoClassDefFoundError 崩溃。
+    // 改为仅 R+ 才创建，低版本走 androidx 兼容层（androidxCallback）。
+    val biometricCallback: android.hardware.biometrics.BiometricPrompt.AuthenticationCallback? = remember(context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) {
+                    // v1.1.75 认证成功 → keystore 已授权生物密钥 → 用会话 cipher 解密 DEK（CryptoObject 必须非 null）
+                    // v1.1.82 官方标准：优先取认证结果携带的 cipher（同一会话 cipher），不依赖 UI 状态捕获
+                    if (!onFinishBiometricUnlock(activeSession, result.cryptoObject?.cipher)) {
+                        showBioError = true
+                        com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证成功但 DEK 解密失败")
+                    }
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证错误 code=$errorCode $errString")
+                    error = "指纹认证被中断（$errString），请重试或使用密码"
+                }
+
+                override fun onAuthenticationFailed() {
                     showBioError = true
-                    com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证成功但 DEK 解密失败")
                 }
             }
-
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                com.meshchat.app.mesh.debug.DebugLogBuffer.log("AppLock", "指纹认证错误 code=$errorCode $errString")
-                error = "指纹认证被中断（$errString），请重试或使用密码"
-            }
-
-            override fun onAuthenticationFailed() {
-                showBioError = true
-            }
-        }
+        } else null
     }
     val systemBiometricPrompt: android.hardware.biometrics.BiometricPrompt? = remember(context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -185,13 +185,13 @@ fun AppLockScreen(
             return
         }
         activeSession = session
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && systemBiometricPrompt != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && systemBiometricPrompt != null && biometricCallback != null) {
             runCatching {
                 systemBiometricPrompt.authenticate(
                     android.hardware.biometrics.BiometricPrompt.CryptoObject(session.cipher),
                     android.os.CancellationSignal(),          // 不主动取消认证
                     ContextCompat.getMainExecutor(context),   // 回调线程
-                    biometricCallback,
+                    biometricCallback,                        // v1.1.89 仅 R+ 非空（API 26-29 走 androidxCallback）
                 )
             }.onFailure { t ->
                 android.util.Log.e(TAG, "system biometric authenticate failed", t)
