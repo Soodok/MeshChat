@@ -6,11 +6,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.BugReport
@@ -36,20 +39,27 @@ import com.meshchat.app.ui.theme.TextSecondary
 @Composable
 fun ProfileScreen(
     modifier: Modifier = Modifier,
+    /** v1.1.91 本机昵称：替换顶部固定的"我"标识，随设置实时显示。 */
+    displayName: String,
     onOpenKeys: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenSecurityCenter: () -> Unit,
     onOpenDebugCenter: () -> Unit,
 ) {
-    Column(modifier = modifier.padding(top = 14.dp)) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())   // v1.1.91 我的页可滚动，防小屏内容被遮挡
+            .padding(top = 14.dp),
+    ) {
         Row(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(64.dp).clip(androidx.compose.foundation.shape.CircleShape).background(InkSoft), contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.PersonOutline, null, tint = Cyan, modifier = Modifier.size(34.dp))
             }
             Spacer(Modifier.width(16.dp))
             Column {
-                Text("我", style = MaterialTheme.typography.titleLarge)
+                Text(displayName, style = MaterialTheme.typography.titleLarge)
                 Text("本机身份", color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
             }
         }

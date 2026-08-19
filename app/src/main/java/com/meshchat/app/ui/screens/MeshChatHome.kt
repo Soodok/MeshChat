@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,12 +37,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.app.Activity
 import android.content.Intent
 import android.provider.OpenableColumns
 import android.widget.Toast
+import com.meshchat.app.MeshChatApplication
 import com.meshchat.app.data.ChatMessage
 import com.meshchat.app.data.ChatPreview
 import com.meshchat.app.data.MainDestination
@@ -149,6 +153,22 @@ fun MeshChatHome(
     var profileDetail by rememberSaveable { mutableStateOf<String?>(null) }
     val destination = MainDestination.valueOf(destinationName)
     val context = LocalContext.current
+
+    // v1.1.91 隐私逃生：快速连点应用标题 6 下（每次间隔 ≤600ms）→ 清除全部数据并退出（恢复全新状态）
+    var titleTaps by remember { mutableStateOf(0) }
+    var lastTitleTapAt by remember { mutableStateOf(0L) }
+    fun onTitleTap() {
+        val now = System.currentTimeMillis()
+        titleTaps = if (now - lastTitleTapAt > 600L) 1 else titleTaps + 1
+        lastTitleTapAt = now
+        if (titleTaps >= 6) {
+            titleTaps = 0
+            (context.applicationContext as MeshChatApplication).emergencyWipe()
+            Toast.makeText(context, "已清除全部数据，应用即将退出", Toast.LENGTH_SHORT).show()
+            (context as? Activity)?.finishAffinity()
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+    }
 
     // 系统文件选择器：选文件后取名称/MIME/大小，回调上层发送
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -266,15 +286,6 @@ fun MeshChatHome(
                 onBackgroundEnabledChange = onBackgroundEnabledChange,
                 autoDiscovery = autoDiscovery,
                 onAutoDiscoveryChange = onAutoDiscoveryChange,
-                hasLockPassword = hasLockPassword,
-                lockBiometricAvailable = lockBiometricAvailable,
-                lockFingerprintEnabled = lockFingerprintEnabled,   // v1.1.83 真实指纹状态
-                onSetLockPassword = onSetLockPassword,
-                onChangeLockPassword = onChangeLockPassword,
-                onRemoveLockPassword = onRemoveLockPassword,
-                onBiometricBlobMissing = onBiometricBlobMissing,
-                onPrepareBiometricEnrollSession = onPrepareBiometricEnrollSession,
-                onFinishBiometricEnroll = onFinishBiometricEnroll,
                 wifiDirectEnabled = wifiDirectEnabled,
                 onWifiDirectEnabledChange = onWifiDirectEnabledChange,
                 onBack = { profileDetail = null },
@@ -325,7 +336,13 @@ fun MeshChatHome(
                     .padding(horizontal = 24.dp, vertical = 20.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("MeshChat", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "MeshChat",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Bold,
+                        // v1.1.91 隐私逃生触发区：快速连点 6 下清除数据退出
+                        modifier = Modifier.pointerInput(Unit) { detectTapGestures { onTitleTap() } },
+                    )
                     Spacer(Modifier.weight(1f))
                     Icon(destination.icon, contentDescription = "${destination.label}页面", tint = Cyan, modifier = Modifier.size(28.dp))
                 }
@@ -411,6 +428,7 @@ fun MeshChatHome(
                 )
                 MainDestination.PROFILE -> ProfileScreen(
                     modifier = Modifier.padding(contentPadding),
+                    displayName = displayName,   // v1.1.91 顶部显示本机昵称
                     onOpenKeys = { profileDetail = "keys" },
                     onOpenSettings = { profileDetail = "settings" },
                     onOpenAbout = { profileDetail = "about" },

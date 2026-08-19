@@ -8,7 +8,7 @@ MeshChat 是面向**无公网/弱网极端环境**的近场安全通信应用。
 
 - 工程根目录：`E:\MeshChat Project`；git 远程：`https://github.com/Soodok/MeshChat`（main 分支）
 - 包名：`com.meshchat.app`；minSdk 26 / targetSdk 36 / compileSdk 36（平台 36.1）
-- **当前版本：v1.1.90（versionCode 152，构建时间 2026-08-19）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
+- **当前版本：v1.1.91（versionCode 153，构建时间 2026-08-19）**——版本更新规则：每次构建后 bump，安装包命名 `MeshChat-vX.Y.Z-debug.apk` 存于工程根目录
 - **v1.0.25 release 首包**：`MeshChat-v1.0.25-release.apk`（12,537,519 B，比 debug 19,192,426 B 小 35%）——`app/build.gradle.kts` 新增 `signingConfigs.release`（暂用 Android debug keystore，`~/.android/debug.keystore`）+ `buildTypes.release`（`isMinifyEnabled=false` 首次不开混淆，无 proguard-rules.pro，Room/Compose/序列化混淆会崩；后续补规则文件可开 R8）。apksigner verify 通过（Android Debug 证书）。
 - **上架签名升级（v1.0.25 正式包）**：用户决策「GitHub 开源 + R8 开启」。① **正式 keystore**：`meshchat-release.keystore`（RSA 2048/10000 天，别名 meshchat，CN=MeshChat O=Soodok）已生成，凭证在 `keystore.properties`（**两者均 gitignore 不入库，密码须用户自行备份，丢失无法更新**）；`signingConfigs.release` 改读 keystore.properties，缺失时占位符使 assembleRelease 失败防误发。② **R8 开启**：`isMinifyEnabled=true + isShrinkResources=true`，`app/proguard-rules.pro` 含 kotlinx-serialization（`$$serializer`/`Companion`/`serializer()` keep + includedescriptorclasses）+ Room 兜底规则。③ **正式包**：`MeshChat-v1.0.25-release.apk`（**1,480,966 B ≈ 1.48MB**，12.5MB→1.48MB -88%），apksigner verify 通过（CN=MeshChat O=Soodok，非 Android Debug）。⚠️ R8 混淆后未真机验证，首次安装需重点回归：会话握手/消息收发/文件传输（serialization 反序列化）。
 - 构建：AGP 9.0.0 + Kotlin 2.2.10（内置 Kotlin）+ KSP 2.2.10-2.0.2 + Room 2.7.0 + kotlinx-serialization 1.8.1 + Gradle 9.1.0
@@ -41,6 +41,16 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **v1.1.91 开源收尾：UI 三项 + 隐私逃生 + 昵称输入修复 + release 正式包（2026-08-19，用户：①关于页去技术栈/双作者/加 QQ ②"我的"页滚动 ③通用设置重组：星域并入连接搜索、应用锁移入安全中心 ④隐私小巧思：标题连点 6 下清数据退出 + 首次弹窗告知 ⑤昵称修改失效修复 + 拒空名/限16字/确认键 + 确认后收键盘 ⑥"我的"页顶显名称）**：
+  - **关于页（ProfileDetailScreens.kt）**：删除"技术栈"块；作者改双人——Soodok（14 岁初中生，后端：协议/路由/传输/加密）+ ide-chen（前端设计与界面交互）；新增"联系方式"项 QQ：1980380242。
+  - **"我的"页滚动（ProfileScreen.kt）**：Column 补 `fillMaxSize().verticalScroll(...)`，防小屏遮挡；新增 `displayName` 参数，顶部固定"我"字样替换为本机昵称（副标题"本机身份"保留）。
+  - **通用设置重组（ProfileDetailScreens.kt）**：删除"应用锁"整块（SectionHeader/状态/按钮/LockAutomationWarning + 全部锁相关参数，安全中心 v1.1.59 已有完整入口）；星域通道并入"连接与搜索"组（原独立分组）。同步 MeshChatHome.kt 调用处删 8 个锁参数。
+  - **隐私逃生（MeshChatHome.kt + MeshChatApplication.kt + MeshChatApp.kt）**：主界面标题 Text 加 `pointerInput { detectTapGestures }` 连点计数（间隔 ≤600ms，满 6 次触发）；`MeshChatApplication.emergencyWipe()` = 停 service + 停 wfd + AndroidKeyStore 全清（UID 隔离只删本应用条目）+ deleteDatabase("meshchat.db") + shared_prefs 目录整删 + files/transfers 递归删；随后 Toast + finishAffinity + killProcess。**首次进入**弹"隐私承诺"对话框告知该机制（`meshchat_privacy` prefs flag 持久化，仅弹一次）。
+  - **昵称输入修复（ProfileDetailScreens.kt）**：根因 = TextField 绑定非响应式 `localDisplayName`（直接读 Application），删除字符后无 State 触发重组 → 文字残留、光标已退格。改"本地草稿 + 确认提交"：`rememberSaveable(displayName)` 草稿态，onValueChange 只改草稿并 `take(16)` 限长；确认键校验非空（`名字不能为空` 提示）+ 提交 + **hideSoftInputFromWindow 收键盘**（LocalView.windowToken）。
+  - **验证**：`assembleDebug + testDebugUnitTest + lintDebug` 全过（单测 **221/221**，lint 0 errors / 42 warnings 纯风格）；模拟器实测：首次隐私弹窗文案正确 ✓、我的页顶部显示昵称"节点83UR" ✓、通用设置四组+星域并入 ✓。
+  - **release 正式包**：`assembleRelease` SUCCESS（R8 混淆 + lintVital 通过）→ `MeshChat-v1.1.91-release.apk`（**1,958,429 B ≈ 1.96MB**），apksigner verify：v2 scheme true、1 signer（CN=MeshChat O=Soodok）。
+  - **README.md 最终版**：徽章更新 v1.1.91 / 221 tests；新增 WFD 星域通道、混合组网 A-WiFi-B-BLE-C、隐私逃生、应用锁能力描述；双作者 + QQ 联系方式；保持"项目介绍，不写 changelog"约定。
+  - **下一步首要任务（真机收尾，同 v1.1.89）**：① 双机装 v1.1.91 验证 WFD 建组弹窗 + 混合链 A-WiFi-B-BLE-C + 文件走 WFD；② 关蓝牙 5s 看门狗自动启用 WFD + 消息双链路；③ **R8 release 包真机回归**（serialization 混淆风险，上架前必测：握手/消息/文件收发）；④ Android 8.0/8.1 真机冒烟（v1.1.89 修复的 4 个 API 26-28 崩溃点）；⑤ 连点标题 6 下清数据真机验证。
 - **v1.1.90 界面改良 5 项（2026-08-19，用户：①解锁界面不再提示指纹注册/状况 ②安全中心完善 ③通用设置分组整理 ④设置页可滚动防小屏遮盖 ⑤关于页加作者/初衷/技术栈）**：
   - **① 解锁界面简化（AppLockScreen.kt）**：移除"指纹解锁" OutlinedButton 与"未检测到可用指纹"长提示；副标题动态——有指纹 `"正在验证指纹… 也可直接输入密码解锁"`、无指纹 `"输入密码解锁"`；自动弹指纹逻辑（LaunchedEffect 优先指纹，密码输入框兜底）保留；失败提示精简为"指纹验证未通过，请使用密码解锁"。
   - **② 安全中心完善（SecurityCenterScreen.kt）**：应用锁状态文案简化——右侧显示"已启用/未设置"（不再区分指纹启用态）；`orderedStatuses` 过滤 `VPN_SCAN` 与 `ENTERPRISE_MANAGEMENT`（个人版框架脚手架能力，永不配置，移除噪音卡片）。

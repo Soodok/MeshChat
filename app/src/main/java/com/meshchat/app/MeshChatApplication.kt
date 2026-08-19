@@ -292,6 +292,26 @@ class MeshChatApplication : Application() {
         service.setChannel(channelName)
     }
 
+    /**
+     * v1.1.91 隐私逃生：快速清除本应用全部数据（消息库/偏好/密钥/临时文件），随后由调用方退出进程。
+     * 被威胁时连点应用标题 6 下触发——恢复到全新安装状态，重启后重新生成身份。
+     * AndroidKeyStore 按 UID 隔离，本应用可见条目即自己创建的，删除安全。
+     */
+    fun emergencyWipe() {
+        runCatching { service.stop() }
+        runCatching { wfd.disable() }
+        runCatching {
+            val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            ks.aliases().toList().forEach { alias -> runCatching { ks.deleteEntry(alias) } }
+        }
+        runCatching { deleteDatabase("meshchat.db") }
+        runCatching {
+            File(dataDir, "shared_prefs").listFiles()?.forEach { it.delete() }
+        }
+        runCatching { File(filesDir, "transfers").deleteRecursively() }
+        Log.w("MeshApp", "emergency wipe: all local data cleared")
+    }
+
     override fun onCreate() {
         super.onCreate()
         registerBluetoothStateReceiver()

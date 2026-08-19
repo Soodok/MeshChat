@@ -1,15 +1,24 @@
 package com.meshchat.app.ui
 
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.content.Context
 import com.meshchat.app.ui.screens.MeshChatHome
+import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Ink
+import com.meshchat.app.ui.theme.InkRaised
 import com.meshchat.app.security.model.SecurityCapability
 
 @Composable
@@ -31,6 +40,13 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     val oscHistory by viewModel.oscHistory.collectAsStateWithLifecycle()
     val debugLogLines by viewModel.debugLogLines.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    // v1.1.91 首次进入隐私提示：告知"被威胁时快速连点应用标题 6 下清除所有数据"（仅弹一次，flag 持久化）
+    val privacyPrefs = remember { context.getSharedPreferences("meshchat_privacy", Context.MODE_PRIVATE) }
+    var showPrivacyNotice by remember { mutableStateOf(!privacyPrefs.getBoolean("notice_shown", false)) }
+    fun dismissPrivacyNotice() {
+        showPrivacyNotice = false
+        privacyPrefs.edit().putBoolean("notice_shown", true).apply()
+    }
     // v1.1.57 E2EE：发送被拒（对方未启用加密）→ Toast 提示
     val sendRejected by viewModel.sendRejected.collectAsStateWithLifecycle()
     androidx.compose.runtime.LaunchedEffect(sendRejected) {
@@ -52,6 +68,17 @@ fun MeshChatApp(viewModel: MeshChatViewModel = viewModel(factory = MeshChatViewM
     // v1.1.74 MITM 防御：对端公钥指纹与首次记录不一致（身份变更）的节点集合
     val peerKeyChanged by viewModel.peerKeyChanged.collectAsStateWithLifecycle()
     Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = Ink) {
+        if (showPrivacyNotice) {
+            AlertDialog(
+                onDismissRequest = ::dismissPrivacyNotice,
+                title = { Text("隐私承诺") },
+                text = { Text("应用保证你的隐私安全。当你受到威胁时，快速连点应用标题 6 下即可清除所有数据并退出。") },
+                confirmButton = {
+                    TextButton(onClick = ::dismissPrivacyNotice) { Text("我知道了", color = Cyan) }
+                },
+                containerColor = InkRaised,
+            )
+        }
         if (appLocked) {
             com.meshchat.app.ui.screens.AppLockScreen(
                 biometricAvailable = viewModel.lockBiometricAvailable(),

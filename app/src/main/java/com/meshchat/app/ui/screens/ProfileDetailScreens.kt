@@ -51,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -58,7 +59,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.meshchat.app.BuildConfig
-import com.meshchat.app.security.local.AndroidLocalSecuritySignalCollector
 import com.meshchat.app.ui.theme.Cyan
 import com.meshchat.app.ui.theme.Divider
 import com.meshchat.app.ui.theme.Ink
@@ -167,37 +167,11 @@ fun GeneralSettingsScreen(
     /** v1.1.49：打开应用时自动搜索（默认开）。 */
     autoDiscovery: Boolean,
     onAutoDiscoveryChange: (Boolean) -> Unit,
-    /** v1.1.58 应用锁（密码/指纹/DEK 加密密钥库）。 */
-    hasLockPassword: Boolean,
-    lockBiometricAvailable: Boolean,
-    /** v1.1.83 指纹版 DEK 副本真实状态。 */
-    lockFingerprintEnabled: Boolean,
-    onSetLockPassword: (String) -> Unit,
-    onChangeLockPassword: (old: String, new: String) -> Boolean,
-    onRemoveLockPassword: () -> Unit,
-    /** v1.1.83 设置密码后指纹副本缺失 → 弹认证启用指纹。 */
-    onBiometricBlobMissing: () -> Boolean,
-    onPrepareBiometricEnrollSession: () -> com.meshchat.app.security.lock.BiometricEnrollSession?,
-    onFinishBiometricEnroll: (com.meshchat.app.security.lock.BiometricEnrollSession?, javax.crypto.Cipher?) -> Boolean,
-    /** Beta v1.1.51：Wi-Fi Direct 增强（默认关——省电，主动开启增强通讯能力）。 */
+    /** Beta v1.1.51：Wi-Fi Direct 增强。 */
     wifiDirectEnabled: Boolean,
     onWifiDirectEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
-    var lockDialog by remember { mutableStateOf<LockDialog?>(null) }
-    var lockError by remember { mutableStateOf<String?>(null) }
-    // v1.1.83 设置/修改密码成功后指纹副本缺失 → 自动弹"启用指纹"认证
-    var pendingEnableFingerprint by remember { mutableStateOf(false) }
-    fun setLockPasswordAndMaybeEnroll(pw: String) {
-        onSetLockPassword(pw)
-        if (lockBiometricAvailable && onBiometricBlobMissing()) pendingEnableFingerprint = true
-    }
-    fun changeLockPasswordAndMaybeEnroll(old: String, new: String): Boolean {
-        val ok = onChangeLockPassword(old, new)
-        if (ok && lockBiometricAvailable && onBiometricBlobMissing()) pendingEnableFingerprint = true
-        return ok
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -207,21 +181,59 @@ fun GeneralSettingsScreen(
         DetailHeader(title = "通用设置", icon = Icons.Outlined.Settings, onBack = onBack)
 
         // ---- v1.1.90 布局分组整理：按"身份 / 连接搜索 / 应用锁 / 星域通道"分组，每组带标题与分隔线 ----
+        // v1.1.91 昵称改为"本地草稿 + 确认提交"：受控回写会导致删除失效（非响应式读值），
+        // 且按用户要求增加：拒绝空名、长度 ≤16、显式确认键。
+        var nameDraft by rememberSaveable(displayName) { mutableStateOf(displayName) }
+        var nameError by remember { mutableStateOf<String?>(null) }
+        val nameInputView = LocalView.current   // v1.1.91 确认后收起软键盘需要 windowToken
         SectionHeader("节点身份")
         OutlinedTextField(
-            value = displayName,
-            onValueChange = onDisplayNameChange,
+            value = nameDraft,
+            onValueChange = {
+                nameDraft = it.take(16)   // v1.1.91 昵称长度上限 16 字符
+                nameError = null
+            },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
             enabled = canEditDisplayName,
             singleLine = true,
+            isError = nameError != null,
             label = { Text("昵称（广播给邻近节点）") },
+            supportingText = {
+                nameError?.let { Text(it, color = MeshAmber) }
+                    ?: Text("最多 16 个字符 · 随心跳广播给邻近节点")
+            },
         )
-        Text(
-            if (canEditDisplayName) "昵称会随心跳广播，邻近节点将以此标识你。" else "连接至少一台其他设备后，才可以修改昵称。",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-        )
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+            Button(
+                onClick = {
+                    val trimmed = nameDraft.trim()
+                    when {
+                        trimmed.isEmpty() -> nameError = "名字不能为空"
+                        else -> {
+                            onDisplayNameChange(trimmed)
+                            nameDraft = trimmed
+                            // v1.1.91 确认成功后收起软键盘（nameInputView 已取引用，点击回调内安全使用）
+                            runCatching {
+                                val imm = nameInputView.context
+                                    .getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                                    as? android.view.inputmethod.InputMethodManager
+                                imm?.hideSoftInputFromWindow(nameInputView.windowToken, 0)
+                            }
+                        }
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Ink),
+            ) {
+                Text("确认")
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                if (canEditDisplayName) "确认后名称随心跳广播，邻近节点将以此标识你。" else "连接至少一台其他设备后，才可以修改昵称。",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+        }
 
         SectionHeader("连接与搜索")
         SettingsSwitchRow(
@@ -247,79 +259,7 @@ fun GeneralSettingsScreen(
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
 
-        // ---- v1.1.58 应用锁 ----
-        SectionHeader("应用锁")
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Lock, null, tint = Cyan, modifier = Modifier.size(20.dp))
-            Text("应用锁", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 10.dp))
-            Spacer(Modifier.weight(1f))
-            if (hasLockPassword) {
-                Box(
-                    Modifier.size(8.dp).background(MeshGreen, androidx.compose.foundation.shape.CircleShape),
-                )
-                Text(
-                    "已启用",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MeshGreen,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            } else {
-                Text(
-                    "未设置",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
-        }
-        Text(
-            "设密码后，会话/群密钥以最高强度加密存储；每次进入应用需解锁；连续 5 次密码错误将锁定 30 秒；锁定期间通知不显示内容。",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
-        )
-        if (hasLockPassword) {
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp)) {
-                Button(
-                    onClick = {
-                        lockError = null
-                        lockDialog = LockDialog.CHANGE
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Ink),
-                ) {
-                    Text("修改密码")
-                }
-                Spacer(Modifier.width(12.dp))
-                OutlinedButton(
-                    onClick = {
-                        lockError = null
-                        lockDialog = LockDialog.REMOVE
-                    },
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MeshAmber),
-                ) {
-                    Text("移除密码")
-                }
-            }
-        } else {
-            Button(
-                onClick = {
-                    lockError = null
-                    lockDialog = LockDialog.SET
-                },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Ink),
-            ) {
-                Icon(Icons.Outlined.Lock, null)
-                Text("设置密码", modifier = Modifier.padding(start = 8.dp))
-            }
-        }
-        LockAutomationWarning()
-
-        // ---- Beta v1.1.51：Wi-Fi Direct 增强（实验性，默认开——v1.1.87 用户决策常开）----
-        SectionHeader("星域通道")
+        // ---- v1.1.91 星域通道并入"连接与搜索"组（原独立分组）----
         SettingsSwitchRow(
             title = "Wi-Fi Direct 增强",
             checked = wifiDirectEnabled,
@@ -332,80 +272,6 @@ fun GeneralSettingsScreen(
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
         Spacer(Modifier.height(24.dp))
-    }
-
-    when (lockDialog) {
-        LockDialog.SET -> LockPasswordDialog(
-            title = "设置应用锁密码",
-            confirmText = "设置",
-            onChangeLockPassword = null,
-            // v1.1.83 设置成功后指纹副本缺失 → 自动弹"启用指纹"认证
-            onSetLockPassword = ::setLockPasswordAndMaybeEnroll,
-            onDismiss = { lockDialog = null },
-        )
-        LockDialog.CHANGE -> LockPasswordDialog(
-            title = "修改应用锁密码",
-            confirmText = "修改",
-            onChangeLockPassword = ::changeLockPasswordAndMaybeEnroll,
-            onSetLockPassword = null,
-            onDismiss = { lockDialog = null },
-        )
-        LockDialog.REMOVE -> AlertDialog(
-            onDismissRequest = { lockDialog = null },
-            title = { Text("移除应用锁密码？") },
-            text = { Text("移除后不再要求解锁，已加密的会话/群密钥将回退为明文存储，且无法恢复。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onRemoveLockPassword()
-                    lockDialog = null
-                }) { Text("移除", color = MeshAmber) }
-            },
-            dismissButton = {
-                TextButton(onClick = { lockDialog = null }) { Text("取消") }
-            },
-        )
-        null -> Unit
-    }
-
-    // v1.1.83 设置/修改密码成功但指纹副本缺失（keystore2 加密需认证）→ 自动弹"启用指纹"认证补写
-    if (pendingEnableFingerprint) {
-        EnableFingerprintPrompt(
-            onPrepareSession = onPrepareBiometricEnrollSession,
-            onFinishEnroll = onFinishBiometricEnroll,
-            onDone = { pendingEnableFingerprint = false },
-        )
-    }
-}
-
-/** 防自动化警告（v1.1.58）：无障碍服务/调试器/可调试构建检测——本地只读信号，无网络。 */
-@Composable
-private fun LockAutomationWarning() {
-    val context = LocalContext.current
-    val warnings = remember {
-        runCatching {
-            AndroidLocalSecuritySignalCollector(context).collect(System.currentTimeMillis())
-        }.getOrDefault(emptyList()).mapNotNull { s ->
-            when (s.ruleId) {
-                "debugger-attached" -> "检测到调试器连接——自动化/破解工具可能已附着"
-                "accessibility-service-enabled" -> "检测到无障碍服务开启——自动化工具可借此模拟操作"
-                "debuggable-build-enabled" -> "当前为可调试构建——调试通道已打开"
-                else -> null
-            }
-        }
-    }
-    if (warnings.isNotEmpty()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 4.dp)
-                .background(InkSoft, androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-                .padding(12.dp),
-        ) {
-            Text("安全警告", style = MaterialTheme.typography.titleSmall, color = MeshAmber, fontWeight = FontWeight.Bold)
-            warnings.forEach { w ->
-                Text("· $w", style = MaterialTheme.typography.bodySmall, color = MeshAmber, modifier = Modifier.padding(top = 4.dp))
-            }
-        }
     }
 }
 
@@ -517,17 +383,16 @@ fun AboutScreen(onBack: () -> Unit) {
             )
             Text("作者", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
             Text(
-                "Soodok · 一个把\"离线也能聊\"当长期兴趣的开发者。开源开放，欢迎任何改进与批评。",
+                "Soodok · 14 岁初中生，负责后端技术性功能——协议、路由、传输与加密。\n" +
+                    "ide-chen · 负责前端设计与界面交互。\n" +
+                    "开源开放，欢迎任何改进与批评。",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )
-            Text("技术栈", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
+            Text("联系方式", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 24.dp))
             Text(
-                "Kotlin · Jetpack Compose · Room · Kotlin 协程\n" +
-                    "蓝牙 BLE（广播/扫描/GATT 可靠通道）· Wi-Fi Direct（星域高速通道）\n" +
-                    "端到端加密：ECDH P-256 密钥协商 + AES-256-GCM\n" +
-                    "多跳中继 · 应用锁（AndroidKeyStore）· R8 混淆发布（约 1.9 MB）",
+                "QQ：1980380242",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 8.dp),
