@@ -41,6 +41,29 @@ app/src/main/java/com/meshchat/app/
 ## 交接块
 
 ### 当前进度
+- **🏁 项目完结 @ v1.2.0（2026-08-29，用户："关于好像还没写，也顺便写一下。然后项目可以完结了"）**：
+  - **关于页确认已就绪（无需新改动）**：AboutScreen 内容早在 v1.1.91（commit 1444dbe，8/19 20:35）完成并随 v1.2.0 构建（8/19 20:40）打进 APK——含项目初衷 / 双作者（Soodok·14 岁初中生·后端协议/路由/传输/加密；ide-chen·前端设计与界面交互）/ 联系方式 QQ 1980380242 / 版本 v1.2.0 / 开源仓库（可点击跳转 github.com/Soodok/MeshChat）/ MIT 许可 / 隐私与数据 / 免责声明，技术栈已按用户要求移除。用户"没看到"是旧安装所致，装根目录 `MeshChat-v1.2.0-release.apk` 即见全量内容。
+  - **完结基线**：代码冻结于 **v1.2.0 / versionCode 154**；单测 **221/221**、lint 0 errors、R8 release **1.96MB** v2 签名验证通过；README（含 Emoji 标题 + 双作者 + QQ）/ SECURITY.md / LICENSE 全部就绪；tag `v1.2.0` 已推送。本次会话无代码改动（工作区仅两文件行尾符 CRLF 噪声，勿提交），无版本 bump。
+  - **唯一遗留（需用户手动，gh CLI 未装无法代办）**：GitHub 页面发布 Release——仓库页 → Releases → Draft a new release → 选 tag `v1.2.0` → 粘贴下述文案 → 上传 `MeshChat-v1.2.0-release.apk` → Publish release：
+    ```markdown
+    # MeshChat v1.2.0
+
+    > 首个正式完整版 · 离线近场安全通信
+
+    ## 核心能力
+    - **蓝牙 Mesh 组网**：无需配对即可互相发现、聊天、传文件；多跳中继自愈路由
+    - **端到端加密**：ECDH P-256 + AES-256-GCM，对话公钥指纹防中间人
+    - **Wi-Fi Direct 高速通道**：消息双链路送达、文件高速传输；蓝牙断链自动兜底（混合组网）
+    - **消息必达**：自动重发确认，丢包、切后台、息屏不丢消息
+    - **隐私**：应用锁（密码/指纹）；被威胁时连点应用标题 6 下清空全部数据退出
+    - 私人频道 · 彻底拉黑 · 离线安全评估 · 拓扑图
+
+    ## Release 就绪
+    正式包已构建并签名，附件 `MeshChat-v1.2.0-release.apk` 可直接下载安装。
+    需开启蓝牙；Android 11 及以下需开启系统定位；Wi-Fi Direct 首次建组会弹系统确认框。
+    ```
+  - **可选收尾（非阻塞，用户有真机余力再做）**：双机 WFD 建组弹窗 + 混合链 A-WiFi-B-BLE-C + 文件走 WFD；关蓝牙 5s 看门狗；R8 release 真机回归；Android 8.0/8.1 冒烟；连点标题 6 下清数据真机验证。
+  - **关键文件**：`app/src/main/java/com/meshchat/app/ui/screens/ProfileDetailScreens.kt`（AboutScreen L354-436）、`README.md`、`AI_CONTEXT.md`（本块）。
 - **v1.2.0 版本号跃升 + release 正式包（2026-08-19，用户："版本提到 1.2，测试一下，我开梯子了"）**：
   - versionCode 154 / versionName **1.2.0**（自 v1.1.91 跃升，主版本进 1.2 里程碑）；README 徽章同步 v1.2.0。
   - **验证**：`assembleDebug + testDebugUnitTest + lintDebug + assembleRelease` 全过——单测 **221/221**、lint 0 errors、R8 release `MeshChat-v1.2.0-release.apk`（**1,958,433 B ≈ 1.96MB**），apksigner verify v2 true / 1 signer。
